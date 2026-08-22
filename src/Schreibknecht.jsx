@@ -87,7 +87,7 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 
 // ---------- eine Karte ----------
 function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
-                inHand, onDragStart, onDragEnd, onDragOver, onDrop, ziehend }) {
+                inHand, aufPult, onAufsPult, onDragStart, onDragEnd, onDragOver, onDrop, ziehend }) {
   const feld = useRef(null);
 
   // Der Browser macht sonst einen halbdurchsichtigen Abzug der Karte —
@@ -125,6 +125,8 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
             placeholder="…" spellCheck={false} />
           <div className="fuss">
             <span className="woerter">{zaehle(karte.text) || ""}</span>
+            <button className={"klein" + (aufPult ? " an" : "")} onClick={onAufsPult}
+              title={aufPult ? "vom pult nehmen" : "gross aufschlagen"}>⤢</button>
             <button className="klein" onClick={onDoppeln} title="karte doppeln">⧉</button>
             <button className="klein" onClick={onSchneiden}
               title={inHand ? "liegt in der hand — nochmal tippen legt sie zurück" : "in die hand nehmen, woanders ablegen"}>✂</button>
@@ -162,7 +164,31 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const [mitBild, setMitBild] = useState(true);
   const [mischt, setMischt] = useState(null);
   const [nurDieser, setNurDieser] = useState(null);
+  const [pult, setPult] = useState([]);   // bis zu zwei karten-ids, gross aufgeschlagen
   const uhren = useRef({});
+
+  // eine karte aufs pult legen. die dritte schiebt die aelteste runter.
+  const aufsPult = (id) => setPult((l) =>
+    l.includes(id) ? l.filter((x) => x !== id) : [...l, id].slice(-2));
+  const vomPult = (id) => setPult((l) => l.filter((x) => x !== id));
+
+  // escape schliesst das pult
+  useEffect(() => {
+    if (!pult.length) return;
+    const z = (e) => { if (e.key === "Escape") setPult([]); };
+    window.addEventListener("keydown", z);
+    return () => window.removeEventListener("keydown", z);
+  }, [pult.length]);
+
+  // finde eine karte im ganzen projekt, egal in welchem abschnitt sie liegt
+  const findeKarte = (id) => {
+    for (let ai = 0; ai < projekt.abschnitte.length; ai++) {
+      const ki = projekt.abschnitte[ai].karten.findIndex((k) => k.id === id);
+      if (ki >= 0) return { ai, ki, karte: projekt.abschnitte[ai].karten[ki],
+        abschnitt: projekt.abschnitte[ai] };
+    }
+    return null;
+  };
 
   const abschnittDrucken = (id) => {
     setNurDieser(id);
@@ -425,6 +451,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                             onDoppeln={() => karteDoppeln(ai, k)}
                             onSchneiden={() => schneiden(k)}
                             inHand={hand && hand.id === k.id}
+                            aufPult={pult.includes(k.id)}
+                            onAufsPult={() => aufsPult(k.id)}
                             onWeg={() => karteWeg(ai, ki)} />
                         );
                       }
@@ -448,6 +476,43 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
         <button className="abschnittneu" onClick={abschnittZu}>+ trennstrich</button>
       </div>
+
+      {/* DAS PULT — klappt unter der auslage auf, die karten oben bleiben sichtbar.
+          bis zu zwei karten nebeneinander, aus beliebigen abschnitten. */}
+      {pult.length > 0 && (
+        <div className="pult">
+          <div className="pultkopf">
+            <span className="pultname">pult</span>
+            <span className="pulthinweis">
+              {pult.length === 1 ? "eine karte — leg eine zweite dazu" : "zwei karten"}
+            </span>
+            <span className="fuellung" />
+            <button className="klein" onClick={() => setPult([])} title="pult schließen · esc">✕</button>
+          </div>
+          <div className={"pultblatt" + (pult.length === 2 ? " zwei" : "")}>
+            {pult.map((id) => {
+              const f = findeKarte(id);
+              if (!f) return null;
+              return (
+                <div className="bogen" key={id}>
+                  <div className="bogenkopf">
+                    <input className="bogentitel" value={f.karte.titel || ""} placeholder="beschriftung"
+                      onChange={(e) => setTitel2(f.ai, f.ki, e.target.value)} />
+                    <span className="bogenort">{f.abschnitt.titel}</span>
+                    <button className="klein" onClick={() => vomPult(id)} title="vom pult nehmen">✕</button>
+                  </div>
+                  {f.karte.bild && bilder[f.karte.bild] && (
+                    <img className="bogenbild" src={bilder[f.karte.bild]} alt="" />
+                  )}
+                  <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
+                    placeholder="…" onChange={(e) => setText(f.ai, f.ki, e.target.value)} />
+                  <div className="bogenfuss">{zaehle(f.karte.text).toLocaleString("de-DE")} wörter</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -1002,10 +1067,64 @@ function Stil() {
 }
 .kartenplatz.leer:hover{border-color:rgba(242,179,87,.45); color:var(--kerze2)}
 
+/* ---- DAS PULT ---- */
+.pult{
+  margin-top:26px; border-top:1px solid rgba(168,135,79,.28); padding-top:18px;
+  animation:pultauf .28s cubic-bezier(.2,.9,.3,1);
+}
+@keyframes pultauf{from{opacity:0; transform:translateY(-10px)}to{opacity:1; transform:none}}
+.pultkopf{display:flex; align-items:center; gap:12px; margin-bottom:14px}
+.pultname{
+  font-family:'IM Fell English SC', Georgia, serif; font-size:14px; letter-spacing:.2em;
+  color:var(--kerze2);
+}
+.pulthinweis{font-size:10.5px; letter-spacing:.06em; color:var(--nebel)}
+.pultblatt{display:grid; grid-template-columns:1fr; gap:18px}
+.pultblatt.zwei{grid-template-columns:1fr 1fr}
+@media(max-width:820px){.pultblatt.zwei{grid-template-columns:1fr}}
+
+.bogen{
+  display:flex; flex-direction:column; min-height:440px; border-radius:12px; overflow:hidden;
+  border:1px solid rgba(42,33,24,.55);
+  background:
+    repeating-linear-gradient(0deg, rgba(120,95,55,.05) 0 2px, transparent 2px 5px),
+    linear-gradient(155deg, var(--pergament) 0%, var(--pergament2) 100%);
+  color:var(--tinte); box-shadow:0 12px 30px rgba(0,0,0,.55), inset 0 0 40px rgba(120,95,55,.14);
+}
+.bogenkopf{
+  display:flex; align-items:center; gap:10px; padding:10px 14px;
+  border-bottom:1px solid rgba(42,33,24,.18); background:rgba(0,0,0,.07);
+}
+.bogentitel{
+  flex:1; min-width:0; font-family:'IM Fell English SC', Georgia, serif; font-size:14px;
+  letter-spacing:.05em; color:var(--tinte); background:transparent; border:0; padding:2px 4px;
+}
+.bogentitel:focus{outline:none; background:rgba(42,33,24,.07); border-radius:3px}
+.bogentitel::placeholder{color:rgba(42,33,24,.35); font-style:italic}
+.bogenort{
+  font-family:var(--term,'Courier Prime'); font-size:9.5px; letter-spacing:.12em;
+  color:rgba(42,33,24,.5); text-transform:uppercase; white-space:nowrap;
+}
+.bogen .klein{border-color:rgba(42,33,24,.22); color:rgba(42,33,24,.5)}
+.bogen .klein:hover{color:var(--tinte); border-color:rgba(42,33,24,.5)}
+.bogenbild{width:100%; max-height:200px; object-fit:cover; flex:0 0 auto}
+.bogenfeld{
+  flex:1; width:100%; resize:none; border:0; background:transparent; padding:20px 24px;
+  font-family:'Courier Prime', monospace; font-size:14.5px; line-height:1.85; color:var(--tinte);
+}
+.bogenfeld:focus{outline:none}
+.bogenfeld::placeholder{color:rgba(42,33,24,.28)}
+.bogenfuss{
+  padding:8px 14px; border-top:1px solid rgba(42,33,24,.18); background:rgba(0,0,0,.07);
+  font-size:10px; letter-spacing:.06em; color:rgba(42,33,24,.5); text-align:right;
+}
+.klein.an{color:var(--kerze2); border-color:rgba(242,179,87,.5); background:rgba(242,179,87,.1)}
+.seite .klein.an{color:var(--tinte); border-color:rgba(42,33,24,.55); background:rgba(42,33,24,.1)}
+
 /* ---- Druck ---- */
 @media print{
   .huette{background:#fff; color:#111}
-  .schein,.kopf .kerze,.leiste,.wuerfel,.klein,.abschnittneu,.kartenplatz.leer,.raus,.meldung,.handleiste,.kartenplatz.ablage{display:none !important}
+  .schein,.kopf .kerze,.leiste,.wuerfel,.klein,.abschnittneu,.kartenplatz.leer,.raus,.meldung,.handleiste,.kartenplatz.ablage,.pult{display:none !important}
   .kopf{border-color:#ccc; padding:0 0 12px}
   .kopf h1{color:#111; text-shadow:none}
   .blatt.einzeln .abschnitt{display:none}
