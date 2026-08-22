@@ -84,7 +84,7 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 }
 
 // ---------- eine Karte ----------
-function Karte({ karte, bildUrl, onText, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
+function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
                 inHand, onDragStart, onDragOver, onDrop, ziehend }) {
   const feld = useRef(null);
   return (
@@ -106,6 +106,8 @@ function Karte({ karte, bildUrl, onText, onBild, onDrehen, onWeg, onDoppeln, onS
         </div>
 
         <div className="seite bild">
+          <input className="kartentitel" value={karte.titel || ""} placeholder="beschriftung"
+            onChange={(e) => onTitel(e.target.value)} />
           {bildUrl
             ? <img src={bildUrl} alt="" />
             : <button className="bildleer" onClick={() => feld.current && feld.current.click()}>
@@ -150,6 +152,16 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     }, 2000);
   };
 
+  // beschriftung auf der bildseite
+  const setTitel2 = (ai, ki, wert) => {
+    const k = projekt.abschnitte[ai].karten[ki];
+    aendere((p) => { p.abschnitte[ai].karten[ki].titel = wert; });
+    clearTimeout(uhren.current["t" + k.id]);
+    uhren.current["t" + k.id] = setTimeout(() => {
+      api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { titel: wert }).catch(() => {});
+    }, 1200);
+  };
+
   const drehen = (ai, ki) => {
     const k = projekt.abschnitte[ai].karten[ki];
     const neu = !k.gedreht;
@@ -158,36 +170,39 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     if (neu && k.bild) holBild(k.bild);
   };
 
-  const karteZu = (ai) => {
+  const karteZu = (ai, pos) => {
     const a = projekt.abschnitte[ai];
-    const neu = { id: neueId(), abschnitt_id: a.id, text: "", bild: null, gedreht: false, pos: a.karten.length };
-    aendere((p) => { p.abschnitte[ai].karten.push(neu); });
+    const platz = pos != null ? pos : (a.karten.length ? Math.max(...a.karten.map((k) => k.pos)) + 1 : 0);
+    const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null, gedreht: false, pos: platz };
+    aendere((p) => { p.abschnitte[ai].karten = [...p.abschnitte[ai].karten, neu].sort((x, y) => x.pos - y.pos); });
     api("POST", "/rest/v1/karten", neu).catch((e) => sag(String(e.message)));
   };
 
   // eine Karte doppeln — landet gleich daneben
-  const karteDoppeln = (ai, ki) => {
-    const k = projekt.abschnitte[ai].karten[ki];
-    const neu = { id: neueId(), abschnitt_id: k.abschnitt_id, text: k.text, bild: k.bild,
-      gedreht: false, pos: ki + 1 };
-    aendere((p) => { p.abschnitte[ai].karten.splice(ki + 1, 0, neu); });
-    api("POST", "/rest/v1/karten", neu)
-      .then(() => posSchreiben(projekt.abschnitte[ai].karten, projekt.abschnitte[ai].id))
-      .catch((e) => sag(String(e.message)));
+  const karteDoppeln = (ai, k) => {
+    const a = projekt.abschnitte[ai];
+    const belegt = new Set(a.karten.map((x) => x.pos));
+    let platz = k.pos + 1;
+    while (belegt.has(platz)) platz++;          // erster freier platz dahinter
+    const neu = { id: neueId(), abschnitt_id: a.id, text: k.text, titel: k.titel || "",
+      bild: k.bild, gedreht: false, pos: platz };
+    aendere((p) => { p.abschnitte[ai].karten = [...p.abschnitte[ai].karten, neu].sort((x, y) => x.pos - y.pos); });
+    api("POST", "/rest/v1/karten", neu).catch((e) => sag(String(e.message)));
     if (k.bild) holBild(k.bild);
   };
 
   // in die Hand nehmen — wie eine echte Karte, die man hochhebt
-  const schneiden = (ai, ki) => {
-    const k = projekt.abschnitte[ai].karten[ki];
-    setHand((h) => (h && h.id === k.id ? null : { id: k.id, name: (k.text || "").trim().slice(0, 40) }));
+  const schneiden = (k) => {
+    setHand((h) => (h && h.id === k.id
+      ? null
+      : { id: k.id, name: (k.titel || k.text || "").trim().slice(0, 40) }));
   };
 
   // und woanders wieder hinlegen
-  const ablegenAusHand = async (ai) => {
+  const ablegenAusHand = async (ai, pos) => {
     const a = projekt.abschnitte[ai];
     try {
-      await api("PATCH", `/rest/v1/karten?id=eq.${hand.id}`, { abschnitt_id: a.id, pos: a.karten.length });
+      await api("PATCH", `/rest/v1/karten?id=eq.${hand.id}`, { abschnitt_id: a.id, pos });
       setHand(null);
       await laden();
     } catch (e) { sag(String(e.message)); }
@@ -239,11 +254,12 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   };
 
   // Reihenfolge in der Datenbank nachziehen
-  const posSchreiben = (karten, abschnittId) =>
-    Promise.all(karten.map((k, i) =>
-      api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: i, abschnitt_id: abschnittId }).catch(() => {})));
+  // eine Karte auf einen bestimmten Platz setzen
+  const setzePos = (karteId, pos, abschnittId) =>
+    api("PATCH", `/rest/v1/karten?id=eq.${karteId}`, { pos, abschnitt_id: abschnittId }).catch(() => {});
 
-  // A.I.M. — mischen, damit neue Nachbarschaften entstehen
+  // A.I.M. — mischen. Die BELEGTEN Plaetze bleiben, nur die Karten
+  // wechseln untereinander die Fächer. Luecken bleiben Luecken.
   const mischen = (ai) => {
     const a = projekt.abschnitte[ai];
     setMischt(a.id);
@@ -251,51 +267,50 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       let neu = [];
       aendere((p) => {
         const k = p.abschnitte[ai].karten;
-        for (let i = k.length - 1; i > 0; i--) {
+        const plaetze = k.map((x) => x.pos);
+        const gemischt = [...k];
+        for (let i = gemischt.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
-          [k[i], k[j]] = [k[j], k[i]];
+          [gemischt[i], gemischt[j]] = [gemischt[j], gemischt[i]];
         }
-        neu = [...k];
+        gemischt.forEach((x, i) => { x.pos = plaetze[i]; });
+        gemischt.sort((x, y) => x.pos - y.pos);
+        p.abschnitte[ai].karten = gemischt;
+        neu = gemischt.map((x) => ({ id: x.id, pos: x.pos }));
       });
-      posSchreiben(neu, a.id);
+      neu.forEach((x) => setzePos(x.id, x.pos, a.id));
       setTimeout(() => setMischt(null), 420);
     }, 260);
   };
 
-  // alle Abschnitte auf einmal — jeder fuer sich, die Trennstriche bleiben
-  const allesMischen = () => {
-    setMischt("alle");
-    setTimeout(() => {
-      const neue = [];
-      aendere((p) => {
-        p.abschnitte.forEach((a, i) => {
-          const k = a.karten;
-          for (let x = k.length - 1; x > 0; x--) {
-            const y = Math.floor(Math.random() * (x + 1));
-            [k[x], k[y]] = [k[y], k[x]];
-          }
-          neue.push({ id: a.id, karten: [...k] });
-        });
-      });
-      neue.forEach((a) => posSchreiben(a.karten, a.id));
-      setTimeout(() => setMischt(null), 420);
-    }, 260);
-  };
-
-  const ablegen = (zielA, zielK) => {
+  // auf einen Platz ziehen. Ist er frei, wandert die Karte hin.
+  // Liegt dort schon eine, tauschen die beiden die Plaetze.
+  const ablegen = (zielA, zielPos) => {
     if (!zug) return;
-    const vonId = projekt.abschnitte[zug.a].id;
-    const nachId = projekt.abschnitte[zielA].id;
-    let vonKarten = [], nachKarten = [];
+    const vonAb = projekt.abschnitte[zug.a];
+    const nachAb = projekt.abschnitte[zielA];
+    const karte = vonAb.karten.find((k) => k.id === zug.id);
+    if (!karte) { setZug(null); return; }
+    const dort = nachAb.karten.find((k) => k.pos === zielPos);
+    if (dort && dort.id === karte.id) { setZug(null); return; }
+
+    const altePos = karte.pos, alterAb = vonAb.id;
     aendere((p) => {
-      const [karte] = p.abschnitte[zug.a].karten.splice(zug.k, 1);
-      const stelle = (zug.a === zielA && zug.k < zielK) ? zielK - 1 : zielK;
-      p.abschnitte[zielA].karten.splice(stelle, 0, karte);
-      vonKarten = [...p.abschnitte[zug.a].karten];
-      nachKarten = [...p.abschnitte[zielA].karten];
+      const vk = p.abschnitte[zug.a].karten;
+      const nk = p.abschnitte[zielA].karten;
+      const i = vk.findIndex((k) => k.id === karte.id);
+      const [raus] = vk.splice(i, 1);
+      if (dort) {
+        const j = nk.findIndex((k) => k.id === dort.id);
+        nk[j] = { ...dort, pos: altePos };
+        if (zug.a !== zielA) { nk.splice(j, 1); vk.push({ ...dort, pos: altePos }); }
+      }
+      nk.push({ ...raus, pos: zielPos });
+      p.abschnitte[zielA].karten = nk.sort((x, y) => x.pos - y.pos);
+      p.abschnitte[zug.a].karten = vk.sort((x, y) => x.pos - y.pos);
     });
-    posSchreiben(nachKarten, nachId);
-    if (zug.a !== zielA) posSchreiben(vonKarten, vonId);
+    setzePos(karte.id, zielPos, nachAb.id);
+    if (dort) setzePos(dort.id, altePos, alterAb);
     setZug(null);
   };
 
@@ -313,8 +328,6 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             }, 1200);
           }} />
         <span className="fuellung" />
-        <button className="btn" onClick={allesMischen}
-          title="jeden abschnitt für sich mischen — die trennstriche bleiben">⚄ alles mischen</button>
         <label className="schalter">
           <input type="checkbox" checked={mitBild} onChange={(e) => setMitBild(e.target.checked)} />
           bilder mitdrucken
@@ -325,7 +338,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       <div className={"blatt" + (mitBild && !nurDieser ? "" : " ohnebild") + (nurDieser ? " einzeln" : "")}>
         {projekt.abschnitte.map((a, ai) => (
           <section key={a.id}
-            className={"abschnitt" + (mischt === a.id || mischt === "alle" ? " mischt" : "") + (nurDieser === a.id ? " gedruckt" : "")}>
+            className={"abschnitt" + (mischt === a.id ? " mischt" : "") + (nurDieser === a.id ? " gedruckt" : "")}>
 
             <div className="trennstrich">
               <input className="strichtitel" value={a.titel} onChange={(e) => setTitel(ai, e.target.value)} />
@@ -341,32 +354,45 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               <button className="klein weg" onClick={() => abschnittWeg(ai)} title="abschnitt entfernen">✕</button>
             </div>
 
+            {/* eine reihe aus PLAETZEN. luecken duerfen bleiben —
+                eine karte darf auf platz drei liegen, auch wenn eins und zwei leer sind. */}
             <div className="reihe">
-              {a.karten.map((k, ki) => (
-                <Karte key={k.id} karte={k} bildUrl={k.bild ? bilder[k.bild] : null}
-                  ziehend={zug && zug.a === ai && zug.k === ki}
-                  onDragStart={() => setZug({ a: ai, k: ki })}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => { e.preventDefault(); ablegen(ai, ki); }}
-                  onText={(v) => setText(ai, ki, v)}
-                  onBild={(f) => setBild(ai, ki, f)}
-                  onDrehen={() => drehen(ai, ki)}
-                  onDoppeln={() => karteDoppeln(ai, ki)}
-                  onSchneiden={() => schneiden(ai, ki)}
-                  inHand={hand && hand.id === k.id}
-                  onWeg={() => karteWeg(ai, ki)} />
-              ))}
-              {hand && (
-                <button className="kartenplatz ablage" onClick={() => ablegenAusHand(ai)}
-                  title="karte aus der hand hier ablegen">
-                  <span>✋</span><small>hier ablegen</small>
-                </button>
-              )}
-              <button className="kartenplatz leer" onClick={() => karteZu(ai)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={(e) => { e.preventDefault(); ablegen(ai, a.karten.length); }}>
-                <span>+</span>
-              </button>
+              {(() => {
+                const belegt = new Map(a.karten.map((k) => [k.pos, k]));
+                const hoechste = a.karten.length ? Math.max(...a.karten.map((k) => k.pos)) : -1;
+                const anzahl = Math.max(hoechste + 2, 4);
+                return Array.from({ length: anzahl }, (_, pos) => {
+                  const k = belegt.get(pos);
+                  if (k) {
+                    const ki = a.karten.findIndex((x) => x.id === k.id);
+                    return (
+                      <Karte key={k.id} karte={k} bildUrl={k.bild ? bilder[k.bild] : null}
+                        ziehend={zug && zug.id === k.id}
+                        onDragStart={() => setZug({ a: ai, id: k.id })}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={(e) => { e.preventDefault(); ablegen(ai, pos); }}
+                        onText={(v) => setText(ai, ki, v)}
+                        onTitel={(v) => setTitel2(ai, ki, v)}
+                        onBild={(f) => setBild(ai, ki, f)}
+                        onDrehen={() => drehen(ai, ki)}
+                        onDoppeln={() => karteDoppeln(ai, k)}
+                        onSchneiden={() => schneiden(k)}
+                        inHand={hand && hand.id === k.id}
+                        onWeg={() => karteWeg(ai, ki)} />
+                    );
+                  }
+                  return (
+                    <button key={"leer" + pos}
+                      className={"kartenplatz leer" + (hand ? " ablage" : "")}
+                      title={hand ? "karte aus der hand hier ablegen" : "hier eine karte anlegen"}
+                      onClick={() => (hand ? ablegenAusHand(ai, pos) : karteZu(ai, pos))}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => { e.preventDefault(); ablegen(ai, pos); }}>
+                      <span>{hand ? "✋" : "+"}</span>
+                    </button>
+                  );
+                });
+              })()}
             </div>
           </section>
         ))}
@@ -838,6 +864,13 @@ function Stil() {
 .seite.text textarea:focus{outline:none}
 .seite.text textarea::placeholder{color:rgba(42,33,24,.3)}
 .seite.bild{transform:rotateY(180deg); background:linear-gradient(155deg, #241d15, #171208)}
+.kartentitel{
+  flex:0 0 auto; font-family:'IM Fell English SC', Georgia, serif; font-size:12px; letter-spacing:.05em;
+  color:var(--kerze2); background:transparent; border:0;
+  border-bottom:1px solid rgba(168,135,79,.22); padding:8px 10px; width:100%;
+}
+.kartentitel:focus{outline:none; border-bottom-color:rgba(242,179,87,.5)}
+.kartentitel::placeholder{color:var(--nebel); font-style:italic}
 .seite.bild img{width:100%; flex:1; object-fit:cover; min-height:0}
 .bildleer{
   flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;
@@ -859,15 +892,10 @@ function Stil() {
 /* ---- hand: karte ausgeschnitten und woanders ablegen ---- */
 .kartenplatz.inhand .karte{opacity:.42; filter:saturate(.5)}
 .kartenplatz.inhand .seite{border-style:dashed; box-shadow:none}
-.kartenplatz.ablage{
-  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;
-  height:268px; border:1px dashed rgba(242,179,87,.55); border-radius:4px;
-  background:rgba(242,179,87,.06); color:var(--kerze2); font-family:inherit; cursor:pointer;
-  transition:.15s;
+.kartenplatz.leer.ablage{
+  border-color:rgba(242,179,87,.55); background:rgba(242,179,87,.06); color:var(--kerze2);
 }
-.kartenplatz.ablage span{font-size:24px}
-.kartenplatz.ablage small{font-size:10px; letter-spacing:.1em; color:var(--messing)}
-.kartenplatz.ablage:hover{background:rgba(242,179,87,.14); box-shadow:0 0 20px rgba(242,179,87,.2)}
+.kartenplatz.leer.ablage:hover{background:rgba(242,179,87,.14); box-shadow:0 0 20px rgba(242,179,87,.2)}
 .handleiste{
   position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:6;
   display:flex; align-items:center; gap:10px; padding:9px 14px; border-radius:4px;
