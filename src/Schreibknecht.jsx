@@ -87,9 +87,27 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
                 inHand, onDragStart, onDragOver, onDrop, ziehend }) {
   const feld = useRef(null);
+
+  // Der Browser macht sonst einen halbdurchsichtigen Abzug der Karte —
+  // und erwischt dabei die im Raum gedrehte Rueckseite, also spiegelverkehrt.
+  // Darum haengen wir ihm ein eigenes, lesbares Schildchen unter die Maus.
+  const zieh = (e) => {
+    try {
+      const geist = document.createElement("div");
+      geist.className = "ziehgeist";
+      geist.textContent = (karte.titel || karte.text || "").trim().slice(0, 70) || "karte";
+      document.body.appendChild(geist);
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", karte.id);
+      e.dataTransfer.setDragImage(geist, 24, 18);
+      setTimeout(() => geist.remove(), 0);
+    } catch {}
+    onDragStart();
+  };
+
   return (
     <div className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")}
-      draggable onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop}>
+      draggable onDragStart={zieh} onDragOver={onDragOver} onDrop={onDrop}>
       <div className={"karte" + (karte.gedreht ? " um" : "")}>
 
         <div className="seite text">
@@ -838,6 +856,16 @@ function Stil() {
 /* ---- Karten ---- */
 .reihe{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start}
 .kartenplatz{width:198px; height:268px; perspective:1100px; cursor:grab; flex:0 0 auto}
+/* das schildchen, das an der maus haengt — lesbar und richtigherum */
+.ziehgeist{
+  position:fixed; top:-400px; left:-400px; width:190px; padding:11px 13px;
+  border:1px solid #2a2118; border-radius:4px;
+  background:linear-gradient(155deg,#e6d9bb,#d6c49e); color:#2a2118;
+  font-family:'Courier Prime', ui-monospace, monospace; font-size:12px; line-height:1.45;
+  box-shadow:0 8px 18px rgba(0,0,0,.5);
+  overflow:hidden; max-height:80px;
+}
+
 /* beim ziehen bleibt die karte da — sie hebt sich nur an und bekommt einen rand */
 .kartenplatz.ziehend .karte{transform:scale(.94) rotate(-1.5deg)}
 .kartenplatz.ziehend .karte.um{transform:scale(.94) rotate(-1.5deg) rotateY(180deg)}
