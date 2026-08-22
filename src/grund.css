@@ -1,0 +1,4 @@
+/* nur das noetigste — alles weitere steckt in Schreibknecht.jsx */
+* { margin: 0; padding: 0; }
+html, body, #wurzel { min-height: 100%; background: #0b0907; }
+body { -webkit-font-smoothing: antialiased; }
