@@ -9,6 +9,39 @@ const URL_DB = "https://nafscbugauslcajtwixl.supabase.co";
 const KEY_DB = "sb_publishable_32DoPNbrEB9ne7Iw-O4Jgg_FzNaLJYw";
 
 const neueId = () => "id" + Math.random().toString(36).slice(2, 10);
+// ============================================================
+// DER VORLESER · nimmt die Stimme, die im Rechner steckt.
+// Play und Pause — und zwar echtes Pausieren, nicht von vorn.
+// Nur im Pult, sonst nirgends.
+// ============================================================
+function machVorleser() {
+  let laeuft = null;
+  return {
+    da: typeof window !== "undefined" && "speechSynthesis" in window,
+    lies(text, beiEnde) {
+      const rede = window.speechSynthesis;
+      rede.cancel();
+      const t = (text || "").trim();
+      if (!t) return false;
+      const spruch = new SpeechSynthesisUtterance(t);
+      spruch.lang = "de-DE";
+      spruch.rate = 0.95;
+      const stimmen = rede.getVoices().filter((v) => v.lang && v.lang.startsWith("de"));
+      if (stimmen.length) spruch.voice = stimmen[0];
+      spruch.onend = () => { laeuft = null; beiEnde && beiEnde(); };
+      spruch.onerror = () => { laeuft = null; beiEnde && beiEnde(); };
+      laeuft = spruch;
+      rede.speak(spruch);
+      return true;
+    },
+    anhalten() { window.speechSynthesis.pause(); },
+    weiter() { window.speechSynthesis.resume(); },
+    aus() { laeuft = null; window.speechSynthesis.cancel(); },
+    redetGerade() { return !!laeuft; },
+  };
+}
+const vorleser = typeof window !== "undefined" ? machVorleser() : { da: false };
+
 // erst nach reihe, dann nach platz — wie man eine auslage liest
 const sortiere = (a, b) => ((a.zeile || 0) - (b.zeile || 0)) || (a.pos - b.pos);
 const zaehle = (t) => (t && t.trim() ? t.trim().split(/\s+/).filter(Boolean).length : 0);
@@ -165,12 +198,29 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const [mischt, setMischt] = useState(null);
   const [nurDieser, setNurDieser] = useState(null);
   const [pult, setPult] = useState([]);   // bis zu zwei karten-ids, gross aufgeschlagen
+  const [liest, setLiest] = useState(null);   // {id, pause} — wer gerade vorgelesen wird
   const uhren = useRef({});
 
   // eine karte aufs pult legen. die dritte schiebt die aelteste runter.
   const aufsPult = (id) => setPult((l) =>
     l.includes(id) ? l.filter((x) => x !== id) : [...l, id].slice(-2));
   const vomPult = (id) => setPult((l) => l.filter((x) => x !== id));
+
+  // vorlesen: play und pause. pause haelt an, wo er ist — nicht von vorn.
+  const vorlesen = (id, text) => {
+    if (liest && liest.id === id) {
+      if (liest.pause) { vorleser.weiter(); setLiest({ id, pause: false }); }
+      else { vorleser.anhalten(); setLiest({ id, pause: true }); }
+      return;
+    }
+    if (!vorleser.lies(text, () => setLiest(null))) return;
+    setLiest({ id, pause: false });
+  };
+  const vorlesenAus = () => { vorleser.aus(); setLiest(null); };
+
+  // beim schliessen des pults hoert er auf
+  useEffect(() => { if (!pult.length && liest) vorlesenAus(); }, [pult.length]); // eslint-disable-line
+  useEffect(() => () => vorleser.aus && vorleser.aus(), []);
 
   // escape schliesst das pult
   useEffect(() => {
@@ -506,7 +556,22 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                   )}
                   <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
                     placeholder="…" onChange={(e) => setText(f.ai, f.ki, e.target.value)} />
-                  <div className="bogenfuss">{zaehle(f.karte.text).toLocaleString("de-DE")} wörter</div>
+                  <div className="bogenfuss">
+                    {vorleser.da && (
+                      <>
+                        <button className="klein" onClick={() => vorlesen(id, f.karte.text)}
+                          disabled={!f.karte.text.trim()}
+                          title={liest && liest.id === id && !liest.pause ? "anhalten" : "vorlesen"}>
+                          {liest && liest.id === id && !liest.pause ? "❚❚" : "▶"}
+                        </button>
+                        {liest && liest.id === id && (
+                          <button className="klein" onClick={vorlesenAus} title="von vorn / aus">■</button>
+                        )}
+                      </>
+                    )}
+                    <span className="fuellung" />
+                    {zaehle(f.karte.text).toLocaleString("de-DE")} wörter
+                  </div>
                 </div>
               );
             })}
@@ -1115,9 +1180,11 @@ function Stil() {
 .bogenfeld:focus{outline:none}
 .bogenfeld::placeholder{color:rgba(42,33,24,.28)}
 .bogenfuss{
+  display:flex; align-items:center; gap:6px;
   padding:8px 14px; border-top:1px solid rgba(42,33,24,.18); background:rgba(0,0,0,.07);
-  font-size:10px; letter-spacing:.06em; color:rgba(42,33,24,.5); text-align:right;
+  font-size:10px; letter-spacing:.06em; color:rgba(42,33,24,.5);
 }
+.bogenfuss .klein:disabled{opacity:.35; cursor:default}
 .klein.an{color:var(--kerze2); border-color:rgba(242,179,87,.5); background:rgba(242,179,87,.1)}
 .seite .klein.an{color:var(--tinte); border-color:rgba(42,33,24,.55); background:rgba(42,33,24,.1)}
 
