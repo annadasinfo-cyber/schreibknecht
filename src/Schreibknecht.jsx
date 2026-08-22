@@ -595,7 +595,15 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren }) {
               <button className="kachel" onClick={() => oeffnen(p.id)}
                 style={{ transform: `rotate(${s.kipp}deg)` }}>
                 <span className="kachelname">{p.name}</span>
-                <span className="kachelzahl">{n} {n === 1 ? "karte" : "karten"}</span>
+                <span className="kachelzeile">
+                  <span>{n} {n === 1 ? "karte" : "karten"}</span>
+                  <span className="kacheldatum">
+                    {p.created_at
+                      ? new Date(p.created_at).toLocaleDateString("de-DE",
+                          { day: "2-digit", month: "2-digit", year: "numeric" })
+                      : ""}
+                  </span>
+                </span>
               </button>
               <button className="kachelkopie" title="projekt kopieren" onClick={() => kopieren(p)}>⧉</button>
               <button className="kachelweg" title="projekt entfernen" onClick={() => weg(p)}>✕</button>
@@ -720,7 +728,8 @@ export default function Schreibknecht() {
   };
 
   const projektAnlegen = async () => {
-    const p = { id: neueId(), name: "ohne titel", zuletzt: new Date().toISOString() };
+    const p = { id: neueId(), name: "ohne titel",
+      zuletzt: new Date().toISOString(), created_at: new Date().toISOString() };
     const a = { id: neueId(), projekt_id: p.id, titel: "erster abschnitt", pos: 0 };
     setProjekte((l) => [{ ...p, abschnitte: [{ ...a, karten: [] }] }, ...l]);
     setOffen(p.id);
@@ -734,7 +743,8 @@ export default function Schreibknecht() {
   const projektKopieren = async (p) => {
     try {
       setMsg("wird kopiert …");
-      const neuP = { id: neueId(), name: p.name + " (kopie)", zuletzt: new Date().toISOString() };
+      const neuP = { id: neueId(), name: p.name + " (kopie)",
+        zuletzt: new Date().toISOString(), created_at: new Date().toISOString() };
       await api("POST", "/rest/v1/projekte", neuP);
       for (let i = 0; i < p.abschnitte.length; i++) {
         const a = p.abschnitte[i];
@@ -958,7 +968,11 @@ function Stil() {
 .kachelhuelle:hover .kachelweg{opacity:1}
 .kachelweg:hover{color:#e08070; border-color:rgba(141,50,38,.7)}
 .kachelname{font-family:'IM Fell English SC', Georgia, serif; font-size:19px; letter-spacing:.03em; color:var(--kerze2)}
-.kachelzahl{font-size:11px; color:var(--nebel); letter-spacing:.08em}
+.kachelzeile{
+  display:flex; align-items:baseline; gap:10px;
+  font-size:11px; color:var(--nebel); letter-spacing:.08em;
+}
+.kacheldatum{margin-left:auto; font-size:10px; opacity:.75; white-space:nowrap}
 .kachel.neu{
   width:96px; min-height:96px; align-items:center; justify-content:center;
   border-style:dashed; background:transparent;
