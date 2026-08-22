@@ -106,8 +106,6 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
         </div>
 
         <div className="seite bild">
-          <input className="kartentitel" value={karte.titel || ""} placeholder="beschriftung"
-            onChange={(e) => onTitel(e.target.value)} />
           {bildUrl
             ? <img src={bildUrl} alt="" />
             : <button className="bildleer" onClick={() => feld.current && feld.current.click()}>
@@ -118,7 +116,8 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
             onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) onBild(f); e.target.value = ""; }} />
           <div className="fuss">
             {karte.bild && <button className="klein" onClick={() => onBild(null)} title="bild entfernen">⌫</button>}
-            <span className="fuellung" />
+            <input className="kartentitel" value={karte.titel || ""} placeholder="beschriftung"
+              onChange={(e) => onTitel(e.target.value)} />
             <button className="klein" onClick={onDrehen} title="umdrehen">↻</button>
           </div>
         </div>
@@ -839,7 +838,12 @@ function Stil() {
 /* ---- Karten ---- */
 .reihe{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start}
 .kartenplatz{width:198px; height:268px; perspective:1100px; cursor:grab; flex:0 0 auto}
-.kartenplatz.ziehend{opacity:.35}
+/* beim ziehen bleibt die karte da — sie hebt sich nur an und bekommt einen rand */
+.kartenplatz.ziehend .karte{transform:scale(.94) rotate(-1.5deg)}
+.kartenplatz.ziehend .karte.um{transform:scale(.94) rotate(-1.5deg) rotateY(180deg)}
+.kartenplatz.ziehend .seite{
+  border-color:var(--kerze); box-shadow:0 14px 30px rgba(0,0,0,.65), 0 0 22px rgba(242,179,87,.4);
+}
 .kartenplatz:active{cursor:grabbing}
 .karte{
   position:relative; width:100%; height:100%; transform-style:preserve-3d;
@@ -865,12 +869,11 @@ function Stil() {
 .seite.text textarea::placeholder{color:rgba(42,33,24,.3)}
 .seite.bild{transform:rotateY(180deg); background:linear-gradient(155deg, #241d15, #171208)}
 .kartentitel{
-  flex:0 0 auto; font-family:'IM Fell English SC', Georgia, serif; font-size:12px; letter-spacing:.05em;
-  color:var(--kerze2); background:transparent; border:0;
-  border-bottom:1px solid rgba(168,135,79,.22); padding:8px 10px; width:100%;
+  flex:1; min-width:0; font-family:'IM Fell English SC', Georgia, serif; font-size:11px;
+  letter-spacing:.04em; color:var(--kerze2); background:transparent; border:0; padding:2px 4px;
 }
-.kartentitel:focus{outline:none; border-bottom-color:rgba(242,179,87,.5)}
-.kartentitel::placeholder{color:var(--nebel); font-style:italic}
+.kartentitel:focus{outline:none; background:rgba(242,179,87,.08); border-radius:2px}
+.kartentitel::placeholder{color:var(--nebel); font-style:italic; font-size:10px}
 .seite.bild img{width:100%; flex:1; object-fit:cover; min-height:0}
 .bildleer{
   flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;
