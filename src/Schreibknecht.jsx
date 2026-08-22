@@ -85,7 +85,7 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 
 // ---------- eine Karte ----------
 function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
-                inHand, onDragStart, onDragOver, onDrop, ziehend }) {
+                inHand, onDragStart, onDragEnd, onDragOver, onDrop, ziehend }) {
   const feld = useRef(null);
 
   // Der Browser macht sonst einen halbdurchsichtigen Abzug der Karte —
@@ -93,13 +93,21 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
   // Darum haengen wir ihm ein eigenes, lesbares Schildchen unter die Maus.
   const zieh = (e) => {
     try {
+      // eine echte Karte in voller Groesse haengt am Zeiger, genau an der
+      // Stelle, wo man sie angefasst hat — der Platz darunter wird leer.
+      const kasten = e.currentTarget.getBoundingClientRect();
       const geist = document.createElement("div");
       geist.className = "ziehgeist";
-      geist.textContent = (karte.titel || karte.text || "").trim().slice(0, 70) || "karte";
+      const kopf = document.createElement("b");
+      kopf.textContent = karte.titel || "";
+      const leib = document.createElement("span");
+      leib.textContent = (karte.text || "").trim();
+      if (karte.titel) geist.appendChild(kopf);
+      geist.appendChild(leib);
       document.body.appendChild(geist);
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", karte.id);
-      e.dataTransfer.setDragImage(geist, 24, 18);
+      e.dataTransfer.setDragImage(geist, e.clientX - kasten.left, e.clientY - kasten.top);
       setTimeout(() => geist.remove(), 0);
     } catch {}
     onDragStart();
@@ -107,7 +115,7 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
 
   return (
     <div className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")}
-      draggable onDragStart={zieh} onDragOver={onDragOver} onDrop={onDrop}>
+      draggable onDragStart={zieh} onDragEnd={onDragEnd} onDragOver={onDragOver} onDrop={onDrop}>
       <div className={"karte" + (karte.gedreht ? " um" : "")}>
 
         <div className="seite text">
@@ -386,6 +394,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                       <Karte key={k.id} karte={k} bildUrl={k.bild ? bilder[k.bild] : null}
                         ziehend={zug && zug.id === k.id}
                         onDragStart={() => setZug({ a: ai, id: k.id })}
+                        onDragEnd={() => setZug(null)}
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => { e.preventDefault(); ablegen(ai, pos); }}
                         onText={(v) => setText(ai, ki, v)}
@@ -857,20 +866,30 @@ function Stil() {
 .reihe{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start}
 .kartenplatz{width:198px; height:268px; perspective:1100px; cursor:grab; flex:0 0 auto}
 /* das schildchen, das an der maus haengt — lesbar und richtigherum */
+/* die karte, die am zeiger haengt — echte groesse, richtigherum lesbar */
 .ziehgeist{
-  position:fixed; top:-400px; left:-400px; width:190px; padding:11px 13px;
-  border:1px solid #2a2118; border-radius:4px;
-  background:linear-gradient(155deg,#e6d9bb,#d6c49e); color:#2a2118;
-  font-family:'Courier Prime', ui-monospace, monospace; font-size:12px; line-height:1.45;
-  box-shadow:0 8px 18px rgba(0,0,0,.5);
-  overflow:hidden; max-height:80px;
+  position:fixed; top:-600px; left:-600px;
+  width:198px; height:268px; padding:14px 13px;
+  display:flex; flex-direction:column; gap:7px;
+  border:1px solid rgba(42,33,24,.55); border-radius:4px;
+  background:
+    repeating-linear-gradient(0deg, rgba(120,95,55,.05) 0 2px, transparent 2px 5px),
+    linear-gradient(155deg,#e6d9bb,#d6c49e);
+  color:#2a2118; overflow:hidden;
+  font-family:'Courier Prime', ui-monospace, monospace; font-size:13px; line-height:1.6;
+  box-shadow:0 16px 34px rgba(0,0,0,.7);
 }
+.ziehgeist b{
+  font-family:'IM Fell English SC', Georgia, serif; font-weight:400; font-size:12px;
+  letter-spacing:.05em; opacity:.7;
+}
+.ziehgeist span{white-space:pre-wrap}
 
-/* beim ziehen bleibt die karte da — sie hebt sich nur an und bekommt einen rand */
-.kartenplatz.ziehend .karte{transform:scale(.94) rotate(-1.5deg)}
-.kartenplatz.ziehend .karte.um{transform:scale(.94) rotate(-1.5deg) rotateY(180deg)}
-.kartenplatz.ziehend .seite{
-  border-color:var(--kerze); box-shadow:0 14px 30px rgba(0,0,0,.65), 0 0 22px rgba(242,179,87,.4);
+/* der platz, von dem die karte kommt, wird leer — wie auf dem tisch */
+.kartenplatz.ziehend .karte{opacity:0; transition:none}
+.kartenplatz.ziehend{
+  border:1px dashed rgba(242,179,87,.45); border-radius:4px;
+  background:rgba(242,179,87,.05);
 }
 .kartenplatz:active{cursor:grabbing}
 .karte{
