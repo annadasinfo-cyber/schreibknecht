@@ -84,10 +84,11 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 }
 
 // ---------- eine Karte ----------
-function Karte({ karte, bildUrl, onText, onBild, onDrehen, onWeg, onDragStart, onDragOver, onDrop, ziehend }) {
+function Karte({ karte, bildUrl, onText, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
+                inHand, onDragStart, onDragOver, onDrop, ziehend }) {
   const feld = useRef(null);
   return (
-    <div className={"kartenplatz" + (ziehend ? " ziehend" : "")}
+    <div className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")}
       draggable onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop}>
       <div className={"karte" + (karte.gedreht ? " um" : "")}>
 
@@ -96,6 +97,9 @@ function Karte({ karte, bildUrl, onText, onBild, onDrehen, onWeg, onDragStart, o
             placeholder="…" spellCheck={false} />
           <div className="fuss">
             <span className="woerter">{zaehle(karte.text) || ""}</span>
+            <button className="klein" onClick={onDoppeln} title="karte doppeln">⧉</button>
+            <button className="klein" onClick={onSchneiden}
+              title={inHand ? "liegt in der hand — nochmal tippen legt sie zurück" : "in die hand nehmen, woanders ablegen"}>✂</button>
             <button className="klein" onClick={onDrehen} title="umdrehen">↻</button>
             <button className="klein weg" onClick={onWeg} title="karte verbrennen">✕</button>
           </div>
@@ -123,7 +127,8 @@ function Karte({ karte, bildUrl, onText, onBild, onDrehen, onWeg, onDragStart, o
 }
 
 // ---------- Projekt-Seite ----------
-function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag }) {
+function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag,
+                       hand, setHand, laden }) {
   const [zug, setZug] = useState(null);
   const [mitBild, setMitBild] = useState(true);
   const [mischt, setMischt] = useState(null);
@@ -158,6 +163,34 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const neu = { id: neueId(), abschnitt_id: a.id, text: "", bild: null, gedreht: false, pos: a.karten.length };
     aendere((p) => { p.abschnitte[ai].karten.push(neu); });
     api("POST", "/rest/v1/karten", neu).catch((e) => sag(String(e.message)));
+  };
+
+  // eine Karte doppeln — landet gleich daneben
+  const karteDoppeln = (ai, ki) => {
+    const k = projekt.abschnitte[ai].karten[ki];
+    const neu = { id: neueId(), abschnitt_id: k.abschnitt_id, text: k.text, bild: k.bild,
+      gedreht: false, pos: ki + 1 };
+    aendere((p) => { p.abschnitte[ai].karten.splice(ki + 1, 0, neu); });
+    api("POST", "/rest/v1/karten", neu)
+      .then(() => posSchreiben(projekt.abschnitte[ai].karten, projekt.abschnitte[ai].id))
+      .catch((e) => sag(String(e.message)));
+    if (k.bild) holBild(k.bild);
+  };
+
+  // in die Hand nehmen — wie eine echte Karte, die man hochhebt
+  const schneiden = (ai, ki) => {
+    const k = projekt.abschnitte[ai].karten[ki];
+    setHand((h) => (h && h.id === k.id ? null : { id: k.id, name: (k.text || "").trim().slice(0, 40) }));
+  };
+
+  // und woanders wieder hinlegen
+  const ablegenAusHand = async (ai) => {
+    const a = projekt.abschnitte[ai];
+    try {
+      await api("PATCH", `/rest/v1/karten?id=eq.${hand.id}`, { abschnitt_id: a.id, pos: a.karten.length });
+      setHand(null);
+      await laden();
+    } catch (e) { sag(String(e.message)); }
   };
 
   const karteWeg = (ai, ki) => {
@@ -229,6 +262,26 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     }, 260);
   };
 
+  // alle Abschnitte auf einmal — jeder fuer sich, die Trennstriche bleiben
+  const allesMischen = () => {
+    setMischt("alle");
+    setTimeout(() => {
+      const neue = [];
+      aendere((p) => {
+        p.abschnitte.forEach((a, i) => {
+          const k = a.karten;
+          for (let x = k.length - 1; x > 0; x--) {
+            const y = Math.floor(Math.random() * (x + 1));
+            [k[x], k[y]] = [k[y], k[x]];
+          }
+          neue.push({ id: a.id, karten: [...k] });
+        });
+      });
+      neue.forEach((a) => posSchreiben(a.karten, a.id));
+      setTimeout(() => setMischt(null), 420);
+    }, 260);
+  };
+
   const ablegen = (zielA, zielK) => {
     if (!zug) return;
     const vonId = projekt.abschnitte[zug.a].id;
@@ -260,6 +313,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             }, 1200);
           }} />
         <span className="fuellung" />
+        <button className="btn" onClick={allesMischen}
+          title="jeden abschnitt für sich mischen — die trennstriche bleiben">⚄ alles mischen</button>
         <label className="schalter">
           <input type="checkbox" checked={mitBild} onChange={(e) => setMitBild(e.target.checked)} />
           bilder mitdrucken
@@ -270,7 +325,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       <div className={"blatt" + (mitBild && !nurDieser ? "" : " ohnebild") + (nurDieser ? " einzeln" : "")}>
         {projekt.abschnitte.map((a, ai) => (
           <section key={a.id}
-            className={"abschnitt" + (mischt === a.id ? " mischt" : "") + (nurDieser === a.id ? " gedruckt" : "")}>
+            className={"abschnitt" + (mischt === a.id || mischt === "alle" ? " mischt" : "") + (nurDieser === a.id ? " gedruckt" : "")}>
 
             <div className="trennstrich">
               <input className="strichtitel" value={a.titel} onChange={(e) => setTitel(ai, e.target.value)} />
@@ -296,8 +351,17 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                   onText={(v) => setText(ai, ki, v)}
                   onBild={(f) => setBild(ai, ki, f)}
                   onDrehen={() => drehen(ai, ki)}
+                  onDoppeln={() => karteDoppeln(ai, ki)}
+                  onSchneiden={() => schneiden(ai, ki)}
+                  inHand={hand && hand.id === k.id}
                   onWeg={() => karteWeg(ai, ki)} />
               ))}
+              {hand && (
+                <button className="kartenplatz ablage" onClick={() => ablegenAusHand(ai)}
+                  title="karte aus der hand hier ablegen">
+                  <span>✋</span><small>hier ablegen</small>
+                </button>
+              )}
               <button className="kartenplatz leer" onClick={() => karteZu(ai)}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={(e) => { e.preventDefault(); ablegen(ai, a.karten.length); }}>
@@ -314,7 +378,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 }
 
 // ---------- Deckblatt ----------
-function Deckblatt({ projekte, anlegen, oeffnen, weg }) {
+function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren }) {
   return (
     <div className="deckblatt">
       <div className="kachelfeld">
@@ -328,6 +392,7 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg }) {
                 <span className="kachelname">{p.name}</span>
                 <span className="kachelzahl">{n} {n === 1 ? "karte" : "karten"}</span>
               </button>
+              <button className="kachelkopie" title="projekt kopieren" onClick={() => kopieren(p)}>⧉</button>
               <button className="kachelweg" title="projekt entfernen" onClick={() => weg(p)}>✕</button>
             </div>
           );
@@ -351,6 +416,7 @@ export default function Schreibknecht() {
   const [bilder, setBilder] = useState({});
   const [msg, setMsg] = useState("");
   const [geladen, setGeladen] = useState(false);
+  const [hand, setHand] = useState(null);   // ausgeschnittene karte, wartet aufs ablegen
   const zuletztUhr = useRef(null);
 
   const abmelden = useCallback(() => {
@@ -376,27 +442,23 @@ export default function Schreibknecht() {
   };
 
   // ---- alles holen ----
-  useEffect(() => {
-    if (!sitzung) return;
-    let fort = false;
-    (async () => {
-      try {
-        const [pr, ab, ka] = await Promise.all([
-          api("GET", "/rest/v1/projekte?select=*&order=zuletzt.desc"),
-          api("GET", "/rest/v1/abschnitte?select=*&order=pos.asc"),
-          api("GET", "/rest/v1/karten?select=*&order=pos.asc"),
-        ]);
-        if (fort) return;
-        setProjekte((pr || []).map((p) => ({
-          ...p,
-          abschnitte: (ab || []).filter((a) => a.projekt_id === p.id)
-            .map((a) => ({ ...a, karten: (ka || []).filter((k) => k.abschnitt_id === a.id) })),
-        })));
-        setGeladen(true);
-      } catch (e) { setMsg(String(e.message)); }
-    })();
-    return () => { fort = true; };
-  }, [sitzung, api]);
+  const laden = useCallback(async () => {
+    try {
+      const [pr, ab, ka] = await Promise.all([
+        api("GET", "/rest/v1/projekte?select=*&order=zuletzt.desc"),
+        api("GET", "/rest/v1/abschnitte?select=*&order=pos.asc"),
+        api("GET", "/rest/v1/karten?select=*&order=pos.asc"),
+      ]);
+      setProjekte((pr || []).map((p) => ({
+        ...p,
+        abschnitte: (ab || []).filter((a) => a.projekt_id === p.id)
+          .map((a) => ({ ...a, karten: (ka || []).filter((k) => k.abschnitt_id === a.id) })),
+      })));
+      setGeladen(true);
+    } catch (e) { setMsg(String(e.message)); }
+  }, [api]);
+
+  useEffect(() => { if (sitzung) laden(); }, [sitzung, laden]);
 
   // ---- Bilder: fuer einen Pfad eine Adresse besorgen ----
   const holBild = useCallback(async (pfad) => {
@@ -463,6 +525,26 @@ export default function Schreibknecht() {
     } catch (e) { setMsg(String(e.message)); }
   };
 
+  // ein Projekt mit allem drin kopieren — neue Kennungen, gleicher Inhalt
+  const projektKopieren = async (p) => {
+    try {
+      setMsg("wird kopiert …");
+      const neuP = { id: neueId(), name: p.name + " (kopie)", zuletzt: new Date().toISOString() };
+      await api("POST", "/rest/v1/projekte", neuP);
+      for (let i = 0; i < p.abschnitte.length; i++) {
+        const a = p.abschnitte[i];
+        const neuA = { id: neueId(), projekt_id: neuP.id, titel: a.titel, pos: i };
+        await api("POST", "/rest/v1/abschnitte", neuA);
+        const karten = a.karten.map((k, n) => ({
+          id: neueId(), abschnitt_id: neuA.id, text: k.text, bild: k.bild, gedreht: false, pos: n,
+        }));
+        if (karten.length) await api("POST", "/rest/v1/karten", karten);
+      }
+      await laden();
+      setMsg("");
+    } catch (e) { setMsg(String(e.message)); }
+  };
+
   const projektWeg = (p) => {
     if (!confirm(`„${p.name}" mit allem drin entfernen?`)) return;
     setProjekte((l) => l.filter((x) => x.id !== p.id));
@@ -503,11 +585,21 @@ export default function Schreibknecht() {
             ? <p className="leerwort">wird geholt …</p>
             : projekt
               ? <ProjektSeite projekt={projekt} api={api} bilder={bilder} holBild={holBild}
-                  hochladen={hochladen} aendere={aendere} zurueck={() => setOffen(null)} sag={setMsg} />
+                  hochladen={hochladen} aendere={aendere} zurueck={() => setOffen(null)} sag={setMsg}
+                  hand={hand} setHand={setHand} laden={laden} />
               : <Deckblatt projekte={projekte} anlegen={projektAnlegen}
-                  oeffnen={setOffen} weg={projektWeg} />}
+                  oeffnen={setOffen} weg={projektWeg} kopieren={projektKopieren} />}
         {msg && <p className="meldung" onClick={() => setMsg("")}>{msg}</p>}
       </main>
+
+      {hand && (
+        <div className="handleiste">
+          <span className="handzeichen">✋</span>
+          <span className="handtext">{hand.name || "leere karte"}</span>
+          <span className="handhinweis">liegt in der hand — in einem abschnitt ablegen</span>
+          <button className="klein" onClick={() => setHand(null)} title="zurücklegen">✕</button>
+        </div>
+      )}
 
       {sitzung && <button className="raus" onClick={abmelden} title="abmelden">⏻</button>}
     </div>
@@ -525,9 +617,10 @@ function Stil() {
   --kerze:#f2b357; --kerze2:#ffdda0; --messing:#a8874f; --nebel:#6f6350;
   position:relative; min-height:100vh; padding:0 0 80px;
   background:
-    radial-gradient(120% 80% at 50% -10%, rgba(242,179,87,.13) 0%, transparent 55%),
-    repeating-linear-gradient(94deg, rgba(0,0,0,.22) 0 3px, transparent 3px 9px),
-    linear-gradient(#14110c, #0b0907);
+    radial-gradient(120% 80% at 50% -10%, rgba(242,179,87,.13) 0%, transparent 58%),
+    radial-gradient(140% 100% at 50% 40%, transparent 40%, rgba(0,0,0,.45) 100%),
+    linear-gradient(#16120d, #0c0a07);
+  background-attachment: fixed;
   color:var(--pergament);
   font-family:'Courier Prime', ui-monospace, monospace;
 }
@@ -763,6 +856,39 @@ function Stil() {
 .seite .klein:hover{color:var(--tinte); border-color:rgba(42,33,24,.5)}
 .seite.bild .klein{border-color:rgba(168,135,79,.25); color:var(--nebel)}
 .seite.bild .klein:hover{color:var(--kerze2)}
+/* ---- hand: karte ausgeschnitten und woanders ablegen ---- */
+.kartenplatz.inhand .karte{opacity:.42; filter:saturate(.5)}
+.kartenplatz.inhand .seite{border-style:dashed; box-shadow:none}
+.kartenplatz.ablage{
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;
+  height:268px; border:1px dashed rgba(242,179,87,.55); border-radius:4px;
+  background:rgba(242,179,87,.06); color:var(--kerze2); font-family:inherit; cursor:pointer;
+  transition:.15s;
+}
+.kartenplatz.ablage span{font-size:24px}
+.kartenplatz.ablage small{font-size:10px; letter-spacing:.1em; color:var(--messing)}
+.kartenplatz.ablage:hover{background:rgba(242,179,87,.14); box-shadow:0 0 20px rgba(242,179,87,.2)}
+.handleiste{
+  position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:6;
+  display:flex; align-items:center; gap:10px; padding:9px 14px; border-radius:4px;
+  border:1px solid rgba(242,179,87,.45); background:rgba(20,17,12,.94);
+  box-shadow:0 8px 26px rgba(0,0,0,.6); max-width:min(560px,92vw);
+}
+.handzeichen{font-size:15px}
+.handtext{
+  font-family:'IM Fell English', Georgia, serif; font-style:italic; font-size:13px;
+  color:var(--kerze2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.handhinweis{font-size:10px; letter-spacing:.06em; color:var(--nebel); white-space:nowrap}
+@media(max-width:640px){.handhinweis{display:none}}
+.kachelkopie{
+  position:absolute; top:-7px; right:19px; width:22px; height:22px; border-radius:50%;
+  border:1px solid rgba(168,135,79,.35); background:#14110c; color:var(--nebel);
+  font-size:10px; cursor:pointer; opacity:0; transition:.15s;
+}
+.kachelhuelle:hover .kachelkopie{opacity:1}
+.kachelkopie:hover{color:var(--kerze2); border-color:rgba(242,179,87,.5)}
+
 .kartenplatz.leer{
   display:flex; align-items:center; justify-content:center; height:268px;
   border:1px dashed rgba(168,135,79,.25); border-radius:4px; background:transparent;
@@ -773,7 +899,7 @@ function Stil() {
 /* ---- Druck ---- */
 @media print{
   .huette{background:#fff; color:#111}
-  .schein,.kopf .kerze,.leiste,.wuerfel,.klein,.abschnittneu,.kartenplatz.leer,.raus,.meldung{display:none !important}
+  .schein,.kopf .kerze,.leiste,.wuerfel,.klein,.abschnittneu,.kartenplatz.leer,.raus,.meldung,.handleiste,.kartenplatz.ablage{display:none !important}
   .kopf{border-color:#ccc; padding:0 0 12px}
   .kopf h1{color:#111; text-shadow:none}
   .blatt.einzeln .abschnitt{display:none}
