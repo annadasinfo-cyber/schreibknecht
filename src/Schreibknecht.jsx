@@ -1176,7 +1176,18 @@ function Stil() {
 .abschnittneu:hover{color:var(--kerze2); border-color:rgba(242,179,87,.4)}
 
 /* ---- Karten ---- */
-.reihe{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start; margin-bottom:14px}
+/* eine reihe ist EINE reihe — sie bricht nicht mehr um, sondern schiebt sich
+   zur seite. sonst sieht eine lange reihe wie zwei aus und beim aufnehmen
+   einer karte springt der umbruch. */
+.reihe{
+  display:flex; flex-wrap:nowrap; gap:14px; align-items:flex-start; margin-bottom:14px;
+  overflow-x:auto; overflow-y:visible; padding-bottom:6px;
+  scrollbar-width:thin; scrollbar-color:rgba(168,135,79,.35) transparent;
+}
+.reihe::-webkit-scrollbar{height:8px}
+.reihe::-webkit-scrollbar-track{background:transparent}
+.reihe::-webkit-scrollbar-thumb{background:rgba(168,135,79,.3); border-radius:4px}
+.reihe:hover::-webkit-scrollbar-thumb{background:rgba(242,179,87,.45)}
 .reihe:last-child{margin-bottom:0}
 /* die reihen ueber und unter — nur da, solange eine karte in der luft ist */
 .reihe.nurluft{opacity:.5; animation:luft .25s ease-out}
@@ -1319,11 +1330,11 @@ function Stil() {
   border:1px dashed rgba(168,135,79,.10); border-radius:12px; background:transparent;
   color:var(--messing); font-size:24px; cursor:pointer; transition:.2s;
 }
-.siegelzeichen{font-size:26px; opacity:0; transition:opacity .2s; filter:grayscale(1) opacity(.8)}
+.siegelzeichen{font-size:30px; opacity:0; transition:opacity .2s; filter:grayscale(1) brightness(1.5)}
 .kartenplatz.leer:hover{border-color:rgba(242,179,87,.4); color:var(--kerze2)}
-.kartenplatz.leer:hover .siegelzeichen{opacity:.55}
+.kartenplatz.leer:hover .siegelzeichen{opacity:.9}
 .reihe.hebt .kartenplatz.leer{border-color:rgba(168,135,79,.35)}
-.reihe.hebt .siegelzeichen{opacity:.28}
+.reihe.hebt .siegelzeichen{opacity:.5}
 
 /* ---- DAS PULT ---- */
 .pult{
@@ -1404,7 +1415,8 @@ function Stil() {
 /* der einfuege-strich zwischen zwei karten nimmt KEINEN platz weg —
    er liegt ueber der luecke, damit sich beim ziehen nichts verschiebt */
 .spalt{
-  flex:0 0 0; width:0; height:0; padding:0; margin:0; border:0; background:transparent;
+  flex:0 0 0; width:0; height:0; padding:0; border:0; background:transparent;
+  margin:0 -7px;                /* hebt den abstand auf, den die reihe sonst dazugibt */
   position:relative; overflow:visible;
 }
 .spalt i{
