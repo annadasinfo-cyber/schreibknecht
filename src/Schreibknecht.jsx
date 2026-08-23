@@ -584,7 +584,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 if (!anzahl) return null;
 
                 return (
-                  <div className={"reihe" + (inZ.length ? "" : " nurluft")} key={"z" + z}>
+                  <div className={"reihe" + (inZ.length ? "" : " nurluft") + (inDerLuft ? " hebt" : "")} key={"z" + z}>
                     {Array.from({ length: anzahl }, (_, pos) => {
                       const k = belegt.get(pos);
                       const marke = `feld:${ai}:${pos}:${z}`;
@@ -625,7 +625,14 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                           data-ziel={marke}
                           title={hand ? "karte aus der hand hier ablegen" : "hier eine karte anlegen"}
                           onClick={() => (hand ? ablegenAusHand(ai, pos, z) : karteZu(ai, pos, z))}>
-                          <span>{hand ? "✋" : "+"}</span>
+                          {hand
+                            ? <span>✋</span>
+                            : <svg className="siegelzeichen" viewBox="0 0 24 24" aria-hidden="true">
+                                <circle cx="12" cy="7.5" r="2.6" />
+                                <circle cx="6.4" cy="12" r="2.1" />
+                                <circle cx="17.6" cy="12" r="2.1" />
+                                <path d="M12 12.4c3.2 0 5 2 5 4.1 0 1.8-1.7 2.9-5 2.9s-5-1.1-5-2.9c0-2.1 1.8-4.1 5-4.1z" />
+                              </svg>}
                         </button>
                       );
                     })}
@@ -1236,7 +1243,17 @@ function Stil() {
 .seite.text textarea{
   flex:1; width:100%; resize:none; border:0; background:transparent; padding:14px 13px 6px;
   font-family:'Courier Prime', monospace; font-size:13px; line-height:1.6; color:var(--tinte);
+  /* damit die maus-geste im kaertchen scrollt und nicht die ganze seite */
+  overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
+  scrollbar-width:thin; scrollbar-color:rgba(42,33,24,.3) transparent;
 }
+.seite.text textarea::-webkit-scrollbar{width:8px}
+.seite.text textarea::-webkit-scrollbar-track{background:transparent}
+.seite.text textarea::-webkit-scrollbar-thumb{
+  background:rgba(42,33,24,.28); border-radius:4px; border:2px solid transparent;
+  background-clip:content-box;
+}
+.seite.text textarea:hover::-webkit-scrollbar-thumb{background:rgba(42,33,24,.45); background-clip:content-box}
 .seite.text textarea:focus{outline:none}
 .seite.text textarea::placeholder{color:rgba(42,33,24,.3)}
 .seite.bild{transform:rotateY(180deg); background:linear-gradient(155deg, #241d15, #171208)}
@@ -1292,12 +1309,20 @@ function Stil() {
 .kachelhuelle:hover .kachelkopie{opacity:1}
 .kachelkopie:hover{color:var(--kerze2); border-color:rgba(242,179,87,.5)}
 
+/* leere faecher halten sich zurueck: in ruhe fast unsichtbar,
+   beim drueberfahren ein siegel, und hell sobald eine karte in der luft ist */
 .kartenplatz.leer{
   display:flex; align-items:center; justify-content:center; height:268px;
-  border:1px dashed rgba(168,135,79,.25); border-radius:12px; background:transparent;
-  color:var(--messing); font-size:24px; cursor:pointer; transition:.15s;
+  border:1px dashed rgba(168,135,79,.10); border-radius:12px; background:transparent;
+  color:var(--messing); font-size:24px; cursor:pointer; transition:.2s;
 }
-.kartenplatz.leer:hover{border-color:rgba(242,179,87,.45); color:var(--kerze2)}
+.siegelzeichen{
+  width:30px; height:30px; fill:currentColor; opacity:0; transition:opacity .2s;
+}
+.kartenplatz.leer:hover{border-color:rgba(242,179,87,.4); color:var(--kerze2)}
+.kartenplatz.leer:hover .siegelzeichen{opacity:.55}
+.reihe.hebt .kartenplatz.leer{border-color:rgba(168,135,79,.3)}
+.reihe.hebt .siegelzeichen{opacity:.28}
 
 /* ---- DAS PULT ---- */
 .pult{
