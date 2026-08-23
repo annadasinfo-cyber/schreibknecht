@@ -62,32 +62,63 @@ const sitzungSchreiben = (s) => {
 
 // Den Zugang verlaengern, statt sich jede stunde neu anmelden zu muessen.
 // Supabase gibt dafuer ein zweites papier mit: den refresh_token.
-async function verlaengern(alt) {
-  if (!alt || !alt.refresh_token) return null;
-  const r = await fetch(URL_DB + "/auth/v1/token?grant_type=refresh_token", {
-    method: "POST",
-    headers: { apikey: KEY_DB, "Content-Type": "application/json" },
-    body: JSON.stringify({ refresh_token: alt.refresh_token }),
-  });
-  if (!r.ok) return null;
-  const neu = await r.json();
-  if (!neu || !neu.access_token) return null;
-  sitzungSchreiben(neu);
-  return neu;
+//
+// WICHTIG: der schein gilt nur EINMAL. beim laden gehen aber drei anfragen
+// gleichzeitig raus — wuerde jede fuer sich verlaengern, verbraucht die erste
+// den schein und die anderen greifen ins leere. darum teilen sich alle
+// dieselbe verlaengerung: laeuft schon eine, warten sie einfach mit.
+let laufendeVerlaengerung = null;
+
+function verlaengern(alt) {
+  if (!alt || !alt.refresh_token) return Promise.resolve(null);
+  if (laufendeVerlaengerung) return laufendeVerlaengerung;
+
+  laufendeVerlaengerung = (async () => {
+    try {
+      const abbruch = new AbortController();
+      const uhr = setTimeout(() => abbruch.abort(), 15000);
+      const r = await fetch(URL_DB + "/auth/v1/token?grant_type=refresh_token", {
+        method: "POST",
+        headers: { apikey: KEY_DB, "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: alt.refresh_token }),
+        signal: abbruch.signal,
+      });
+      clearTimeout(uhr);
+      if (!r.ok) return null;
+      const neu = await r.json();
+      if (!neu || !neu.access_token) return null;
+      sitzungSchreiben(neu);
+      return neu;
+    } catch { return null; }
+    finally { setTimeout(() => { laufendeVerlaengerung = null; }, 0); }
+  })();
+
+  return laufendeVerlaengerung;
 }
 
 // ---------- Sprechen mit der Datenbank ----------
 function machApi(holSitzung, setzeSitzung, abmelden) {
-  const schicken = (methode, pfad, koerper, extra, marke) => fetch(URL_DB + pfad, {
-    method: methode,
-    headers: {
-      apikey: KEY_DB,
-      Authorization: "Bearer " + (marke || KEY_DB),
-      "Content-Type": "application/json",
-      ...extra,
-    },
-    body: koerper === undefined ? undefined : JSON.stringify(koerper),
-  });
+  const schicken = async (methode, pfad, koerper, extra, marke) => {
+    const abbruch = new AbortController();
+    const uhr = setTimeout(() => abbruch.abort(), 20000);
+    try {
+      return await fetch(URL_DB + pfad, {
+        method: methode,
+        headers: {
+          apikey: KEY_DB,
+          Authorization: "Bearer " + (marke || KEY_DB),
+          "Content-Type": "application/json",
+          ...extra,
+        },
+        body: koerper === undefined ? undefined : JSON.stringify(koerper),
+        signal: abbruch.signal,
+      });
+    } catch (e) {
+      throw new Error(e.name === "AbortError"
+        ? "die datenbank antwortet nicht"
+        : (e.message || "keine verbindung"));
+    } finally { clearTimeout(uhr); }
+  };
 
   return async function api(methode, pfad, koerper, extra) {
     let sitzung = holSitzung();
@@ -829,21 +860,32 @@ export default function Schreibknecht() {
 
   const anmelden = async (mail, wort) => {
     setLaeuft(true); setFehler("");
+    // nach 15 sekunden ist schluss — sonst dreht der knopf ewig,
+    // wenn die datenbank gar nicht antwortet
+    const abbruch = new AbortController();
+    const uhr = setTimeout(() => abbruch.abort(), 15000);
     try {
       const r = await fetch(URL_DB + "/auth/v1/token?grant_type=password", {
         method: "POST",
         headers: { apikey: KEY_DB, "Content-Type": "application/json" },
-        body: JSON.stringify({ email: mail, password: wort }),
+        body: JSON.stringify({ email: mail.trim(), password: wort }),
+        signal: abbruch.signal,
       });
       const d = await r.json();
-      if (!r.ok) throw new Error(d.error_description || d.msg || d.message || "geht nicht");
+      if (!r.ok) throw new Error(d.error_description || d.msg || d.message || ("status " + r.status));
       sitzungSchreiben(d); sitzungRef.current = d; setSitzung(d); setGeprueft(true);
-    } catch (e) { setFehler(String(e.message)); }
+    } catch (e) {
+      setFehler(e.name === "AbortError"
+        ? "die datenbank antwortet nicht — schläft sie vielleicht?"
+        : String(e.message));
+    }
+    clearTimeout(uhr);
     setLaeuft(false);
   };
 
   // ---- alles holen ----
   const laden = useCallback(async () => {
+    setMsg("");
     try {
       const [pr, ab, ka] = await Promise.all([
         api("GET", "/rest/v1/projekte?select=*&order=zuletzt.desc"),
@@ -856,7 +898,11 @@ export default function Schreibknecht() {
           .map((a) => ({ ...a, karten: (ka || []).filter((k) => k.abschnitt_id === a.id) })),
       })));
       setGeladen(true);
-    } catch (e) { setMsg(String(e.message)); }
+    } catch (e) {
+      // auch bei einem fehler nicht ewig "wird geholt" stehen lassen
+      setMsg("konnte nicht laden: " + String(e.message));
+      setGeladen(true);
+    }
   }, [api]);
 
   // beim start: ist der zugang abgelaufen, erst verlaengern — dann holen
