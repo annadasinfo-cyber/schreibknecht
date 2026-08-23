@@ -145,7 +145,10 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
       e.dataTransfer.setDragImage(geist, e.clientX - kasten.left, e.clientY - kasten.top);
       setTimeout(() => geist.remove(), 0);
     } catch {}
-    onDragStart();
+    // WICHTIG: der platz darf erst einen wimpernschlag SPAETER leer werden.
+    // verschwindet die karte schon im selben moment, in dem man sie greift,
+    // bricht der browser das ziehen sofort wieder ab.
+    setTimeout(() => onDragStart(), 0);
   };
 
   return (
@@ -1132,7 +1135,11 @@ function Stil() {
 .reihe.nurluft{opacity:.5; animation:luft .25s ease-out}
 .reihe.nurluft .kartenplatz.leer{height:96px}
 @keyframes luft{from{opacity:0; transform:translateY(-6px)}to{opacity:.5; transform:none}}
-.kartenplatz{width:198px; height:268px; perspective:1100px; cursor:grab; flex:0 0 auto}
+.kartenplatz{
+  width:198px; height:268px; perspective:1100px; cursor:grab; flex:0 0 auto;
+  -webkit-user-drag:element; user-select:none;
+}
+.kartenplatz textarea, .kartenplatz input{user-select:text; -webkit-user-drag:none}
 /* das schildchen, das an der maus haengt — lesbar und richtigherum */
 /* die karte, die am zeiger haengt — echte groesse, richtigherum lesbar */
 .ziehgeist{
