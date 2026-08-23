@@ -151,6 +151,7 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
             <button className="klein" onClick={onDrehen} title="umdrehen">↻</button>
           </div>
           <div className="druckkopie" aria-hidden="true">
+            {bildUrl ? <img src={bildUrl} alt="" /> : null}
             {karte.titel ? <b>{karte.titel}</b> : null}{karte.text}
           </div>
         </div>
@@ -571,20 +572,30 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             {(() => {
               const inDerLuft = !!((zug && zug.laeuft) || hand);
               const zeilenDa = a.karten.length ? a.karten.map((k) => k.zeile || 0) : [0];
-              const vonZ = Math.min(...zeilenDa) - (inDerLuft ? 1 : 0);
-              const bisZ = Math.max(...zeilenDa) + (inDerLuft ? 1 : 0);
+              const vonZ = Math.min(...zeilenDa);
+              const bisZ = Math.max(...zeilenDa);
               const reihen = [];
               for (let z = vonZ; z <= bisZ; z++) reihen.push(z);
 
-              return reihen.map((z) => {
+              // die zwei streifen fuer eine NEUE reihe liegen in reserviertem
+              // rand — sie erscheinen nur beim ziehen, verschieben aber nichts.
+              const streifen = inDerLuft ? [
+                <button key="oben" className={"neuezeile oben" + (ziel === `feld:${ai}:0:${vonZ - 1}` ? " angepeilt" : "")}
+                  data-ziel={`feld:${ai}:0:${vonZ - 1}`} title="neue reihe darüber"
+                  onClick={() => hand && ablegenAusHand(ai, 0, vonZ - 1)} />,
+                <button key="unten" className={"neuezeile unten" + (ziel === `feld:${ai}:0:${bisZ + 1}` ? " angepeilt" : "")}
+                  data-ziel={`feld:${ai}:0:${bisZ + 1}`} title="neue reihe darunter"
+                  onClick={() => hand && ablegenAusHand(ai, 0, bisZ + 1)} />,
+              ] : null;
+
+              return [streifen, reihen.map((z) => {
                 const inZ = a.karten.filter((k) => (k.zeile || 0) === z);
                 const belegt = new Map(inZ.map((k) => [k.pos, k]));
                 const hoechste = inZ.length ? Math.max(...inZ.map((k) => k.pos)) : -1;
-                const anzahl = inZ.length ? Math.max(hoechste + 2, 4) : (inDerLuft ? 4 : 0);
-                if (!anzahl) return null;
+                const anzahl = Math.max(hoechste + 2, 4);
 
                 return (
-                  <div className={"reihe" + (inZ.length ? "" : " nurluft") + (inDerLuft ? " hebt" : "")} key={"z" + z}>
+                  <div className={"reihe" + (inDerLuft ? " hebt" : "")} key={"z" + z}>
                     {Array.from({ length: anzahl }, (_, pos) => {
                       const k = belegt.get(pos);
                       const marke = `feld:${ai}:${pos}:${z}`;
@@ -625,20 +636,13 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                           data-ziel={marke}
                           title={hand ? "karte aus der hand hier ablegen" : "hier eine karte anlegen"}
                           onClick={() => (hand ? ablegenAusHand(ai, pos, z) : karteZu(ai, pos, z))}>
-                          {hand
-                            ? <span>✋</span>
-                            : <svg className="siegelzeichen" viewBox="0 0 24 24" aria-hidden="true">
-                                <circle cx="12" cy="7.5" r="2.6" />
-                                <circle cx="6.4" cy="12" r="2.1" />
-                                <circle cx="17.6" cy="12" r="2.1" />
-                                <path d="M12 12.4c3.2 0 5 2 5 4.1 0 1.8-1.7 2.9-5 2.9s-5-1.1-5-2.9c0-2.1 1.8-4.1 5-4.1z" />
-                              </svg>}
+                          <span className="siegelzeichen">{hand ? "✋" : "🐾"}</span>
                         </button>
                       );
                     })}
                   </div>
                 );
-              });
+              })];
             })()}
           </section>
         ))}
@@ -1216,7 +1220,6 @@ function Stil() {
 .kartenplatz.leer.angepeilt{
   border-color:var(--kerze); background:rgba(242,179,87,.16); color:var(--kerze2);
 }
-.spalt.an i{background:var(--kerze); width:5px; box-shadow:0 0 14px rgba(242,179,87,.6)}
 
 /* der platz, von dem die karte kommt, wird leer — wie auf dem tisch */
 .kartenplatz.ziehend .karte{opacity:0; transition:none}
@@ -1316,12 +1319,10 @@ function Stil() {
   border:1px dashed rgba(168,135,79,.10); border-radius:12px; background:transparent;
   color:var(--messing); font-size:24px; cursor:pointer; transition:.2s;
 }
-.siegelzeichen{
-  width:30px; height:30px; fill:currentColor; opacity:0; transition:opacity .2s;
-}
+.siegelzeichen{font-size:26px; opacity:0; transition:opacity .2s; filter:grayscale(1) opacity(.8)}
 .kartenplatz.leer:hover{border-color:rgba(242,179,87,.4); color:var(--kerze2)}
 .kartenplatz.leer:hover .siegelzeichen{opacity:.55}
-.reihe.hebt .kartenplatz.leer{border-color:rgba(168,135,79,.3)}
+.reihe.hebt .kartenplatz.leer{border-color:rgba(168,135,79,.35)}
 .reihe.hebt .siegelzeichen{opacity:.28}
 
 /* ---- DAS PULT ---- */
@@ -1400,17 +1401,37 @@ function Stil() {
 }
 .ascheleiste .handzeichen{color:#e08070}
 
-/* die schmale spalte zwischen zwei karten — nur da, wenn was in der luft ist */
+/* der einfuege-strich zwischen zwei karten nimmt KEINEN platz weg —
+   er liegt ueber der luecke, damit sich beim ziehen nichts verschiebt */
 .spalt{
-  flex:0 0 auto; width:20px; height:268px; margin:0 -7px; padding:0; cursor:pointer;
-  background:transparent; border:0; display:flex; align-items:center; justify-content:center;
+  flex:0 0 0; width:0; height:0; padding:0; margin:0; border:0; background:transparent;
+  position:relative; overflow:visible;
 }
 .spalt i{
-  display:block; width:3px; height:70%; border-radius:2px;
-  background:rgba(242,179,87,.28); transition:.15s;
+  position:absolute; top:0; left:-9px; width:18px; height:268px; cursor:pointer;
+  display:block; background:transparent;
 }
-.spalt:hover i{background:var(--kerze); width:5px; box-shadow:0 0 14px rgba(242,179,87,.6)}
-.reihe.nurluft .spalt{height:96px}
+.spalt i::after{
+  content:""; position:absolute; top:12%; left:50%; margin-left:-1.5px;
+  width:3px; height:76%; border-radius:2px; background:rgba(242,179,87,.3); transition:.15s;
+}
+.spalt i:hover::after, .spalt.an i::after{
+  background:var(--kerze); width:5px; margin-left:-2.5px; box-shadow:0 0 14px rgba(242,179,87,.6);
+}
+
+/* die streifen fuer eine neue reihe liegen im reservierten rand des abschnitts */
+.abschnitt{position:relative; padding:15px 0}
+.neuezeile{
+  position:absolute; left:0; right:0; height:13px; padding:0; cursor:pointer;
+  border:1px dashed rgba(242,179,87,.3); border-radius:7px;
+  background:rgba(242,179,87,.05); transition:.15s;
+}
+.neuezeile.oben{top:0}
+.neuezeile.unten{bottom:0}
+.neuezeile:hover, .neuezeile.angepeilt{
+  border-color:var(--kerze); background:rgba(242,179,87,.2);
+  box-shadow:0 0 16px rgba(242,179,87,.3);
+}
 
 /* im druck steht der text vollstaendig da, nicht im abgeschnittenen feld */
 .druckkopie{display:none}
@@ -1442,6 +1463,9 @@ function Stil() {
     font-family:'Courier Prime', monospace; font-size:11pt; line-height:1.5;
   }
   .druckkopie b{display:block; font-weight:700; margin-bottom:5px}
+  .druckkopie img{display:block; max-width:70mm; margin:0 0 8px; border:1px solid #ccc}
+  .blatt.ohnebild .druckkopie img{display:none}
+  .neuezeile{display:none !important}
   .reihe{display:block; margin:0}
   .bogen{border:0; background:none; box-shadow:none; min-height:0}
   .strichtitel{color:#111; border:0; width:auto !important; font-weight:700}
