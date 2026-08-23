@@ -54,23 +54,58 @@ const sitzungLesen = () => {
   try { const r = localStorage.getItem("sk:sitzung"); return r ? JSON.parse(r) : null; } catch { return null; }
 };
 const sitzungSchreiben = (s) => {
+  // wann laeuft der zugang ab? supabase gibt expires_in in sekunden.
+  if (s && !s.expires_at && s.expires_in) s.expires_at = Math.floor(Date.now() / 1000) + s.expires_in;
   sitzungMerk = s;
   try { s ? localStorage.setItem("sk:sitzung", JSON.stringify(s)) : localStorage.removeItem("sk:sitzung"); } catch {}
 };
 
+// Den Zugang verlaengern, statt sich jede stunde neu anmelden zu muessen.
+// Supabase gibt dafuer ein zweites papier mit: den refresh_token.
+async function verlaengern(alt) {
+  if (!alt || !alt.refresh_token) return null;
+  const r = await fetch(URL_DB + "/auth/v1/token?grant_type=refresh_token", {
+    method: "POST",
+    headers: { apikey: KEY_DB, "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: alt.refresh_token }),
+  });
+  if (!r.ok) return null;
+  const neu = await r.json();
+  if (!neu || !neu.access_token) return null;
+  sitzungSchreiben(neu);
+  return neu;
+}
+
 // ---------- Sprechen mit der Datenbank ----------
-function machApi(sitzung, abmelden) {
+function machApi(holSitzung, setzeSitzung, abmelden) {
+  const schicken = (methode, pfad, koerper, extra, marke) => fetch(URL_DB + pfad, {
+    method: methode,
+    headers: {
+      apikey: KEY_DB,
+      Authorization: "Bearer " + (marke || KEY_DB),
+      "Content-Type": "application/json",
+      ...extra,
+    },
+    body: koerper === undefined ? undefined : JSON.stringify(koerper),
+  });
+
   return async function api(methode, pfad, koerper, extra) {
-    const r = await fetch(URL_DB + pfad, {
-      method: methode,
-      headers: {
-        apikey: KEY_DB,
-        Authorization: "Bearer " + (sitzung ? sitzung.access_token : KEY_DB),
-        "Content-Type": "application/json",
-        ...extra,
-      },
-      body: koerper === undefined ? undefined : JSON.stringify(koerper),
-    });
+    let sitzung = holSitzung();
+    // laeuft der zugang gleich ab? dann vorher still verlaengern.
+    if (sitzung && sitzung.expires_at && sitzung.expires_at - 60 < Date.now() / 1000) {
+      const neu = await verlaengern(sitzung);
+      if (neu) { sitzung = neu; setzeSitzung(neu); }
+    }
+    let r = await schicken(methode, pfad, koerper, extra, sitzung && sitzung.access_token);
+
+    // trotzdem abgelaufen? einmal verlaengern und noch einmal versuchen.
+    if (r.status === 401 && sitzung) {
+      const neu = await verlaengern(sitzung);
+      if (neu) {
+        setzeSitzung(neu);
+        r = await schicken(methode, pfad, koerper, extra, neu.access_token);
+      }
+    }
     if (r.status === 401) { abmelden && abmelden(); throw new Error("abgemeldet"); }
     if (!r.ok) throw new Error((await r.text()).slice(0, 200) || ("status " + r.status));
     const t = await r.text();
@@ -523,7 +558,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       <div className="leiste">
         <button className="btn" onClick={zurueck}>‹ alle projekte</button>
         <input className="projektname" value={projekt.name}
-          style={{ width: Math.max(14, (projekt.name || "").length + 2) + "ch" }}
+          style={{ width: Math.max(14, (projekt.name || "").length + 3) + "ch" }}
           onChange={(e) => {
             const v = e.target.value;
             aendere((p) => { p.name = v; });
@@ -547,7 +582,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
             <div className="trennstrich">
               <input className="strichtitel" value={a.titel}
-                style={{ width: Math.max(10, (a.titel || "").length + 2) + "ch" }}
+                style={{ width: Math.max(10, (a.titel || "").length + 3) + "ch" }}
                 onChange={(e) => setTitel(ai, e.target.value)} />
               <span className="abzahl">
                 {a.karten.reduce((x, k) => x + zaehle(k.text), 0).toLocaleString("de-DE")}
@@ -776,14 +811,21 @@ export default function Schreibknecht() {
   const [msg, setMsg] = useState("");
   const [geladen, setGeladen] = useState(false);
   const [hand, setHand] = useState(null);   // ausgeschnittene karte, wartet aufs ablegen
+  const [geprueft, setGeprueft] = useState(false);  // zugang beim start geprueft?
   const zuletztUhr = useRef(null);
 
   const abmelden = useCallback(() => {
-    sitzungSchreiben(null); setSitzung(null); setGeladen(false);
+    sitzungSchreiben(null); setSitzung(null); setGeladen(false); setGeprueft(false);
     setProjekte([]); setOffen(null); setBilder({});
   }, []);
 
-  const api = useCallback(machApi(sitzung, abmelden), [sitzung, abmelden]);
+  // die sitzung liegt zusaetzlich in einer schublade, damit api immer den
+  // AKTUELLEN zugang sieht — auch den gerade verlaengerten
+  const sitzungRef = useRef(sitzung);
+  useEffect(() => { sitzungRef.current = sitzung; }, [sitzung]);
+  const api = useCallback(
+    machApi(() => sitzungRef.current, (neu) => setSitzung(neu), abmelden),
+    [abmelden]);
 
   const anmelden = async (mail, wort) => {
     setLaeuft(true); setFehler("");
@@ -795,7 +837,7 @@ export default function Schreibknecht() {
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error_description || d.msg || d.message || "geht nicht");
-      sitzungSchreiben(d); setSitzung(d);
+      sitzungSchreiben(d); sitzungRef.current = d; setSitzung(d); setGeprueft(true);
     } catch (e) { setFehler(String(e.message)); }
     setLaeuft(false);
   };
@@ -817,7 +859,34 @@ export default function Schreibknecht() {
     } catch (e) { setMsg(String(e.message)); }
   }, [api]);
 
-  useEffect(() => { if (sitzung) laden(); }, [sitzung, laden]);
+  // beim start: ist der zugang abgelaufen, erst verlaengern — dann holen
+  useEffect(() => {
+    if (!sitzung || geprueft) return;
+    (async () => {
+      if (sitzung.expires_at && sitzung.expires_at - 60 < Date.now() / 1000) {
+        const neu = await verlaengern(sitzung);
+        if (neu) { sitzungRef.current = neu; setSitzung(neu); }
+        else { abmelden(); return; }
+      }
+      setGeprueft(true);
+    })();
+  }, [sitzung, geprueft, abmelden]);
+
+  useEffect(() => { if (sitzung && geprueft) laden(); }, [sitzung, geprueft, laden]);
+
+  // und alle zehn minuten still nachschauen, ob er bald ablaeuft
+  useEffect(() => {
+    if (!sitzung) return;
+    const t = setInterval(async () => {
+      const s = sitzungRef.current;
+      if (!s || !s.expires_at) return;
+      if (s.expires_at - 300 < Date.now() / 1000) {
+        const neu = await verlaengern(s);
+        if (neu) { sitzungRef.current = neu; setSitzung(neu); }
+      }
+    }, 600000);
+    return () => clearInterval(t);
+  }, [sitzung]);
 
   // ---- Bilder: fuer einen Pfad eine Adresse besorgen ----
   const holBild = useCallback(async (pfad) => {
@@ -1139,7 +1208,7 @@ function Stil() {
 .projektname{
   font-family:'IM Fell English SC', Georgia, serif; font-size:22px; letter-spacing:.03em;
   color:var(--kerze2); background:transparent; border:0; border-bottom:1px solid transparent;
-  padding:2px 4px; min-width:160px;
+  padding:2px 4px; flex:0 0 auto; max-width:100%;
 }
 .projektname:focus{outline:none; border-bottom-color:rgba(242,179,87,.5)}
 .schalter{display:flex; align-items:center; gap:6px; font-size:11px; color:var(--nebel); cursor:pointer}
@@ -1148,11 +1217,12 @@ function Stil() {
 /* ---- Trennstrich ---- */
 .abschnitt{margin-bottom:34px; transition:opacity .26s}
 .abschnitt.mischt{opacity:.25}
-.trennstrich{display:flex; align-items:center; gap:10px; margin-bottom:14px}
+.trennstrich{display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap}
 .strichtitel{
   font-family:'IM Fell English SC', Georgia, serif; font-size:14px; letter-spacing:.14em;
-  color:var(--messing); background:transparent; padding:3px 8px; width:auto; min-width:60px;
+  color:var(--messing); background:transparent; padding:3px 8px;
   border:1px solid rgba(168,135,79,.25); border-radius:2px;
+  flex:0 0 auto; max-width:100%;   /* sonst quetscht die kopfzeile den titel zusammen */
 }
 .strichtitel:focus{outline:none; color:var(--kerze2); border-color:rgba(242,179,87,.5)}
 .abzahl{font-size:10px; color:var(--nebel); letter-spacing:.06em; flex:0 0 auto}
