@@ -120,42 +120,22 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 
 // ---------- eine Karte ----------
 function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
-                inHand, aufPult, onAufsPult, onDragStart, onDragEnd, onDragOver, onDrop, ziehend }) {
+                inHand, aufPult, onAufsPult, onGriff, ziehend, zielMarke, angepeilt }) {
   const feld = useRef(null);
 
   // Der Browser macht sonst einen halbdurchsichtigen Abzug der Karte —
   // und erwischt dabei die im Raum gedrehte Rueckseite, also spiegelverkehrt.
   // Darum haengen wir ihm ein eigenes, lesbares Schildchen unter die Maus.
-  const zieh = (e) => {
-    try {
-      // eine echte Karte in voller Groesse haengt am Zeiger, genau an der
-      // Stelle, wo man sie angefasst hat — der Platz darunter wird leer.
-      const kasten = e.currentTarget.getBoundingClientRect();
-      const geist = document.createElement("div");
-      geist.className = "ziehgeist";
-      const kopf = document.createElement("b");
-      kopf.textContent = karte.titel || "";
-      const leib = document.createElement("span");
-      leib.textContent = (karte.text || "").trim();
-      if (karte.titel) geist.appendChild(kopf);
-      geist.appendChild(leib);
-      document.body.appendChild(geist);
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", karte.id);
-      e.dataTransfer.setDragImage(geist, e.clientX - kasten.left, e.clientY - kasten.top);
-      setTimeout(() => geist.remove(), 0);
-    } catch {}
-    // WICHTIG: der platz darf erst einen wimpernschlag SPAETER leer werden.
-    // verschwindet die karte schon im selben moment, in dem man sie greift,
-    // bricht der browser das ziehen sofort wieder ab.
-    setTimeout(() => onDragStart(), 0);
-  };
-
   return (
-    <div className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")}
-      draggable onDragStart={zieh} onDragEnd={onDragEnd} onDragOver={onDragOver} onDrop={onDrop}>
+    <div data-ziel={zielMarke}
+      className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")
+        + (angepeilt ? " angepeilt" : "")}>
       <button className="verbrennen" onClick={onWeg}
         title="karte verbrennen">✕</button>
+      {/* die kartenkante — hier packt man an, und die karte folgt dem finger */}
+      <div className="griff" onPointerDown={onGriff} title="karte nehmen und legen">
+        <i /><i /><i />
+      </div>
       <div className={"karte" + (karte.gedreht ? " um" : "")}>
 
         <div className="seite text">
@@ -200,7 +180,59 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
 // ---------- Projekt-Seite ----------
 function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag,
                        hand, setHand, laden }) {
-  const [zug, setZug] = useState(null);
+  const [zug, setZug] = useState(null);      // {ai, id, karte, dx, dy, x, y, laeuft}
+  const [ziel, setZiel] = useState(null);   // worauf gerade gezeigt wird
+  const zugRef = useRef(null);
+  const zielRef = useRef(null);
+
+  // ---- die karte am finger ----
+  // eigene mechanik statt der browser-ziehmechanik: die ist fuers verschieben
+  // von dateien gedacht, ruckelt, laesst nicht aus textfeldern greifen und
+  // kann kein handy. so folgt die karte dem zeiger eins zu eins.
+  const griffAn = (e, ai, k) => {
+    if (e.button != null && e.button !== 0) return;
+    const kasten = e.currentTarget.closest(".kartenplatz").getBoundingClientRect();
+    const z = { ai, id: k.id, karte: k, laeuft: false,
+      dx: e.clientX - kasten.left, dy: e.clientY - kasten.top,
+      x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY };
+    zugRef.current = z;
+    setZug(z);
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+    e.preventDefault();
+  };
+
+  useEffect(() => {
+    const bewegt = (e) => {
+      const z = zugRef.current;
+      if (!z) return;
+      const weit = Math.abs(e.clientX - z.startX) + Math.abs(e.clientY - z.startY);
+      if (!z.laeuft && weit < 5) return;          // erst ab fuenf pixeln zaehlt es
+      z.laeuft = true; z.x = e.clientX; z.y = e.clientY;
+      setZug({ ...z });
+      // was liegt unter dem finger?
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const feld = el && el.closest && el.closest("[data-ziel]");
+      const neuZiel = feld ? feld.getAttribute("data-ziel") : null;
+      if (neuZiel !== zielRef.current) { zielRef.current = neuZiel; setZiel(neuZiel); }
+    };
+    const los = () => {
+      const z = zugRef.current, t = zielRef.current;
+      zugRef.current = null; zielRef.current = null;
+      setZug(null); setZiel(null);
+      if (!z || !z.laeuft || !t) return;
+      const [art, ai, pos, zeile] = t.split(":");
+      if (art === "spalt") dazwischen(Number(ai), Number(pos), Number(zeile), z.id);
+      else legeHin(z, Number(ai), Number(pos), Number(zeile));
+    };
+    window.addEventListener("pointermove", bewegt);
+    window.addEventListener("pointerup", los);
+    window.addEventListener("pointercancel", los);
+    return () => {
+      window.removeEventListener("pointermove", bewegt);
+      window.removeEventListener("pointerup", los);
+      window.removeEventListener("pointercancel", los);
+    };
+  }); // absichtlich bei jedem durchlauf neu — so kennen die zuhoerer den aktuellen stand
   const [mitBild, setMitBild] = useState(true);
   const [mischt, setMischt] = useState(null);
   const [nurDieser, setNurDieser] = useState(null);
@@ -438,34 +470,33 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
   // auf einen Platz ziehen. Ist er frei, wandert die Karte hin.
   // Liegt dort schon eine, tauschen die beiden die Plaetze.
-  const ablegen = (zielA, zielPos, zielZeile) => {
+  const legeHin = (zug, zielA, zielPos, zielZeile) => {
     if (!zug) return;
-    const vonAb = projekt.abschnitte[zug.a];
+    const vonAb = projekt.abschnitte[zug.ai];
     const nachAb = projekt.abschnitte[zielA];
     const karte = vonAb.karten.find((k) => k.id === zug.id);
-    if (!karte) { setZug(null); return; }
+    if (!karte) return;
     const dort = nachAb.karten.find((k) => k.pos === zielPos && (k.zeile || 0) === zielZeile);
-    if (dort && dort.id === karte.id) { setZug(null); return; }
+    if (dort && dort.id === karte.id) return;
 
     const altePos = karte.pos, alteZeile = karte.zeile || 0, alterAb = vonAb.id;
     aendere((p) => {
-      const vk = p.abschnitte[zug.a].karten;
+      const vk = p.abschnitte[zug.ai].karten;
       const nk = p.abschnitte[zielA].karten;
       const i = vk.findIndex((k) => k.id === karte.id);
       const [raus] = vk.splice(i, 1);
       if (dort) {
         const j = nk.findIndex((k) => k.id === dort.id);
         const getauscht = { ...dort, pos: altePos, zeile: alteZeile };
-        if (zug.a !== zielA) { nk.splice(j, 1); vk.push(getauscht); }
+        if (zug.ai !== zielA) { nk.splice(j, 1); vk.push(getauscht); }
         else nk[j] = getauscht;
       }
       nk.push({ ...raus, pos: zielPos, zeile: zielZeile });
       p.abschnitte[zielA].karten = nk.sort(sortiere);
-      p.abschnitte[zug.a].karten = vk.sort(sortiere);
+      p.abschnitte[zug.ai].karten = vk.sort(sortiere);
     });
     setzePos(karte.id, zielPos, zielZeile, nachAb.id);
     if (dort) setzePos(dort.id, altePos, alteZeile, alterAb);
-    setZug(null);
   };
 
   // ZWISCHEN zwei karten schieben: alles ab hier rueckt einen platz weiter,
@@ -483,7 +514,6 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         { abschnitt_id: nachAb.id, pos: zielPos, zeile: zielZeile });
       await laden();
     } catch (e) { sag(String(e.message)); }
-    setZug(null);
     setHand(null);
   };
 
@@ -539,7 +569,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 nur, solange eine karte in der luft ist — sonst waere alles
                 voller platzhalter. */}
             {(() => {
-              const inDerLuft = !!(zug || hand);
+              const inDerLuft = !!((zug && zug.laeuft) || hand);
               const zeilenDa = a.karten.length ? a.karten.map((k) => k.zeile || 0) : [0];
               const vonZ = Math.min(...zeilenDa) - (inDerLuft ? 1 : 0);
               const bisZ = Math.max(...zeilenDa) + (inDerLuft ? 1 : 0);
@@ -557,12 +587,13 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                   <div className={"reihe" + (inZ.length ? "" : " nurluft")} key={"z" + z}>
                     {Array.from({ length: anzahl }, (_, pos) => {
                       const k = belegt.get(pos);
+                      const marke = `feld:${ai}:${pos}:${z}`;
+                      const spaltMarke = `spalt:${ai}:${pos}:${z}`;
                       const spalt = inDerLuft && k ? (
-                        <button key={"sp" + z + "-" + pos} className="spalt"
-                          title="hier dazwischen schieben"
-                          onClick={() => hand && dazwischen(ai, pos, z, hand.id)}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => { e.preventDefault(); zug && dazwischen(ai, pos, z, zug.id); }}>
+                        <button key={"sp" + z + "-" + pos}
+                          className={"spalt" + (ziel === spaltMarke ? " an" : "")}
+                          data-ziel={spaltMarke} title="hier dazwischen schieben"
+                          onClick={() => hand && dazwischen(ai, pos, z, hand.id)}>
                           <i />
                         </button>
                       ) : null;
@@ -572,11 +603,9 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                           <React.Fragment key={k.id}>
                           {spalt}
                           <Karte karte={k} bildUrl={k.bild ? bilder[k.bild] : null}
-                            ziehend={zug && zug.id === k.id}
-                            onDragStart={() => setZug({ a: ai, id: k.id })}
-                            onDragEnd={() => setZug(null)}
-                            onDragOver={(e) => e.preventDefault()}
-                            onDrop={(e) => { e.preventDefault(); ablegen(ai, pos, z); }}
+                            ziehend={zug && zug.laeuft && zug.id === k.id}
+                            zielMarke={marke} angepeilt={ziel === marke}
+                            onGriff={(e) => griffAn(e, ai, k)}
                             onText={(v) => setText(ai, ki, v)}
                             onTitel={(v) => setTitel2(ai, ki, v)}
                             onBild={(f) => setBild(ai, ki, f)}
@@ -592,11 +621,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                       }
                       return (
                         <button key={"leer" + z + "-" + pos}
-                          className={"kartenplatz leer" + (hand ? " ablage" : "")}
+                          className={"kartenplatz leer" + (hand ? " ablage" : "") + (ziel === marke ? " angepeilt" : "")}
+                          data-ziel={marke}
                           title={hand ? "karte aus der hand hier ablegen" : "hier eine karte anlegen"}
-                          onClick={() => (hand ? ablegenAusHand(ai, pos, z) : karteZu(ai, pos, z))}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => { e.preventDefault(); ablegen(ai, pos, z); }}>
+                          onClick={() => (hand ? ablegenAusHand(ai, pos, z) : karteZu(ai, pos, z))}>
                           <span>{hand ? "✋" : "+"}</span>
                         </button>
                       );
@@ -613,6 +641,14 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
       {/* DAS PULT — klappt unter der auslage auf, die karten oben bleiben sichtbar.
           bis zu zwei karten nebeneinander, aus beliebigen abschnitten. */}
+      {/* die karte, die gerade am finger haengt */}
+      {zug && zug.laeuft && (
+        <div className="amfinger" style={{ left: zug.x - zug.dx, top: zug.y - zug.dy }}>
+          {zug.karte.titel ? <b>{zug.karte.titel}</b> : null}
+          <span>{(zug.karte.text || "").trim()}</span>
+        </div>
+      )}
+
       {asche && (
         <div className="ascheleiste">
           <span className="handzeichen">✦</span>
@@ -1135,15 +1171,11 @@ function Stil() {
 .reihe.nurluft{opacity:.5; animation:luft .25s ease-out}
 .reihe.nurluft .kartenplatz.leer{height:96px}
 @keyframes luft{from{opacity:0; transform:translateY(-6px)}to{opacity:.5; transform:none}}
-.kartenplatz{
-  width:198px; height:268px; perspective:1100px; cursor:grab; flex:0 0 auto;
-  -webkit-user-drag:element; user-select:none;
-}
-.kartenplatz textarea, .kartenplatz input{user-select:text; -webkit-user-drag:none}
+.kartenplatz{width:198px; height:268px; perspective:1100px; flex:0 0 auto}
 /* das schildchen, das an der maus haengt — lesbar und richtigherum */
-/* die karte, die am zeiger haengt — echte groesse, richtigherum lesbar */
-.ziehgeist{
-  position:fixed; top:-600px; left:-600px;
+/* die karte, die am finger haengt — folgt dem zeiger eins zu eins */
+.amfinger{
+  position:fixed; z-index:60; pointer-events:none;
   width:198px; height:268px; padding:14px 13px;
   display:flex; flex-direction:column; gap:7px;
   border:1px solid rgba(42,33,24,.55); border-radius:12px;
@@ -1152,13 +1184,32 @@ function Stil() {
     linear-gradient(155deg,#e6d9bb,#d6c49e);
   color:#2a2118; overflow:hidden;
   font-family:'Courier Prime', ui-monospace, monospace; font-size:13px; line-height:1.6;
-  box-shadow:0 16px 34px rgba(0,0,0,.7);
+  box-shadow:0 20px 42px rgba(0,0,0,.75);
+  transform:rotate(-2deg) scale(1.03); transform-origin:50% 20%;
 }
-.ziehgeist b{
+.amfinger b{
   font-family:'IM Fell English SC', Georgia, serif; font-weight:400; font-size:12px;
   letter-spacing:.05em; opacity:.7;
 }
-.ziehgeist span{white-space:pre-wrap}
+.amfinger span{white-space:pre-wrap; overflow:hidden}
+
+/* die kartenkante zum anfassen */
+.griff{
+  position:absolute; top:0; left:0; right:0; height:22px; z-index:2;
+  display:flex; align-items:center; justify-content:center; gap:4px;
+  cursor:grab; touch-action:none; border-radius:12px 12px 0 0;
+  opacity:0; transition:opacity .15s;
+}
+.griff:active{cursor:grabbing}
+.kartenplatz:hover .griff{opacity:1}
+.griff i{width:3px; height:3px; border-radius:50%; background:rgba(42,33,24,.4)}
+.kartenplatz.angepeilt .seite{
+  border-color:var(--kerze); box-shadow:0 0 0 2px rgba(242,179,87,.45), 0 10px 22px rgba(0,0,0,.55);
+}
+.kartenplatz.leer.angepeilt{
+  border-color:var(--kerze); background:rgba(242,179,87,.16); color:var(--kerze2);
+}
+.spalt.an i{background:var(--kerze); width:5px; box-shadow:0 0 14px rgba(242,179,87,.6)}
 
 /* der platz, von dem die karte kommt, wird leer — wie auf dem tisch */
 .kartenplatz.ziehend .karte{opacity:0; transition:none}
@@ -1166,7 +1217,6 @@ function Stil() {
   border:1px dashed rgba(242,179,87,.45); border-radius:12px;
   background:rgba(242,179,87,.05);
 }
-.kartenplatz:active{cursor:grabbing}
 .karte{
   position:relative; width:100%; height:100%; transform-style:preserve-3d;
   transition:transform .55s cubic-bezier(.2,.8,.3,1);
@@ -1359,7 +1409,7 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste{display:none !important}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein{display:none !important}
   .seite.text{background:none; border:0}
   .druckkopie{
