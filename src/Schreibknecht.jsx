@@ -1327,14 +1327,21 @@ function Stil() {
    beim drueberfahren ein siegel, und hell sobald eine karte in der luft ist */
 .kartenplatz.leer{
   display:flex; align-items:center; justify-content:center; height:268px;
-  border:1px dashed rgba(168,135,79,.10); border-radius:12px; background:transparent;
+  border:1px dashed rgba(168,135,79,.16); border-radius:12px; background:transparent;
   color:var(--messing); font-size:24px; cursor:pointer; transition:.2s;
 }
-.siegelzeichen{font-size:30px; opacity:0; transition:opacity .2s; filter:grayscale(1) brightness(1.5)}
+/* die tatze ist immer da, nur leise — und geht beim drueberfahren an */
+.siegelzeichen{
+  font-size:30px; opacity:.2; transition:opacity .2s, filter .2s, transform .2s;
+  filter:grayscale(1) brightness(1.3);
+}
 .kartenplatz.leer:hover{border-color:rgba(242,179,87,.4); color:var(--kerze2)}
-.kartenplatz.leer:hover .siegelzeichen{opacity:.9}
+.kartenplatz.leer:hover .siegelzeichen{
+  opacity:1; filter:grayscale(0) brightness(1.05) drop-shadow(0 0 8px rgba(242,179,87,.5));
+  transform:scale(1.08);
+}
 .reihe.hebt .kartenplatz.leer{border-color:rgba(168,135,79,.35)}
-.reihe.hebt .siegelzeichen{opacity:.5}
+.reihe.hebt .siegelzeichen{opacity:.6; filter:grayscale(.4) brightness(1.2)}
 
 /* ---- DAS PULT ---- */
 .pult{
