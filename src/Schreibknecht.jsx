@@ -151,6 +151,8 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
   return (
     <div className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")}
       draggable onDragStart={zieh} onDragEnd={onDragEnd} onDragOver={onDragOver} onDrop={onDrop}>
+      <button className="verbrennen" onClick={onWeg}
+        title="karte verbrennen">✕</button>
       <div className={"karte" + (karte.gedreht ? " um" : "")}>
 
         <div className="seite text">
@@ -164,7 +166,9 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
             <button className="klein" onClick={onSchneiden}
               title={inHand ? "liegt in der hand — nochmal tippen legt sie zurück" : "in die hand nehmen, woanders ablegen"}>✂</button>
             <button className="klein" onClick={onDrehen} title="umdrehen">↻</button>
-            <button className="klein weg" onClick={onWeg} title="karte verbrennen">✕</button>
+          </div>
+          <div className="druckkopie" aria-hidden="true">
+            {karte.titel ? <b>{karte.titel}</b> : null}{karte.text}
           </div>
         </div>
 
@@ -199,6 +203,14 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const [nurDieser, setNurDieser] = useState(null);
   const [pult, setPult] = useState([]);   // bis zu zwei karten-ids, gross aufgeschlagen
   const [liest, setLiest] = useState(null);   // {id, pause} — wer gerade vorgelesen wird
+  const [asche, setAsche] = useState(null);  // zuletzt verbrannte karte, kurz zurueckholbar
+
+  // die asche kuehlt nach einer halben minute aus
+  useEffect(() => {
+    if (!asche) return;
+    const t = setTimeout(() => setAsche(null), Math.max(0, asche.bis - Date.now()));
+    return () => clearTimeout(t);
+  }, [asche]);
   const uhren = useRef({});
 
   // eine karte aufs pult legen. die dritte schiebt die aelteste runter.
@@ -315,10 +327,27 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     } catch (e) { sag(String(e.message)); }
   };
 
+  // Verbrennen mit Netz: erst fragen, dann 30 sekunden lang zurueckholbar
   const karteWeg = (ai, ki) => {
     const k = projekt.abschnitte[ai].karten[ki];
+    const name = (k.titel || k.text || "").trim().slice(0, 50);
+    const woerter = zaehle(k.text);
+    if (woerter > 3 && !confirm(
+      `„${name || "diese karte"}" verbrennen?\n\n${woerter} wörter gehen dabei weg.`)) return;
     aendere((p) => { p.abschnitte[ai].karten.splice(ki, 1); });
     api("DELETE", `/rest/v1/karten?id=eq.${k.id}`).catch(() => {});
+    setAsche({ karte: { ...k }, bis: Date.now() + 30000 });
+  };
+
+  // die verbrannte karte kommt zurueck, wenn man schnell genug ist
+  const ausDerAsche = async () => {
+    if (!asche) return;
+    const k = asche.karte;
+    setAsche(null);
+    try {
+      await api("POST", "/rest/v1/karten", k);
+      await laden();
+    } catch (e) { sag(String(e.message)); }
   };
 
   const setBild = async (ai, ki, datei) => {
@@ -342,6 +371,20 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const neu = { id: neueId(), projekt_id: projekt.id, titel: "neuer abschnitt", pos: projekt.abschnitte.length };
     aendere((p) => { p.abschnitte.push({ ...neu, karten: [] }); });
     api("POST", "/rest/v1/abschnitte", neu).catch((e) => sag(String(e.message)));
+  };
+
+  // einen trennstrich hoeher oder tiefer legen
+  const abschnittRuecken = (ai, richtung) => {
+    const ziel = ai + richtung;
+    if (ziel < 0 || ziel >= projekt.abschnitte.length) return;
+    const a = projekt.abschnitte[ai], b = projekt.abschnitte[ziel];
+    aendere((p) => {
+      const x = p.abschnitte[ai];
+      p.abschnitte[ai] = { ...p.abschnitte[ziel], pos: ai };
+      p.abschnitte[ziel] = { ...x, pos: ziel };
+    });
+    api("PATCH", `/rest/v1/abschnitte?id=eq.${a.id}`, { pos: ziel }).catch(() => {});
+    api("PATCH", `/rest/v1/abschnitte?id=eq.${b.id}`, { pos: ai }).catch(() => {});
   };
 
   const abschnittWeg = (ai) => {
@@ -422,11 +465,31 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     setZug(null);
   };
 
+  // ZWISCHEN zwei karten schieben: alles ab hier rueckt einen platz weiter,
+  // dann faellt die karte in die entstandene luecke.
+  const dazwischen = async (zielA, zielPos, zielZeile, karteId) => {
+    const nachAb = projekt.abschnitte[zielA];
+    const ruecken = nachAb.karten.filter(
+      (k) => (k.zeile || 0) === zielZeile && k.pos >= zielPos && k.id !== karteId);
+    try {
+      // von hinten nach vorn, damit sich nichts gegenseitig ueberholt
+      for (const k of [...ruecken].sort((x, y) => y.pos - x.pos)) {
+        await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: k.pos + 1 });
+      }
+      await api("PATCH", `/rest/v1/karten?id=eq.${karteId}`,
+        { abschnitt_id: nachAb.id, pos: zielPos, zeile: zielZeile });
+      await laden();
+    } catch (e) { sag(String(e.message)); }
+    setZug(null);
+    setHand(null);
+  };
+
   return (
     <>
       <div className="leiste">
         <button className="btn" onClick={zurueck}>‹ alle projekte</button>
         <input className="projektname" value={projekt.name}
+          style={{ width: Math.max(14, (projekt.name || "").length + 2) + "ch" }}
           onChange={(e) => {
             const v = e.target.value;
             aendere((p) => { p.name = v; });
@@ -449,7 +512,9 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             className={"abschnitt" + (mischt === a.id ? " mischt" : "") + (nurDieser === a.id ? " gedruckt" : "")}>
 
             <div className="trennstrich">
-              <input className="strichtitel" value={a.titel} onChange={(e) => setTitel(ai, e.target.value)} />
+              <input className="strichtitel" value={a.titel}
+                style={{ width: Math.max(10, (a.titel || "").length + 2) + "ch" }}
+                onChange={(e) => setTitel(ai, e.target.value)} />
               <span className="abzahl">
                 {a.karten.reduce((x, k) => x + zaehle(k.text), 0).toLocaleString("de-DE")}
               </span>
@@ -459,6 +524,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               <button className="klein" onClick={() => abschnittDrucken(a.id)}
                 title="nur diesen abschnitt drucken, ohne bilder">⎙</button>
               <button className="klein" onClick={() => karteZu(ai)} title="karte anlegen">+</button>
+              <button className="klein" onClick={() => abschnittRuecken(ai, -1)} disabled={ai === 0}
+                title="abschnitt höher legen">↑</button>
+              <button className="klein" onClick={() => abschnittRuecken(ai, 1)}
+                disabled={ai === projekt.abschnitte.length - 1} title="abschnitt tiefer legen">↓</button>
               <button className="klein weg" onClick={() => abschnittWeg(ai)} title="abschnitt entfernen">✕</button>
             </div>
 
@@ -485,10 +554,21 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                   <div className={"reihe" + (inZ.length ? "" : " nurluft")} key={"z" + z}>
                     {Array.from({ length: anzahl }, (_, pos) => {
                       const k = belegt.get(pos);
+                      const spalt = inDerLuft && k ? (
+                        <button key={"sp" + z + "-" + pos} className="spalt"
+                          title="hier dazwischen schieben"
+                          onClick={() => hand && dazwischen(ai, pos, z, hand.id)}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => { e.preventDefault(); zug && dazwischen(ai, pos, z, zug.id); }}>
+                          <i />
+                        </button>
+                      ) : null;
                       if (k) {
                         const ki = a.karten.findIndex((x) => x.id === k.id);
                         return (
-                          <Karte key={k.id} karte={k} bildUrl={k.bild ? bilder[k.bild] : null}
+                          <React.Fragment key={k.id}>
+                          {spalt}
+                          <Karte karte={k} bildUrl={k.bild ? bilder[k.bild] : null}
                             ziehend={zug && zug.id === k.id}
                             onDragStart={() => setZug({ a: ai, id: k.id })}
                             onDragEnd={() => setZug(null)}
@@ -504,6 +584,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                             aufPult={pult.includes(k.id)}
                             onAufsPult={() => aufsPult(k.id)}
                             onWeg={() => karteWeg(ai, ki)} />
+                          </React.Fragment>
                         );
                       }
                       return (
@@ -529,6 +610,18 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
       {/* DAS PULT — klappt unter der auslage auf, die karten oben bleiben sichtbar.
           bis zu zwei karten nebeneinander, aus beliebigen abschnitten. */}
+      {asche && (
+        <div className="ascheleiste">
+          <span className="handzeichen">✦</span>
+          <span className="handtext">
+            {(asche.karte.titel || asche.karte.text || "eine karte").trim().slice(0, 50)}
+          </span>
+          <span className="handhinweis">verbrannt</span>
+          <button className="btn" onClick={ausDerAsche}>zurückholen</button>
+          <button className="klein" onClick={() => setAsche(null)}>✕</button>
+        </div>
+      )}
+
       {pult.length > 0 && (
         <div className="pult">
           <div className="pultkopf">
@@ -556,6 +649,9 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                   )}
                   <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
                     placeholder="…" onChange={(e) => setText(f.ai, f.ki, e.target.value)} />
+                  <div className="druckkopie" aria-hidden="true">
+                    {f.karte.titel ? <b>{f.karte.titel}</b> : null}{f.karte.text}
+                  </div>
                   <div className="bogenfuss">
                     {vorleser.da && (
                       <>
@@ -1202,6 +1298,49 @@ function Stil() {
 .klein.an{color:var(--kerze2); border-color:rgba(242,179,87,.5); background:rgba(242,179,87,.1)}
 .seite .klein.an{color:var(--tinte); border-color:rgba(42,33,24,.55); background:rgba(42,33,24,.1)}
 
+/* das kreuz zum verbrennen sitzt jetzt OBEN in der ecke, weit weg
+   vom umblaettern — sie hatte sich aus versehen eine karte geloescht */
+.verbrennen{
+  position:absolute; top:-8px; right:-8px; z-index:3; width:24px; height:24px; border-radius:50%;
+  border:1px solid rgba(168,135,79,.4); background:#14110c; color:var(--nebel);
+  font-size:11px; cursor:pointer; opacity:0; transition:.15s;
+}
+.kartenplatz:hover .verbrennen{opacity:1}
+.verbrennen:hover{color:#e08070; border-color:rgba(141,50,38,.75); background:#1d100d}
+.kartenplatz{position:relative}
+
+/* die asche — zurueckholen, solange sie noch warm ist */
+.ascheleiste{
+  position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:7;
+  display:flex; align-items:center; gap:10px; padding:9px 14px; border-radius:4px;
+  border:1px solid rgba(224,128,112,.5); background:rgba(24,14,12,.96);
+  box-shadow:0 8px 26px rgba(0,0,0,.65); max-width:min(560px,92vw);
+}
+.ascheleiste .handzeichen{color:#e08070}
+
+/* die schmale spalte zwischen zwei karten — nur da, wenn was in der luft ist */
+.spalt{
+  flex:0 0 auto; width:20px; height:268px; margin:0 -7px; padding:0; cursor:pointer;
+  background:transparent; border:0; display:flex; align-items:center; justify-content:center;
+}
+.spalt i{
+  display:block; width:3px; height:70%; border-radius:2px;
+  background:rgba(242,179,87,.28); transition:.15s;
+}
+.spalt:hover i{background:var(--kerze); width:5px; box-shadow:0 0 14px rgba(242,179,87,.6)}
+.reihe.nurluft .spalt{height:96px}
+
+/* im druck steht der text vollstaendig da, nicht im abgeschnittenen feld */
+.druckkopie{display:none}
+
+/* am handy: karten schmaler, ziehen geht dort ohnehin nicht — dafuer ✂ und ✋ */
+@media(max-width:560px){
+  .kartenplatz, .kartenplatz.leer{width:100%; max-width:340px}
+  .spalt{width:100%; height:20px; margin:-7px 0}
+  .spalt i{width:70%; height:3px}
+  .reihe{gap:10px}
+}
+
 /* ---- Druck ---- */
 @media print{
   .huette{background:#fff; color:#111}
@@ -1210,12 +1349,21 @@ function Stil() {
   .kopf h1{color:#111; text-shadow:none}
   .blatt.einzeln .abschnitt{display:none}
   .blatt.einzeln .abschnitt.gedruckt{display:block}
-  .kartenplatz{height:auto; page-break-inside:avoid}
-  .karte{transform:none !important}
-  .seite{position:static; box-shadow:none; border-color:#bbb}
-  .seite.bild{display:none}
-  .seite.text textarea{color:#111; height:auto}
-  .strichtitel{color:#111; border:0}
+  .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
+  .karte{transform:none !important; height:auto; transform-style:flat}
+  .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste{display:none !important}
+  .bogenfeld, .bogenfuss, .bogenkopf .klein{display:none !important}
+  .seite.text{background:none; border:0}
+  .druckkopie{
+    display:block; white-space:pre-wrap; color:#111; padding:6px 0 14px;
+    font-family:'Courier Prime', monospace; font-size:11pt; line-height:1.5;
+  }
+  .druckkopie b{display:block; font-weight:700; margin-bottom:5px}
+  .reihe{display:block; margin:0}
+  .bogen{border:0; background:none; box-shadow:none; min-height:0}
+  .strichtitel{color:#111; border:0; width:auto !important; font-weight:700}
+  .abzahl,.linie{display:none}
 }
 `}</style>
   );
