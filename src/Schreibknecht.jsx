@@ -1330,18 +1330,18 @@ function Stil() {
   border:1px dashed rgba(168,135,79,.16); border-radius:12px; background:transparent;
   color:var(--messing); font-size:24px; cursor:pointer; transition:.2s;
 }
-/* die tatze ist immer da, nur leise — und geht beim drueberfahren an */
+/* zwei stufen, keine blasse: die tatze ist immer voll da — und wird
+   noch etwas waermer, sobald eine karte in der luft ist */
 .siegelzeichen{
-  font-size:30px; opacity:.2; transition:opacity .2s, filter .2s, transform .2s;
-  filter:grayscale(1) brightness(1.3);
+  font-size:30px; opacity:1; transition:filter .2s, transform .2s;
+  filter:grayscale(0) brightness(1.05) drop-shadow(0 0 8px rgba(242,179,87,.5));
 }
 .kartenplatz.leer:hover{border-color:rgba(242,179,87,.4); color:var(--kerze2)}
-.kartenplatz.leer:hover .siegelzeichen{
-  opacity:1; filter:grayscale(0) brightness(1.05) drop-shadow(0 0 8px rgba(242,179,87,.5));
-  transform:scale(1.08);
-}
+.kartenplatz.leer:hover .siegelzeichen{transform:scale(1.08)}
 .reihe.hebt .kartenplatz.leer{border-color:rgba(168,135,79,.35)}
-.reihe.hebt .siegelzeichen{opacity:.6; filter:grayscale(.4) brightness(1.2)}
+.reihe.hebt .siegelzeichen{
+  filter:grayscale(0) brightness(1.15) drop-shadow(0 0 14px rgba(242,179,87,.75));
+}
 
 /* ---- DAS PULT ---- */
 .pult{
