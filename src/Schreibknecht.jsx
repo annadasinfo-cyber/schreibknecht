@@ -1191,7 +1191,6 @@ function Stil() {
 .reihe:last-child{margin-bottom:0}
 /* die reihen ueber und unter — nur da, solange eine karte in der luft ist */
 .reihe.nurluft{opacity:.5; animation:luft .25s ease-out}
-.reihe.nurluft .kartenplatz.leer{height:96px}
 @keyframes luft{from{opacity:0; transform:translateY(-6px)}to{opacity:.5; transform:none}}
 .kartenplatz{width:198px; height:268px; perspective:1100px; flex:0 0 auto}
 /* das schildchen, das an der maus haengt — lesbar und richtigherum */
@@ -1298,10 +1297,6 @@ function Stil() {
 /* ---- hand: karte ausgeschnitten und woanders ablegen ---- */
 .kartenplatz.inhand .karte{opacity:.42; filter:saturate(.5)}
 .kartenplatz.inhand .seite{border-style:dashed; box-shadow:none}
-.kartenplatz.leer.ablage{
-  border-color:rgba(242,179,87,.55); background:rgba(242,179,87,.06); color:var(--kerze2);
-}
-.kartenplatz.leer.ablage:hover{background:rgba(242,179,87,.14); box-shadow:0 0 20px rgba(242,179,87,.2)}
 .handleiste{
   position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:6;
   display:flex; align-items:center; gap:10px; padding:9px 14px; border-radius:4px;
@@ -1323,16 +1318,14 @@ function Stil() {
 .kachelhuelle:hover .kachelkopie{opacity:1}
 .kachelkopie:hover{color:var(--kerze2); border-color:rgba(242,179,87,.5)}
 
-/* leere faecher halten sich zurueck: in ruhe fast unsichtbar,
-   beim drueberfahren ein siegel, und hell sobald eine karte in der luft ist */
+/* EIN einziges aussehen fuer leere faecher — kein hover, kein ziehen,
+   keine stufen. so wie es aussieht, so sieht es immer aus. */
 .kartenplatz.leer{
   display:flex; align-items:center; justify-content:center; height:268px;
-  border:1px dashed rgba(168,135,79,.25); border-radius:12px; background:transparent;
-  color:var(--messing); font-size:24px; cursor:pointer; transition:.15s;
+  border:1px dashed rgba(242,179,87,.45); border-radius:12px; background:transparent;
+  color:var(--kerze2); font-size:24px; cursor:pointer;
 }
-/* die tatze steht einfach da, so wie frueher das plus. keine stufen. */
 .siegelzeichen{font-size:30px}
-.kartenplatz.leer:hover{border-color:rgba(242,179,87,.45); color:var(--kerze2)}
 
 
 /* ---- DAS PULT ---- */
