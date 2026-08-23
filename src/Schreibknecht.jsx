@@ -800,15 +800,27 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
 // ---------- Deckblatt ----------
 function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren }) {
+  // der knecht sucht sich jedes mal einen anderen platz zwischen den kacheln
+  const [knechtPlatz] = useState(() => Math.random());
+  const knechtStelle = Math.floor(knechtPlatz * (projekte.length + 1));
+  const knechtKippt = (knechtPlatz * 7 % 5 - 2) * 0.5;
+
+  const knecht = (
+    <img key="knecht" className="knechtkarte" src={KNECHT_BILD} alt=""
+      style={{ transform: `rotate(${knechtKippt}deg)` }} />
+  );
+
   return (
     <div className="deckblatt">
-      <img className="knechtkarte" src={KNECHT_BILD} alt="" />
       <div className="kachelfeld">
-        {projekte.map((p) => {
+        {projekte.length === 0 && knecht}
+        {projekte.map((p, i) => {
           const s = streuung(p.id);
           const n = p.abschnitte.reduce((x, a) => x + a.karten.length, 0);
           return (
-            <div key={p.id} className="kachelhuelle" style={{ width: s.breit, marginTop: s.hoch }}>
+            <React.Fragment key={p.id}>
+            {i === knechtStelle && knecht}
+            <div className="kachelhuelle" style={{ width: s.breit, marginTop: s.hoch }}>
               <button className="kachel" onClick={() => oeffnen(p.id)}
                 style={{ transform: `rotate(${s.kipp}deg)` }}>
                 <span className="kachelname">{p.name}</span>
@@ -825,8 +837,10 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren }) {
               <button className="kachelkopie" title="projekt kopieren" onClick={() => kopieren(p)}>⧉</button>
               <button className="kachelweg" title="projekt entfernen" onClick={() => weg(p)}>✕</button>
             </div>
+            </React.Fragment>
           );
         })}
+        {knechtStelle >= projekte.length && projekte.length > 0 && knecht}
         <button className="kachel neu" onClick={anlegen}><span className="plus">+</span></button>
       </div>
       {!projekte.length && <p className="leerwort">noch nichts. leg ein projekt an.</p>}
@@ -1183,21 +1197,17 @@ function Stil() {
   border:1px solid rgba(168,135,79,.3); border-radius:4px; padding:26px 22px;
   background:rgba(0,0,0,.22);
 }
-/* die karte des knechts — sie liegt links neben den projekten */
+/* der knecht liegt mit zwischen den kacheln — jedes mal woanders */
 .knechtkarte{
-  display:block; flex:0 0 auto; width:180px; border-radius:8px;
-  box-shadow:0 14px 34px rgba(0,0,0,.7), 0 0 26px rgba(242,179,87,.16);
-  animation:knechtein .7s cubic-bezier(.2,.9,.3,1);
+  display:block; flex:0 0 auto; width:150px; align-self:flex-start; border-radius:8px;
+  box-shadow:0 10px 26px rgba(0,0,0,.65), 0 0 22px rgba(242,179,87,.14);
+  transition:transform .18s ease, box-shadow .18s ease;
 }
-@keyframes knechtein{
-  from{opacity:0; transform:translateY(10px) rotate(-2deg) scale(.96)}
-  to{opacity:1; transform:none}
+.knechtkarte:hover{
+  transform:translateY(-3px) rotate(0deg) !important;
+  box-shadow:0 16px 34px rgba(0,0,0,.7), 0 0 30px rgba(242,179,87,.28);
 }
-@media(prefers-reduced-motion:reduce){.knechtkarte{animation:none}}
-@media(max-width:640px){
-  .deckblatt{flex-direction:column; gap:18px}
-  .knechtkarte{width:150px}
-}
+@media(max-width:640px){.knechtkarte{width:120px}}
 
 .pfortentext{
   margin:0 0 6px; font-family:'IM Fell English', Georgia, serif; font-style:italic;
@@ -1225,8 +1235,8 @@ function Stil() {
 }
 
 /* ---- Deckblatt ---- */
-.deckblatt{padding-top:14px; display:flex; align-items:flex-start; gap:26px}
-.kachelfeld{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start; flex:1; min-width:0}
+.deckblatt{padding-top:14px}
+.kachelfeld{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-start}
 .kachelhuelle{position:relative}
 .kachel{
   width:100%; min-height:96px; padding:16px 18px; cursor:pointer; text-align:left;
