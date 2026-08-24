@@ -334,7 +334,7 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 // ---------- eine Karte ----------
 function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
                 inHand, aufPult, onAufsPult, onGriff, onSchloss, ziehend, zielMarke, angepeilt,
-                traegtSpalte }) {
+                traegtSpalte, draufMarke, draufAn }) {
   const zu = !!karte.gesperrt;
   const feld = useRef(null);
 
@@ -347,6 +347,13 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
         + (angepeilt ? " angepeilt" : "")}>
       {!zu && <button className="verbrennen" onClick={onWeg}
         title="karte verbrennen">✕</button>}
+      {/* der streifen ZUM DRAUFLEGEN sitzt direkt ueber der obersten karte
+          einer spalte. er liegt im rand und verschiebt darum nichts. */}
+      {draufMarke && (
+        <button className={"draufleiste" + (draufAn ? " angepeilt" : "")}
+          data-ziel={draufMarke} title="hier oben drauflegen" />
+      )}
+
       {/* die kartenkante — hier packt man an, und die karte folgt dem finger.
           das FUNDAMENT einer spalte traegt alles mit, was darauf steht. */}
       <div className={"griff" + (traegtSpalte ? " fundament" : "")}
@@ -451,6 +458,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       if (!z || !z.laeuft || !t) return;
       const [art, ai, pos, zeile] = t.split(":");
       if (art === "spalt") dazwischen(Number(ai), Number(pos), Number(zeile), z.id);
+      else if (art === "drauf") draufLegen(z, Number(ai), Number(pos));
       else legeHin(z, Number(ai), Number(pos), Number(zeile));
     };
     window.addEventListener("pointermove", bewegt);
@@ -814,6 +822,38 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     if (dort) setzePos(dort.id, altePos, alteZeile, alterAb);
   };
 
+  // OBEN DRAUF: die karte (oder die ganze spalte) legt sich auf die
+  // spalte an dieser stelle — also ort, pov oder gegenstand zur szene.
+  const draufLegen = (zug, zielA, zielPos) => {
+    if (!zug) return;
+    const vonAb = projekt.abschnitte[zug.ai];
+    const nachAb = projekt.abschnitte[zielA];
+    const karte = vonAb.karten.find((k) => k.id === zug.id);
+    if (!karte) return;
+
+    const meine = zug.traegt ? spalteVon(vonAb.karten, karte.pos) : [karte];
+    const meineIds = new Set(meine.map((k) => k.id));
+    const dortSpalte = spalteVon(nachAb.karten, zielPos).filter((k) => !meineIds.has(k.id));
+    if (!dortSpalte.length) return;                       // da liegt nichts, worauf man legen koennte
+    if (zielA === zug.ai && zielPos === karte.pos) return; // liegt schon dort
+
+    // die unterste meiner karten kommt genau ueber die oberste von dort
+    const obenDort = Math.min(...dortSpalte.map((k) => k.zeile || 0));
+    const untenMeine = Math.max(...meine.map((k) => k.zeile || 0));
+    const rutsch = (obenDort - 1) - untenMeine;
+
+    aendere((p) => {
+      const vk = p.abschnitte[zug.ai].karten.filter((k) => !meineIds.has(k.id));
+      const nk = (zug.ai === zielA ? vk : p.abschnitte[zielA].karten)
+        .filter((k) => !meineIds.has(k.id));
+      const gewandert = meine.map((k) => ({ ...k, pos: zielPos, zeile: (k.zeile || 0) + rutsch }));
+      p.abschnitte[zielA].karten = [...nk, ...gewandert].sort(sortiere);
+      if (zug.ai !== zielA) p.abschnitte[zug.ai].karten = vk.sort(sortiere);
+    });
+
+    meine.forEach((k) => setzePos(k.id, zielPos, (k.zeile || 0) + rutsch, nachAb.id));
+  };
+
   // ZWISCHEN zwei karten schieben: alles ab hier rueckt einen platz weiter,
   // dann faellt die karte in die entstandene luecke.
   const dazwischen = async (zielA, zielPos, zielZeile, karteId) => {
@@ -901,18 +941,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               const reihen = [];
               for (let z = vonZ; z <= bisZ; z++) reihen.push(z);
 
-              // die zwei streifen fuer eine NEUE reihe liegen in reserviertem
-              // rand — sie erscheinen nur beim ziehen, verschieben aber nichts.
-              const streifen = inDerLuft ? [
-                <button key="oben" className={"neuezeile oben" + (ziel === `feld:${ai}:0:${vonZ - 1}` ? " angepeilt" : "")}
-                  data-ziel={`feld:${ai}:0:${vonZ - 1}`} title="neue reihe darüber"
-                  onClick={() => hand && ablegenAusHand(ai, 0, vonZ - 1)} />,
-                <button key="unten" className={"neuezeile unten" + (ziel === `feld:${ai}:0:${bisZ + 1}` ? " angepeilt" : "")}
-                  data-ziel={`feld:${ai}:0:${bisZ + 1}`} title="neue reihe darunter"
-                  onClick={() => hand && ablegenAusHand(ai, 0, bisZ + 1)} />,
-              ] : null;
-
-              return [streifen, reihen.map((z) => {
+              return reihen.map((z) => {
                 const inZ = a.karten.filter((k) => (k.zeile || 0) === z);
                 const belegt = new Map(inZ.map((k) => [k.pos, k]));
                 const hoechste = inZ.length ? Math.max(...inZ.map((k) => k.pos)) : -1;
@@ -942,8 +971,14 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                             zielMarke={marke} angepeilt={ziel === marke}
                             onGriff={(e) => griffAn(e, ai, k)}
                             onSchloss={() => schloss(ai, ki)}
-                            traegtSpalte={inZ.length > 0 && spalteVon(a.karten, pos).length > 1
+                            traegtSpalte={spalteVon(a.karten, pos).length > 1
                               && istFundament(a.karten, k)}
+                            draufMarke={inDerLuft
+                              && spalteVon(a.karten, pos)[0].id === k.id
+                              && !(zug && zug.laeuft && zug.ai === ai
+                                   && spalteVon(a.karten, pos).some((x) => x.id === zug.id))
+                              ? `drauf:${ai}:${pos}:0` : null}
+                            draufAn={ziel === `drauf:${ai}:${pos}:0`}
                             onText={(v) => setText(ai, ki, v)}
                             onTitel={(v) => setTitel2(ai, ki, v)}
                             onBild={(f) => setBild(ai, ki, f)}
@@ -969,7 +1004,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                     })}
                   </div>
                 );
-              })];
+              });
             })()}
           </section>
         ))}
@@ -2328,18 +2363,19 @@ function Stil() {
   background:var(--kerze); width:5px; margin-left:-2.5px; box-shadow:0 0 14px rgba(242,179,87,.6);
 }
 
-/* die streifen fuer eine neue reihe liegen im reservierten rand des abschnitts */
 .abschnitt{position:relative; padding:15px 0}
-.neuezeile{
-  position:absolute; left:0; right:0; height:13px; padding:0; cursor:pointer;
-  border:1px dashed rgba(242,179,87,.3); border-radius:7px;
-  background:rgba(242,179,87,.05); transition:.15s;
+
+/* der ablegepunkt oben an einer spalte — er liegt im rand ueber der karte
+   und nimmt darum keinen platz weg */
+.draufleiste{
+  position:absolute; top:-13px; left:10px; right:10px; height:11px; z-index:3;
+  padding:0; cursor:pointer; border-radius:6px;
+  border:1px dashed rgba(224,139,60,.45); background:rgba(224,139,60,.08);
+  transition:.15s;
 }
-.neuezeile.oben{top:0}
-.neuezeile.unten{bottom:0}
-.neuezeile:hover, .neuezeile.angepeilt{
-  border-color:var(--kerze); background:rgba(242,179,87,.2);
-  box-shadow:0 0 16px rgba(242,179,87,.3);
+.draufleiste:hover, .draufleiste.angepeilt{
+  border-color:var(--kerze); background:rgba(224,139,60,.32);
+  box-shadow:0 0 16px rgba(224,139,60,.45); height:14px; top:-15px;
 }
 
 /* im druck steht der text vollstaendig da, nicht im abgeschnittenen feld */
@@ -2374,7 +2410,7 @@ function Stil() {
   .druckkopie b{display:block; font-weight:700; margin-bottom:5px}
   .druckkopie img{display:block; max-width:70mm; margin:0 0 8px; border:1px solid #ccc}
   .blatt.ohnebild .druckkopie img{display:none}
-  .neuezeile{display:none !important}
+  .draufleiste{display:none !important}
   .reihe{display:block; margin:0}
   .bogen{border:0; background:none; box-shadow:none; min-height:0}
   .pult{position:static; max-height:none; padding:0; border:0; background:none; box-shadow:none}
