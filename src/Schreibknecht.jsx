@@ -822,6 +822,29 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     if (dort) setzePos(dort.id, altePos, alteZeile, alterAb);
   };
 
+  // Eine neue karte direkt aus dem pult heraus — sie legt sich gleich
+  // NEBEN die karte, an der man gerade sitzt, und schlaegt sich mit auf.
+  // Zum trennen von altem material und zum einsortieren von recherche.
+  const neueImPult = async () => {
+    const quelle = findeKarte(pult[pult.length - 1]);
+    if (!quelle) return;
+    const a = projekt.abschnitte[quelle.ai];
+    const zeile = quelle.karte.zeile || 0;
+    const stelle = quelle.karte.pos + 1;
+    const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
+      gedreht: false, pos: stelle, zeile };
+    try {
+      // platz machen: alles ab hier rueckt einen weiter — ganze spalten
+      for (const k of a.karten.filter((k) => k.pos >= stelle).sort((x, y) => y.pos - x.pos)) {
+        await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: k.pos + 1 });
+      }
+      await api("POST", "/rest/v1/karten", neu);
+      await laden();
+      setPult((l) => [...l, neu.id].slice(-2));
+      setKlein(false);
+    } catch (e) { sag(String(e.message)); }
+  };
+
   // OBEN DRAUF: die karte (oder die ganze spalte) legt sich auf die
   // spalte an dieser stelle — also ort, pov oder gegenstand zur szene.
   const draufLegen = (zug, zielA, zielPos) => {
@@ -1052,6 +1075,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 : pult.length === 1 ? "eine karte — leg eine zweite dazu" : "zwei karten"}
             </span>
             <span className="fuellung" />
+            <button className="klein" onClick={neueImPult}
+              title="neue karte — sie legt sich neben die offene und schlägt sich auf">+</button>
             <button className="klein" onClick={() => setKlein((k) => !k)}
               title={klein ? "pult aufklappen" : "pult einklappen"}>{klein ? "▲" : "▼"}</button>
             <button className="klein" onClick={() => setPult([])} title="pult schließen · esc">✕</button>
@@ -2082,6 +2107,8 @@ function Stil() {
 }
 .griff:active{cursor:grabbing}
 .kartenplatz:hover .griff{opacity:1}
+/* solange etwas in der luft ist, hat der ablegepunkt vorrang */
+.kartenplatz:has(.draufleiste) .griff{opacity:0}
 .griff i{width:3px; height:3px; border-radius:50%; background:rgba(42,33,24,.4)}
 /* das fundament einer spalte bekommt einen balken statt punkten */
 .griff.fundament{gap:0}
@@ -2327,7 +2354,7 @@ function Stil() {
 /* das kreuz zum verbrennen sitzt jetzt OBEN in der ecke, weit weg
    vom umblaettern — sie hatte sich aus versehen eine karte geloescht */
 .verbrennen{
-  position:absolute; top:-8px; right:-8px; z-index:3; width:24px; height:24px; border-radius:50%;
+  position:absolute; top:4px; right:4px; z-index:5; width:22px; height:22px; border-radius:50%;
   border:1px solid rgba(168,135,79,.4); background:#14110c; color:var(--nebel);
   font-size:11px; cursor:pointer; opacity:0; transition:.15s;
 }
@@ -2365,17 +2392,21 @@ function Stil() {
 
 .abschnitt{position:relative; padding:15px 0}
 
-/* der ablegepunkt oben an einer spalte — er liegt im rand ueber der karte
-   und nimmt darum keinen platz weg */
+/* Der ablegepunkt sitzt AUF der oberen kante der karte, nicht darueber.
+   Die reihe scrollt seitlich, und ein kasten mit seitlichem scrollen
+   schneidet alles ab, was oben herausragt — dort waere er unsichtbar. */
 .draufleiste{
-  position:absolute; top:-13px; left:10px; right:10px; height:11px; z-index:3;
-  padding:0; cursor:pointer; border-radius:6px;
-  border:1px dashed rgba(224,139,60,.45); background:rgba(224,139,60,.08);
+  position:absolute; top:3px; left:8px; right:8px; height:16px; z-index:4;
+  padding:0; cursor:pointer; border-radius:8px;
+  border:1px dashed rgba(224,139,60,.6);
+  background:linear-gradient(rgba(224,139,60,.28), rgba(224,139,60,.1));
+  box-shadow:0 2px 10px rgba(0,0,0,.5);
   transition:.15s;
 }
 .draufleiste:hover, .draufleiste.angepeilt{
-  border-color:var(--kerze); background:rgba(224,139,60,.32);
-  box-shadow:0 0 16px rgba(224,139,60,.45); height:14px; top:-15px;
+  border-color:var(--kerze2); height:22px;
+  background:linear-gradient(rgba(255,215,154,.55), rgba(224,139,60,.35));
+  box-shadow:0 0 20px rgba(224,139,60,.7);
 }
 
 /* im druck steht der text vollstaendig da, nicht im abgeschnittenen feld */
