@@ -179,6 +179,18 @@ function Funken() {
 
 // erst nach reihe, dann nach platz — wie man eine auslage liest
 const sortiere = (a, b) => ((a.zeile || 0) - (b.zeile || 0)) || (a.pos - b.pos);
+
+// Eine SPALTE ist alles, was auf demselben platz uebereinanderliegt:
+// unten die szene, darueber ort, pov, gegenstand. Sie gehoert zusammen
+// und wandert zusammen.
+const spalteVon = (karten, pos) =>
+  karten.filter((k) => k.pos === pos).sort((a, b) => (a.zeile || 0) - (b.zeile || 0));
+
+// die UNTERSTE karte ist das fundament — sie traegt die spalte
+const istFundament = (karten, k) => {
+  const sp = spalteVon(karten, k.pos);
+  return sp.length > 0 && sp[sp.length - 1].id === k.id;
+};
 const zaehle = (t) => (t && t.trim() ? t.trim().split(/\s+/).filter(Boolean).length : 0);
 
 // Anmeldung merken, wo es geht. In der Vorschau gibt es keinen Speicher —
@@ -321,7 +333,8 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 
 // ---------- eine Karte ----------
 function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
-                inHand, aufPult, onAufsPult, onGriff, onSchloss, ziehend, zielMarke, angepeilt }) {
+                inHand, aufPult, onAufsPult, onGriff, onSchloss, ziehend, zielMarke, angepeilt,
+                traegtSpalte }) {
   const zu = !!karte.gesperrt;
   const feld = useRef(null);
 
@@ -334,8 +347,11 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
         + (angepeilt ? " angepeilt" : "")}>
       {!zu && <button className="verbrennen" onClick={onWeg}
         title="karte verbrennen">✕</button>}
-      {/* die kartenkante — hier packt man an, und die karte folgt dem finger */}
-      <div className="griff" onPointerDown={onGriff} title="karte nehmen und legen">
+      {/* die kartenkante — hier packt man an, und die karte folgt dem finger.
+          das FUNDAMENT einer spalte traegt alles mit, was darauf steht. */}
+      <div className={"griff" + (traegtSpalte ? " fundament" : "")}
+        onPointerDown={onGriff}
+        title={traegtSpalte ? "spalte nehmen — alles darüber kommt mit" : "karte nehmen und legen"}>
         <i /><i /><i />
       </div>
       <div className={"karte" + (karte.gedreht ? " um" : "")}>
@@ -401,7 +417,11 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const griffAn = (e, ai, k) => {
     if (e.button != null && e.button !== 0) return;
     const kasten = e.currentTarget.closest(".kartenplatz").getBoundingClientRect();
-    const z = { ai, id: k.id, karte: k, laeuft: false,
+    // die unterste karte traegt die ganze spalte, jede andere geht allein
+    const alle = projekt.abschnitte[ai].karten;
+    const traegt = istFundament(alle, k);
+    const spalte = traegt ? spalteVon(alle, k.pos) : [k];
+    const z = { ai, id: k.id, karte: k, spalte, traegt, laeuft: false,
       dx: e.clientX - kasten.left, dy: e.clientY - kasten.top,
       x: e.clientX, y: e.clientY, startX: e.clientX, startY: e.clientY };
     zugRef.current = z;
@@ -697,6 +717,9 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
   // A.I.M. — mischen. Die BELEGTEN Plaetze bleiben, nur die Karten
   // wechseln untereinander die Fächer. Luecken bleiben Luecken.
+  // A.I.M. — gemischt werden SPALTEN, nicht einzelne karten. Eine szene
+  // nimmt ihren ort, ihren pov und alles andere mit, was auf ihr steht.
+  // Sonst waere es kein mischen, sondern konfetti.
   const mischen = (ai) => {
     const a = projekt.abschnitte[ai];
     setMischt(a.id);
@@ -704,16 +727,18 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       let neu = [];
       aendere((p) => {
         const k = p.abschnitte[ai].karten;
-        const faecher = k.map((x) => ({ pos: x.pos, zeile: x.zeile || 0 }));
-        const gemischt = [...k];
-        for (let i = gemischt.length - 1; i > 0; i--) {
+        const plaetze = [...new Set(k.map((x) => x.pos))].sort((x, y) => x - y);
+        const spalten = plaetze.map((pos) => k.filter((x) => x.pos === pos));
+
+        for (let i = spalten.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
-          [gemischt[i], gemischt[j]] = [gemischt[j], gemischt[i]];
+          [spalten[i], spalten[j]] = [spalten[j], spalten[i]];
         }
-        gemischt.forEach((x, i) => { x.pos = faecher[i].pos; x.zeile = faecher[i].zeile; });
-        gemischt.sort(sortiere);
-        p.abschnitte[ai].karten = gemischt;
-        neu = gemischt.map((x) => ({ id: x.id, pos: x.pos, zeile: x.zeile }));
+        // jede spalte bekommt einen der belegten plaetze — luecken bleiben luecken
+        spalten.forEach((sp, i) => sp.forEach((x) => { x.pos = plaetze[i]; }));
+
+        p.abschnitte[ai].karten = [...k].sort(sortiere);
+        neu = k.map((x) => ({ id: x.id, pos: x.pos, zeile: x.zeile || 0 }));
       });
       neu.forEach((x) => setzePos(x.id, x.pos, x.zeile, a.id));
       setTimeout(() => setMischt(null), 420);
@@ -728,6 +753,44 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const nachAb = projekt.abschnitte[zielA];
     const karte = vonAb.karten.find((k) => k.id === zug.id);
     if (!karte) return;
+
+    // ---- eine GANZE SPALTE wandert ----
+    // dabei zaehlt nur der platz, nicht die reihe: die spalte behaelt
+    // ihren aufbau. liegt dort schon eine, tauschen die beiden platz.
+    if (zug.traegt) {
+      const meine = spalteVon(vonAb.karten, karte.pos);
+      const dortSpalte = spalteVon(nachAb.karten, zielPos)
+        .filter((k) => !meine.some((m) => m.id === k.id));
+      if (zielA === zug.ai && zielPos === karte.pos) return;
+      const altePos = karte.pos;
+
+      aendere((p) => {
+        const vk = p.abschnitte[zug.ai].karten;
+        const nk = p.abschnitte[zielA].karten;
+        const meineIds = new Set(meine.map((k) => k.id));
+        const dortIds = new Set(dortSpalte.map((k) => k.id));
+
+        const bleibtVon = vk.filter((k) => !meineIds.has(k.id) && !dortIds.has(k.id));
+        const bleibtNach = zug.ai === zielA ? bleibtVon
+          : nk.filter((k) => !meineIds.has(k.id) && !dortIds.has(k.id));
+
+        const gewandert = meine.map((k) => ({ ...k, pos: zielPos }));
+        const zurueck = dortSpalte.map((k) => ({ ...k, pos: altePos }));
+
+        if (zug.ai === zielA) {
+          p.abschnitte[zielA].karten = [...bleibtVon, ...gewandert, ...zurueck].sort(sortiere);
+        } else {
+          p.abschnitte[zielA].karten = [...bleibtNach, ...gewandert].sort(sortiere);
+          p.abschnitte[zug.ai].karten = [...bleibtVon, ...zurueck].sort(sortiere);
+        }
+      });
+
+      meine.forEach((k) => setzePos(k.id, zielPos, k.zeile || 0, nachAb.id));
+      dortSpalte.forEach((k) => setzePos(k.id, altePos, k.zeile || 0, vonAb.id));
+      return;
+    }
+
+    // ---- eine EINZELNE karte ----
     const dort = nachAb.karten.find((k) => k.pos === zielPos && (k.zeile || 0) === zielZeile);
     if (dort && dort.id === karte.id) return;
 
@@ -755,8 +818,11 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // dann faellt die karte in die entstandene luecke.
   const dazwischen = async (zielA, zielPos, zielZeile, karteId) => {
     const nachAb = projekt.abschnitte[zielA];
+    // ganze spalten ruecken weiter, nicht nur die eine reihe
+    const eigene = new Set(spalteVon(nachAb.karten, zielPos)
+      .filter((k) => k.id === karteId).map((k) => k.id));
     const ruecken = nachAb.karten.filter(
-      (k) => (k.zeile || 0) === zielZeile && k.pos >= zielPos && k.id !== karteId);
+      (k) => k.pos >= zielPos && k.id !== karteId && !eigene.has(k.id));
     try {
       // von hinten nach vorn, damit sich nichts gegenseitig ueberholt
       for (const k of [...ruecken].sort((x, y) => y.pos - x.pos)) {
@@ -876,6 +942,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                             zielMarke={marke} angepeilt={ziel === marke}
                             onGriff={(e) => griffAn(e, ai, k)}
                             onSchloss={() => schloss(ai, ki)}
+                            traegtSpalte={inZ.length > 0 && spalteVon(a.karten, pos).length > 1
+                              && istFundament(a.karten, k)}
                             onText={(v) => setText(ai, ki, v)}
                             onTitel={(v) => setTitel2(ai, ki, v)}
                             onBild={(f) => setBild(ai, ki, f)}
@@ -914,9 +982,13 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
           bis zu zwei karten nebeneinander, aus beliebigen abschnitten. */}
       {/* die karte, die gerade am finger haengt */}
       {zug && zug.laeuft && (
-        <div className="amfinger" style={{ left: zug.x - zug.dx, top: zug.y - zug.dy }}>
+        <div className={"amfinger" + (zug.traegt && zug.spalte.length > 1 ? " stapel" : "")}
+          style={{ left: zug.x - zug.dx, top: zug.y - zug.dy }}>
           {zug.karte.titel ? <b>{zug.karte.titel}</b> : null}
           <span>{(zug.karte.text || "").trim()}</span>
+          {zug.traegt && zug.spalte.length > 1 && (
+            <em className="stapelzahl">+ {zug.spalte.length - 1}</em>
+          )}
         </div>
       )}
 
@@ -1953,6 +2025,18 @@ function Stil() {
   letter-spacing:.05em; opacity:.7;
 }
 .amfinger span{white-space:pre-wrap; overflow:hidden}
+/* eine ganze spalte am finger — man sieht, dass mehr dranhaengt */
+.amfinger.stapel{
+  box-shadow:
+    6px -6px 0 -1px #d6c49e, 6px -6px 0 0 rgba(42,33,24,.55),
+    12px -12px 0 -1px #cbb992, 12px -12px 0 0 rgba(42,33,24,.55),
+    0 20px 42px rgba(0,0,0,.75);
+}
+.stapelzahl{
+  position:absolute; right:9px; bottom:8px; font-style:normal;
+  font-family:'IM Fell English SC', Georgia, serif; font-size:12px;
+  color:rgba(42,33,24,.6);
+}
 
 /* die kartenkante zum anfassen */
 .griff{
@@ -1964,6 +2048,11 @@ function Stil() {
 .griff:active{cursor:grabbing}
 .kartenplatz:hover .griff{opacity:1}
 .griff i{width:3px; height:3px; border-radius:50%; background:rgba(42,33,24,.4)}
+/* das fundament einer spalte bekommt einen balken statt punkten */
+.griff.fundament{gap:0}
+.griff.fundament i{width:16px; height:3px; border-radius:2px; background:rgba(42,33,24,.55)}
+.griff.fundament i:nth-child(2){display:none}
+.griff.fundament i:nth-child(3){display:none}
 .kartenplatz.angepeilt .seite{
   border-color:var(--kerze); box-shadow:0 0 0 2px rgba(242,179,87,.45), 0 10px 22px rgba(0,0,0,.55);
 }
