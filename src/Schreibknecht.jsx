@@ -46,6 +46,95 @@ function machVorleser() {
 }
 const vorleser = typeof window !== "undefined" ? machVorleser() : { da: false };
 
+// Der Glockenschlag. Eine glocke klingt nicht wie ein einzelner ton, sondern
+// wie mehrere, die nicht ganz zueinander passen und verschieden schnell
+// verklingen — genau das bauen wir hier zusammen.
+function glockeSchlagen() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const k = new AC();
+    const jetzt = k.currentTime;
+    const grund = 466;                                  // etwa ein b
+    const teiltoene = [
+      { mal: 0.5,  laut: 0.30, dauer: 4.5 },            // der brummton darunter
+      { mal: 1.0,  laut: 0.42, dauer: 3.6 },
+      { mal: 1.19, laut: 0.22, dauer: 2.4 },            // die kleine terz macht den glockenklang
+      { mal: 1.5,  laut: 0.16, dauer: 1.8 },
+      { mal: 2.0,  laut: 0.13, dauer: 1.2 },
+      { mal: 2.66, laut: 0.09, dauer: 0.7 },
+      { mal: 3.35, laut: 0.06, dauer: 0.45 },           // das anschlaggeräusch
+    ];
+    const summe = k.createGain();
+    summe.gain.value = 0.5;
+    summe.connect(k.destination);
+
+    teiltoene.forEach((t) => {
+      const o = k.createOscillator();
+      const g = k.createGain();
+      o.type = "sine";
+      o.frequency.value = grund * t.mal;
+      g.gain.setValueAtTime(0, jetzt);
+      g.gain.linearRampToValueAtTime(t.laut, jetzt + 0.004);   // der schlag
+      g.gain.exponentialRampToValueAtTime(0.0001, jetzt + t.dauer);
+      o.connect(g); g.connect(summe);
+      o.start(jetzt);
+      o.stop(jetzt + t.dauer + 0.1);
+    });
+    setTimeout(() => k.close(), 5200);
+  } catch {}
+}
+
+// ---- das Tagewerk ----
+const heute = () => {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")
+    + "-" + String(d.getDate()).padStart(2, "0");
+};
+
+// Wie viele Tage hintereinander wurde das Ziel geschafft? Der heutige Tag
+// zaehlt nur mit, wenn er schon geschafft ist — sonst haelt die kette
+// bis mitternacht, statt gleich morgens zu reissen.
+function ketteZaehlen(tage, ziel) {
+  const geschafft = new Set(
+    tage.filter((t) => (t.woerter - t.start) >= ziel).map((t) => t.tag));
+  const d = new Date();
+  if (!geschafft.has(heute())) d.setDate(d.getDate() - 1);   // heute noch offen: ab gestern
+  let n = 0;
+  for (;;) {
+    const s = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")
+      + "-" + String(d.getDate()).padStart(2, "0");
+    if (!geschafft.has(s)) break;
+    n++;
+    d.setDate(d.getDate() - 1);
+  }
+  return n;
+}
+
+// Links aus einem Text fischen. In einem Schreibfeld kann nichts anklickbar
+// sein — darum sammeln wir sie ein und legen sie unter den Bogen.
+const LINK_MUSTER = /\b((?:https?:\/\/|www\.)[^\s<>"')\]]+)/gi;
+
+function linkeFinden(text) {
+  const roh = String(text || "").match(LINK_MUSTER) || [];
+  const gesehen = new Set();
+  const raus = [];
+  for (let l of roh) {
+    l = l.replace(/[.,;:!?»«"'\)\]]+$/, "");        // satzzeichen am ende gehoeren nicht dazu
+    if (l.length < 8) continue;
+    const voll = l.startsWith("www.") ? "https://" + l : l;
+    if (gesehen.has(voll)) continue;
+    gesehen.add(voll);
+    let name = voll;
+    try {
+      const u = new URL(voll);
+      name = u.hostname.replace(/^www\./, "") + (u.pathname !== "/" ? u.pathname : "");
+    } catch {}
+    raus.push({ voll, name: name.length > 44 ? name.slice(0, 42) + "…" : name });
+  }
+  return raus;
+}
+
 // Funken: kleine lichtpunkte, die auftauchen und wieder verloeschen.
 // jeder bekommt seinen eigenen platz, seine eigene groesse und sein
 // eigenes tempo, damit nichts im gleichschritt blinkt.
@@ -289,7 +378,7 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
 
 // ---------- Projekt-Seite ----------
 function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag,
-                       hand, setHand, laden }) {
+                       hand, setHand, laden, glocke }) {
   const [zug, setZug] = useState(null);      // {ai, id, karte, dx, dy, x, y, laeuft}
   const [ziel, setZiel] = useState(null);   // worauf gerade gezeigt wird
   const zugRef = useRef(null);
@@ -682,6 +771,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             }, 1200);
           }} />
         <span className="fuellung" />
+        {glocke}
         <label className="schalter">
           <input type="checkbox" checked={mitBild} onChange={(e) => setMitBild(e.target.checked)} />
           bilder mitdrucken
@@ -865,6 +955,19 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                   <div className="druckkopie" aria-hidden="true">
                     {f.karte.titel ? <b>{f.karte.titel}</b> : null}{f.karte.text}
                   </div>
+                  {(() => {
+                    const links = linkeFinden(f.karte.text);
+                    if (!links.length) return null;
+                    return (
+                      <div className="bogenlinks">
+                        <span className="linkkopf">gefunden</span>
+                        {links.map((l) => (
+                          <a key={l.voll} href={l.voll} target="_blank" rel="noopener noreferrer"
+                            title={l.voll}>{l.name}</a>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   <div className="bogenfuss">
                     {vorleser.da && (
                       <>
@@ -970,6 +1073,8 @@ export default function Schreibknecht() {
   const [geladen, setGeladen] = useState(false);
   const [hand, setHand] = useState(null);   // ausgeschnittene karte, wartet aufs ablegen
   const [geprueft, setGeprueft] = useState(false);  // zugang beim start geprueft?
+  const [tage, setTage] = useState([]);            // das tagewerk aller projekte
+  const [laeutet, setLaeutet] = useState(false);   // die glocke schwingt gerade
   const zuletztUhr = useRef(null);
 
   const abmelden = useCallback(() => {
@@ -1014,11 +1119,13 @@ export default function Schreibknecht() {
   const laden = useCallback(async () => {
     setMsg("");
     try {
-      const [pr, ab, ka] = await Promise.all([
+      const [pr, ab, ka, tw] = await Promise.all([
         api("GET", "/rest/v1/projekte?select=*&order=zuletzt.desc"),
         api("GET", "/rest/v1/abschnitte?select=*&order=pos.asc"),
         api("GET", "/rest/v1/karten?select=*&order=pos.asc"),
+        api("GET", "/rest/v1/tagewerk?select=*&order=tag.desc&limit=400"),
       ]);
+      setTage(tw || []);
       setProjekte((pr || []).map((p) => ({
         ...p,
         abschnitte: (ab || []).filter((a) => a.projekt_id === p.id)
@@ -1186,6 +1293,49 @@ export default function Schreibknecht() {
 
   const projekt = projekte.find((p) => p.id === offen) || null;
 
+  // Wortzahl des offenen Projekts
+  const projektWorte = projekt
+    ? projekt.abschnitte.reduce((x, a) => x + a.karten.reduce((y, k) => y + zaehle(k.text), 0), 0)
+    : 0;
+  const ziel = (projekt && projekt.tagesziel) || 2000;
+  const heutErst = tage.find((t) => projekt && t.projekt_id === projekt.id && t.tag === heute());
+  const heutGeschrieben = heutErst ? Math.max(0, projektWorte - heutErst.start) : 0;
+  const kette = ketteZaehlen(tage.filter((t) => projekt && t.projekt_id === projekt.id), ziel);
+
+  // Beim Öffnen eines Projekts den Tagesanfang festhalten, danach mitschreiben.
+  const werkUhr = useRef(null);
+  useEffect(() => {
+    if (!projekt || !geladen) return;
+    const tag = heute();
+    const da = tage.find((t) => t.projekt_id === projekt.id && t.tag === tag);
+
+    if (!da) {
+      // erster blick heute: hier stehen wir am morgen
+      const neu = { id: neueId(), projekt_id: projekt.id, tag,
+        start: projektWorte, woerter: projektWorte, gelaeutet: false };
+      setTage((l) => [neu, ...l]);
+      api("POST", "/rest/v1/tagewerk", neu).catch(() => {});
+      return;
+    }
+    if (da.woerter === projektWorte) return;
+
+    // stand nachfuehren, aber nicht bei jedem tastendruck
+    clearTimeout(werkUhr.current);
+    werkUhr.current = setTimeout(() => {
+      const geschafft = (projektWorte - da.start) >= ziel;
+      const laeutenJetzt = geschafft && !da.gelaeutet;
+      setTage((l) => l.map((t) => (t.id === da.id
+        ? { ...t, woerter: projektWorte, gelaeutet: t.gelaeutet || geschafft } : t)));
+      api("PATCH", `/rest/v1/tagewerk?id=eq.${da.id}`,
+        { woerter: projektWorte, gelaeutet: da.gelaeutet || geschafft }).catch(() => {});
+      if (laeutenJetzt) {
+        setLaeutet(true);
+        glockeSchlagen();
+        setTimeout(() => setLaeutet(false), 4200);
+      }
+    }, 2500);
+  }, [projektWorte, projekt, geladen]); // eslint-disable-line
+
   return (
     <div className="huette">
       <Stil />
@@ -1209,7 +1359,18 @@ export default function Schreibknecht() {
             : projekt
               ? <ProjektSeite projekt={projekt} api={api} bilder={bilder} holBild={holBild}
                   hochladen={hochladen} aendere={aendere} zurueck={() => setOffen(null)} sag={setMsg}
-                  hand={hand} setHand={setHand} laden={laden} />
+                  hand={hand} setHand={setHand} laden={laden}
+                  glocke={
+                    <div className={"glocke" + (laeutet ? " schwingt" : "")
+                        + (heutGeschrieben >= ziel ? " voll" : "")}
+                      title="tagewerk">
+                      <span className="glockenkoerper">🔔</span>
+                      <span className="glockenschild">
+                        <b>{heutGeschrieben.toLocaleString("de-DE")}</b> von {ziel.toLocaleString("de-DE")}
+                        {kette > 0 && <i> · {kette} {kette === 1 ? "tag" : "tage"} in folge</i>}
+                      </span>
+                    </div>
+                  } />
               : <Deckblatt projekte={projekte} anlegen={projektAnlegen}
                   oeffnen={setOffen} weg={projektWeg} kopieren={projektKopieren} />}
         {msg && <p className="meldung" onClick={() => setMsg("")}>{msg}</p>}
@@ -1466,6 +1627,36 @@ function Stil() {
   padding:2px 4px; flex:0 0 auto; max-width:100%;
 }
 .projektname:focus{outline:none; border-bottom-color:rgba(242,179,87,.5)}
+/* die glocke — sie schweigt, bis das tagewerk getan ist */
+.glocke{position:relative; display:flex; align-items:center; cursor:default}
+.glockenkoerper{
+  font-size:19px; line-height:1; filter:grayscale(1) opacity(.4); transition:.4s;
+  transform-origin:50% 12%; display:inline-block;
+}
+.glocke:hover .glockenkoerper{filter:grayscale(.5) opacity(.75)}
+.glocke.voll .glockenkoerper{
+  filter:none; opacity:1;
+  filter:drop-shadow(0 0 10px rgba(224,139,60,.75));
+}
+.glocke.schwingt .glockenkoerper{animation:schwingen 1.5s cubic-bezier(.36,.07,.19,.97) 2}
+@keyframes schwingen{
+  0%,100%{transform:rotate(0)}
+  12%{transform:rotate(22deg)} 28%{transform:rotate(-18deg)}
+  44%{transform:rotate(12deg)} 60%{transform:rotate(-8deg)}
+  76%{transform:rotate(4deg)}  88%{transform:rotate(-2deg)}
+}
+/* die zahl steht nur da, wenn man sie sehen will */
+.glockenschild{
+  position:absolute; top:calc(100% + 8px); right:0; z-index:9; white-space:nowrap;
+  padding:7px 11px; border-radius:4px; font-size:11px; letter-spacing:.05em;
+  border:1px solid rgba(224,139,60,.35); background:rgba(16,10,4,.97);
+  color:var(--pergament2); box-shadow:0 8px 22px rgba(0,0,0,.65);
+  opacity:0; pointer-events:none; transform:translateY(-4px); transition:.15s;
+}
+.glocke:hover .glockenschild, .glocke.schwingt .glockenschild{opacity:1; transform:none}
+.glockenschild b{color:var(--kerze2); font-weight:400}
+.glockenschild i{color:var(--messing); font-style:normal}
+
 .schalter{display:flex; align-items:center; gap:6px; font-size:11px; color:var(--nebel); cursor:pointer}
 .schalter input{accent-color:var(--kerze)}
 
@@ -1700,6 +1891,27 @@ function Stil() {
 }
 .bogenfeld:focus{outline:none}
 .bogenfeld::placeholder{color:rgba(42,33,24,.28)}
+/* die links aus dem text — im schreibfeld selbst kann nichts klickbar sein */
+.bogenlinks{
+  display:flex; flex-wrap:wrap; align-items:center; gap:7px;
+  padding:9px 14px; border-top:1px solid rgba(42,33,24,.18); background:rgba(0,0,0,.05);
+}
+.linkkopf{
+  font-family:'IM Fell English SC', Georgia, serif; font-size:10px; letter-spacing:.14em;
+  color:rgba(42,33,24,.45); margin-right:2px;
+}
+.bogenlinks a{
+  font-family:'Courier Prime', monospace; font-size:11px; color:var(--tinte);
+  text-decoration:none; padding:3px 8px; border-radius:3px;
+  border:1px solid rgba(42,33,24,.28); background:rgba(42,33,24,.05);
+  max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  transition:.15s;
+}
+.bogenlinks a:hover{
+  background:rgba(42,33,24,.13); border-color:rgba(42,33,24,.55);
+  box-shadow:0 2px 8px rgba(0,0,0,.2);
+}
+
 .bogenfuss{
   display:flex; align-items:center; gap:6px;
   padding:8px 14px; border-top:1px solid rgba(42,33,24,.18); background:rgba(0,0,0,.07);
@@ -1795,8 +2007,8 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt{display:none !important}
-  .bogenfeld, .bogenfuss, .bogenkopf .klein{display:none !important}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke{display:none !important}
+  .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks{display:none !important}
   .seite.text{background:none; border:0}
   .druckkopie{
     display:block; white-space:pre-wrap; color:#111; padding:6px 0 14px;
