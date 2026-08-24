@@ -1004,7 +1004,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 }
 
 // ---------- Deckblatt ----------
-function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert }) {
+function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert,
+                    zurueckspielen, spieltZurueck, dateiFeld }) {
   // Bei jedem Oeffnen werden drei Karten vom Stapel gezogen und zwischen
   // die Kacheln gelegt — jede an eine andere Stelle, jede etwas schief.
   const [gezogen] = useState(() => {
@@ -1075,8 +1076,19 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
           title="alles auf deinen rechner holen">
           {sichert ? "…" : "⬓ sicherung"}
         </button>
+        <button className="btn" disabled={spieltZurueck}
+          onClick={() => dateiFeld.current && dateiFeld.current.click()}
+          title="eine sicherung wieder einlesen">
+          {spieltZurueck ? "…" : "⬒ zurückspielen"}
+        </button>
+        <input ref={dateiFeld} type="file" accept=".json,application/json" hidden
+          onChange={(e) => {
+            const f = e.target.files && e.target.files[0];
+            e.target.value = "";
+            if (f) zurueckspielen(f);
+          }} />
         <span className="truhentext">
-          holt alle projekte, abschnitte und karten in eine datei auf deinen rechner
+          holt alles auf deinen rechner — mit bildern — und wieder zurück
         </span>
       </div>
     </div>
@@ -1311,10 +1323,32 @@ export default function Schreibknecht() {
 
       const paket = {
         was: "schreibknecht-sicherung",
-        fassung: 1,
+        fassung: 2,
         gemacht: new Date().toISOString(),
         projekte: pr || [], abschnitte: ab || [], karten: ka || [], tagewerk: tw || [],
+        bilder: {},
       };
+
+      // die bilder aus dem ablagefach kommen mit — sonst waere die
+      // sicherung nur die haelfte wert
+      const pfade = [...new Set((ka || []).map((k) => k.bild).filter(Boolean))];
+      for (let i = 0; i < pfade.length; i++) {
+        setMsg("bilder werden geholt … " + (i + 1) + " von " + pfade.length);
+        try {
+          const d = await api("POST", `/storage/v1/object/sign/kartenbilder/${pfade[i]}`,
+            { expiresIn: 600 });
+          if (!d || !d.signedURL) continue;
+          const r = await fetch(URL_DB + "/storage/v1" + d.signedURL);
+          if (!r.ok) continue;
+          const roh = await r.blob();
+          paket.bilder[pfade[i]] = await new Promise((ja) => {
+            const l = new FileReader();
+            l.onload = () => ja(l.result);
+            l.onerror = () => ja(null);
+            l.readAsDataURL(roh);
+          });
+        } catch {}
+      }
 
       // die lesbare fassung
       const zeilen = [];
@@ -1342,10 +1376,75 @@ export default function Schreibknecht() {
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 
-      const zahl = (ka || []).length;
-      setMsg("gesichert · " + (pr || []).length + " projekte · " + zahl + " karten");
+      const bz = Object.keys(paket.bilder).length;
+      setMsg("gesichert · " + (pr || []).length + " projekte · " + (ka || []).length
+        + " karten · " + bz + " bilder");
     } catch (e) { setMsg("sicherung ging nicht: " + String(e.message)); }
     setSichert(false);
+  };
+
+  // ---- ZURUECKSPIELEN ----
+  // Die sicherung wieder einlesen. Alles behaelt seine alten kennungen,
+  // darum wird nichts doppelt: was schon da ist, wird aufgefrischt,
+  // was fehlt, kommt neu dazu.
+  const [spieltZurueck, setSpieltZurueck] = useState(false);
+  const dateiFeld = useRef(null);
+
+  const zurueckspielen = async (datei) => {
+    if (!datei) return;
+    setSpieltZurueck(true); setMsg("");
+    try {
+      const paket = JSON.parse(await datei.text());
+      if (paket.was !== "schreibknecht-sicherung")
+        throw new Error("das ist keine sicherung vom schreibknecht");
+
+      const nP = (paket.projekte || []).length;
+      const nK = (paket.karten || []).length;
+      const nB = Object.keys(paket.bilder || {}).length;
+      const wann = paket.gemacht ? new Date(paket.gemacht).toLocaleString("de-DE") : "unbekannt";
+      if (!confirm(
+        `sicherung vom ${wann}\n\n${nP} projekte · ${nK} karten · ${nB} bilder\n\n`
+        + "alles davon wird zurückgespielt. was heute schon da ist und dieselbe\n"
+        + "kennung hat, wird überschrieben. neuere karten bleiben stehen.\n\nfortfahren?")) {
+        setSpieltZurueck(false); return;
+      }
+
+      // aufwecken: alles mit seiner alten kennung wieder hineinlegen
+      const rein = (tabelle, zeilen) => zeilen.length
+        ? api("POST", "/rest/v1/" + tabelle, zeilen, { Prefer: "resolution=merge-duplicates" })
+        : Promise.resolve();
+
+      setMsg("projekte …");    await rein("projekte", paket.projekte || []);
+      setMsg("abschnitte …");  await rein("abschnitte", paket.abschnitte || []);
+      setMsg("karten …");      await rein("karten", paket.karten || []);
+      if ((paket.tagewerk || []).length) {
+        setMsg("tagewerk …");  await rein("tagewerk", paket.tagewerk).catch(() => {});
+      }
+
+      // die bilder zurueck ins ablagefach
+      const pfade = Object.keys(paket.bilder || {});
+      for (let i = 0; i < pfade.length; i++) {
+        setMsg("bilder … " + (i + 1) + " von " + pfade.length);
+        try {
+          const antwort = await fetch(paket.bilder[pfade[i]]);
+          const roh = await antwort.blob();
+          await fetch(`${URL_DB}/storage/v1/object/kartenbilder/${pfade[i]}`, {
+            method: "POST",
+            headers: {
+              apikey: KEY_DB,
+              Authorization: "Bearer " + (sitzungRef.current && sitzungRef.current.access_token),
+              "x-upsert": "true",
+              "Content-Type": roh.type || "image/png",
+            },
+            body: roh,
+          });
+        } catch {}
+      }
+
+      await laden();
+      setMsg("zurückgespielt · " + nP + " projekte · " + nK + " karten · " + nB + " bilder");
+    } catch (e) { setMsg("zurückspielen ging nicht: " + String(e.message)); }
+    setSpieltZurueck(false);
   };
 
   const projektWeg = (p) => {
@@ -1467,7 +1566,9 @@ export default function Schreibknecht() {
                   } />
               : <Deckblatt projekte={projekte} anlegen={projektAnlegen}
                   oeffnen={setOffen} weg={projektWeg} kopieren={projektKopieren}
-                  sicherung={sicherung} sichert={sichert} />}
+                  sicherung={sicherung} sichert={sichert}
+                  zurueckspielen={zurueckspielen} spieltZurueck={spieltZurueck}
+                  dateiFeld={dateiFeld} />}
         {msg && <p className="meldung" onClick={() => setMsg("")}>{msg}</p>}
       </main>
 
