@@ -222,7 +222,8 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 
 // ---------- eine Karte ----------
 function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
-                inHand, aufPult, onAufsPult, onGriff, ziehend, zielMarke, angepeilt }) {
+                inHand, aufPult, onAufsPult, onGriff, onSchloss, ziehend, zielMarke, angepeilt }) {
+  const zu = !!karte.gesperrt;
   const feld = useRef(null);
 
   // Der Browser macht sonst einen halbdurchsichtigen Abzug der Karte —
@@ -232,8 +233,8 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
     <div data-ziel={zielMarke}
       className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")
         + (angepeilt ? " angepeilt" : "")}>
-      <button className="verbrennen" onClick={onWeg}
-        title="karte verbrennen">✕</button>
+      {!zu && <button className="verbrennen" onClick={onWeg}
+        title="karte verbrennen">✕</button>}
       {/* die kartenkante — hier packt man an, und die karte folgt dem finger */}
       <div className="griff" onPointerDown={onGriff} title="karte nehmen und legen">
         <i /><i /><i />
@@ -242,8 +243,12 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
 
         <div className="seite text">
           <textarea value={karte.text} onChange={(e) => onText(e.target.value)}
-            placeholder="…" spellCheck={false} />
+            placeholder="…" spellCheck={false} readOnly={zu} />
           <div className="fuss">
+            <button className={"klein schloss" + (zu ? " zu" : "")} onClick={onSchloss}
+              title={zu ? "karte ist gesperrt — aufschließen" : "karte sperren"}>
+              {zu ? "🔒" : "🔓"}
+            </button>
             <span className="woerter">{zaehle(karte.text) || ""}</span>
             <button className={"klein" + (aufPult ? " an" : "")} onClick={onAufsPult}
               title={aufPult ? "vom pult nehmen" : "gross aufschlagen"}>⤢</button>
@@ -261,16 +266,18 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
         <div className="seite bild">
           {bildUrl
             ? <img src={bildUrl} alt="" />
-            : <button className="bildleer" onClick={() => feld.current && feld.current.click()}>
+            : <button className="bildleer" disabled={zu}
+                onClick={() => !zu && feld.current && feld.current.click()}>
                 <span className="siegel">{karte.bild ? "…" : "✧"}</span>
                 <span>{karte.bild ? "wird geholt" : "bild wählen"}</span>
               </button>}
           <input ref={feld} type="file" accept="image/*" hidden
             onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) onBild(f); e.target.value = ""; }} />
           <div className="fuss">
-            {karte.bild && <button className="klein" onClick={() => onBild(null)} title="bild entfernen">⌫</button>}
+            {karte.bild && !zu &&
+              <button className="klein" onClick={() => onBild(null)} title="bild entfernen">⌫</button>}
             <input className="kartentitel" value={karte.titel || ""} placeholder="beschriftung"
-              onChange={(e) => onTitel(e.target.value)} />
+              readOnly={zu} onChange={(e) => onTitel(e.target.value)} />
             <button className="klein" onClick={onDrehen} title="umdrehen">↻</button>
           </div>
         </div>
@@ -415,12 +422,52 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     }, 1200);
   };
 
+  // eine karte sperren oder wieder aufschliessen
+  const schloss = (ai, ki) => {
+    const k = projekt.abschnitte[ai].karten[ki];
+    const neu = !k.gesperrt;
+    aendere((p) => { p.abschnitte[ai].karten[ki].gesperrt = neu; });
+    api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { gesperrt: neu }).catch((e) => sag(String(e.message)));
+  };
+
+  // einen ganzen abschnitt sperren — mitsamt allen karten darin
+  const schlossAbschnitt = async (ai) => {
+    const a = projekt.abschnitte[ai];
+    const neu = !a.gesperrt;
+    aendere((p) => {
+      p.abschnitte[ai].gesperrt = neu;
+      p.abschnitte[ai].karten = p.abschnitte[ai].karten.map((k) => ({ ...k, gesperrt: neu }));
+    });
+    try {
+      await api("PATCH", `/rest/v1/abschnitte?id=eq.${a.id}`, { gesperrt: neu });
+      await api("PATCH", `/rest/v1/karten?abschnitt_id=eq.${a.id}`, { gesperrt: neu });
+    } catch (e) { sag(String(e.message)); }
+  };
+
   const drehen = (ai, ki) => {
     const k = projekt.abschnitte[ai].karten[ki];
     const neu = !k.gedreht;
     aendere((p) => { p.abschnitte[ai].karten[ki].gedreht = neu; });
     api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { gedreht: neu }).catch(() => {});
     if (neu && k.bild) holBild(k.bild);
+  };
+
+  // das + oben im trennstrich legt die karte GANZ VORN an — bei vielen
+  // karten in der reihe waere hinten sonst unhandlich weit weg
+  const karteVorn = async (ai) => {
+    const a = projekt.abschnitte[ai];
+    const zeile = a.karten.length ? Math.min(...a.karten.map((k) => k.zeile || 0)) : 0;
+    const ersteReihe = a.karten.filter((k) => (k.zeile || 0) === zeile);
+    const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
+      gedreht: false, pos: 0, zeile };
+    try {
+      // erst platz machen: alles in dieser reihe rueckt einen weiter
+      for (const k of [...ersteReihe].sort((x, y) => y.pos - x.pos)) {
+        await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: k.pos + 1 });
+      }
+      await api("POST", "/rest/v1/karten", neu);
+      await laden();
+    } catch (e) { sag(String(e.message)); }
   };
 
   const karteZu = (ai, pos, zeile) => {
@@ -659,7 +706,13 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 title="karten mischen — neue nachbarschaften">⚄</button>
               <button className="klein" onClick={() => abschnittDrucken(a.id)}
                 title="nur diesen abschnitt drucken, ohne bilder">⎙</button>
-              <button className="klein" onClick={() => karteZu(ai)} title="karte anlegen">+</button>
+              <button className={"klein schloss" + (a.gesperrt ? " zu" : "")}
+                onClick={() => schlossAbschnitt(ai)}
+                title={a.gesperrt ? "abschnitt aufschließen" : "ganzen abschnitt sperren"}>
+                {a.gesperrt ? "🔒" : "🔓"}
+              </button>
+              <button className="klein" onClick={() => karteVorn(ai)}
+                title="karte vorn anlegen">+</button>
               <button className="klein" onClick={() => abschnittRuecken(ai, -1)} disabled={ai === 0}
                 title="abschnitt höher legen">↑</button>
               <button className="klein" onClick={() => abschnittRuecken(ai, 1)}
@@ -719,6 +772,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                             ziehend={zug && zug.laeuft && zug.id === k.id}
                             zielMarke={marke} angepeilt={ziel === marke}
                             onGriff={(e) => griffAn(e, ai, k)}
+                            onSchloss={() => schloss(ai, ki)}
                             onText={(v) => setText(ai, ki, v)}
                             onTitel={(v) => setTitel2(ai, ki, v)}
                             onBild={(f) => setBild(ai, ki, f)}
@@ -791,7 +845,13 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               return (
                 <div className="bogen" key={id}>
                   <div className="bogenkopf">
+                    <button className={"klein schloss" + (f.karte.gesperrt ? " zu" : "")}
+                      onClick={() => schloss(f.ai, f.ki)}
+                      title={f.karte.gesperrt ? "aufschließen" : "sperren"}>
+                      {f.karte.gesperrt ? "🔒" : "🔓"}
+                    </button>
                     <input className="bogentitel" value={f.karte.titel || ""} placeholder="beschriftung"
+                      readOnly={!!f.karte.gesperrt}
                       onChange={(e) => setTitel2(f.ai, f.ki, e.target.value)} />
                     <span className="bogenort">{f.abschnitt.titel}</span>
                     <button className="klein" onClick={() => vomPult(id)} title="vom pult nehmen">✕</button>
@@ -800,6 +860,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                     <img className="bogenbild" src={bilder[f.karte.bild]} alt="" />
                   )}
                   <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
+                    readOnly={!!f.karte.gesperrt}
                     placeholder="…" onChange={(e) => setText(f.ai, f.ki, e.target.value)} />
                   <div className="druckkopie" aria-hidden="true">
                     {f.karte.titel ? <b>{f.karte.titel}</b> : null}{f.karte.text}
@@ -1135,7 +1196,7 @@ export default function Schreibknecht() {
         <Kerze seite="links" aus={dunkel} />
         <div className="titelblock">
           <h1>Schreibknecht</h1>
-          <p className="motto">🕷 „write or die!" 🕸 <span>dr. wicked</span></p>
+          <p className="motto">🕸 „write or die!" 🕷 <span>dr. wicked</span></p>
         </div>
         <Kerze seite="rechts" aus={erloschen} />
       </header>
@@ -1645,7 +1706,18 @@ function Stil() {
   font-size:10px; letter-spacing:.06em; color:rgba(42,33,24,.5);
 }
 .bogenfuss .klein:disabled{opacity:.35; cursor:default}
-.klein.an{color:var(--kerze2); border-color:rgba(242,179,87,.5); background:rgba(242,179,87,.1)}
+.klein.an{color:var(--kerze2); border-color:rgba(224,139,60,.5); background:rgba(224,139,60,.1)}
+
+/* das schloss — offen unauffaellig, zu deutlich */
+.klein.schloss{font-size:11px; padding:4px 6px; opacity:.45; transition:.15s}
+.klein.schloss:hover{opacity:1}
+.klein.schloss.zu{
+  opacity:1; border-color:rgba(224,139,60,.6); background:rgba(224,139,60,.12);
+}
+.seite .klein.schloss.zu{border-color:rgba(42,33,24,.5); background:rgba(42,33,24,.12)}
+/* eine gesperrte karte liegt etwas ruhiger da */
+.seite.text textarea[readonly]{cursor:default}
+.seite.text textarea[readonly]::selection{background:rgba(42,33,24,.18)}
 .seite .klein.an{color:var(--tinte); border-color:rgba(42,33,24,.55); background:rgba(42,33,24,.1)}
 
 /* das kreuz zum verbrennen sitzt jetzt OBEN in der ecke, weit weg
