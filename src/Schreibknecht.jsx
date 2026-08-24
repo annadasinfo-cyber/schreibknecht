@@ -143,15 +143,20 @@ function linkeFinden(text) {
 // jeder bekommt seinen eigenen platz, seine eigene groesse und sein
 // eigenes tempo, damit nichts im gleichschritt blinkt.
 function machFunken(anzahl) {
-  return Array.from({ length: anzahl }, (_, i) => ({
-    id: i,
-    x: Math.random() * 100,
-    y: Math.random() * 100,
-    gross: 1.1 + Math.random() * 2.8,
-    dauer: 3 + Math.random() * 5,
-    warten: Math.random() * 7,
-    weite: 8 + Math.random() * 22,      // wie weit er dabei steigt
-  }));
+  return Array.from({ length: anzahl }, (_, i) => {
+    // jeder achte ist ein dicker — ein glutstueck statt eines fuenkchens
+    const dick = i % 8 === 3;
+    return {
+      id: i,
+      x: Math.random() * 100,
+      y: Math.random() * 100,
+      gross: dick ? 4 + Math.random() * 3.5 : 1.1 + Math.random() * 2.4,
+      dauer: dick ? 5 + Math.random() * 5 : 3 + Math.random() * 5,
+      warten: Math.random() * 7,
+      weite: (dick ? 16 : 8) + Math.random() * 22,   // wie weit er dabei steigt
+      dick,
+    };
+  });
 }
 
 function Funken() {
@@ -159,7 +164,7 @@ function Funken() {
   return (
     <div className="funkenfeld" aria-hidden="true">
       {punkte.map((f) => (
-        <i key={f.id} className="funke" style={{
+        <i key={f.id} className={"funke" + (f.dick ? " glut" : "")} style={{
           left: f.x + "%", top: f.y + "%",
           width: f.gross + "px", height: f.gross + "px",
           animationDuration: f.dauer + "s",
@@ -999,7 +1004,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 }
 
 // ---------- Deckblatt ----------
-function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren }) {
+function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert }) {
   // Bei jedem Oeffnen werden drei Karten vom Stapel gezogen und zwischen
   // die Kacheln gelegt — jede an eine andere Stelle, jede etwas schief.
   const [gezogen] = useState(() => {
@@ -1064,6 +1069,16 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren }) {
         <button className="kachel neu" onClick={anlegen}><span className="plus">+</span></button>
       </div>
       {!projekte.length && <p className="leerwort">noch nichts. leg ein projekt an.</p>}
+
+      <div className="truhe">
+        <button className="btn" onClick={sicherung} disabled={sichert}
+          title="alles auf deinen rechner holen">
+          {sichert ? "…" : "⬓ sicherung"}
+        </button>
+        <span className="truhentext">
+          holt alle projekte, abschnitte und karten in eine datei auf deinen rechner
+        </span>
+      </div>
     </div>
   );
 }
@@ -1279,6 +1294,60 @@ export default function Schreibknecht() {
     } catch (e) { setMsg(String(e.message)); }
   };
 
+  // ---- SICHERUNG ----
+  // Alles, was in der datenbank steht, in eine datei auf deinen rechner.
+  // Zusaetzlich eine lesbare fassung, falls die datei mal jemand oeffnen
+  // muss, der nichts von tabellen versteht.
+  const [sichert, setSichert] = useState(false);
+  const sicherung = async () => {
+    setSichert(true); setMsg("");
+    try {
+      const [pr, ab, ka, tw] = await Promise.all([
+        api("GET", "/rest/v1/projekte?select=*"),
+        api("GET", "/rest/v1/abschnitte?select=*"),
+        api("GET", "/rest/v1/karten?select=*"),
+        api("GET", "/rest/v1/tagewerk?select=*"),
+      ]);
+
+      const paket = {
+        was: "schreibknecht-sicherung",
+        fassung: 1,
+        gemacht: new Date().toISOString(),
+        projekte: pr || [], abschnitte: ab || [], karten: ka || [], tagewerk: tw || [],
+      };
+
+      // die lesbare fassung
+      const zeilen = [];
+      (pr || []).forEach((p) => {
+        zeilen.push("", "=".repeat(60), p.name.toUpperCase(), "=".repeat(60), "");
+        (ab || []).filter((a) => a.projekt_id === p.id)
+          .sort((x, y) => x.pos - y.pos).forEach((a) => {
+            zeilen.push("", "--- " + a.titel + " ---", "");
+            (ka || []).filter((k) => k.abschnitt_id === a.id)
+              .sort((x, y) => ((x.zeile || 0) - (y.zeile || 0)) || (x.pos - y.pos))
+              .forEach((k) => {
+                if (k.titel) zeilen.push("[" + k.titel + "]");
+                if (k.text) zeilen.push(k.text);
+                zeilen.push("");
+              });
+          });
+      });
+      paket.lesbar = zeilen.join("\n");
+
+      const wann = new Date().toISOString().slice(0, 10);
+      const blob = new Blob([JSON.stringify(paket, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "schreibknecht-sicherung-" + wann + ".json";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+
+      const zahl = (ka || []).length;
+      setMsg("gesichert · " + (pr || []).length + " projekte · " + zahl + " karten");
+    } catch (e) { setMsg("sicherung ging nicht: " + String(e.message)); }
+    setSichert(false);
+  };
+
   const projektWeg = (p) => {
     if (!confirm(`„${p.name}" mit allem drin entfernen?`)) return;
     setProjekte((l) => l.filter((x) => x.id !== p.id));
@@ -1397,7 +1466,8 @@ export default function Schreibknecht() {
                     </div>
                   } />
               : <Deckblatt projekte={projekte} anlegen={projektAnlegen}
-                  oeffnen={setOffen} weg={projektWeg} kopieren={projektKopieren} />}
+                  oeffnen={setOffen} weg={projektWeg} kopieren={projektKopieren}
+                  sicherung={sicherung} sichert={sichert} />}
         {msg && <p className="meldung" onClick={() => setMsg("")}>{msg}</p>}
       </main>
 
@@ -1475,6 +1545,10 @@ function Stil() {
   18%  {opacity:.95; transform:translateY(calc(var(--weite) * .25)) scale(1)}
   55%  {opacity:.5;  transform:translateY(calc(var(--weite) * .7)) scale(.9)}
   100% {opacity:0;   transform:translateY(var(--weite)) scale(.5)}
+}
+.funke.glut{
+  background:radial-gradient(circle, #fff2d6 0%, #ffd08a 30%, var(--kerze) 58%, transparent 76%);
+  box-shadow:0 0 12px rgba(224,139,60,.95), 0 0 28px rgba(224,139,60,.45);
 }
 @media(prefers-reduced-motion:reduce){.funkenfeld{display:none}}
 
@@ -1642,6 +1716,11 @@ function Stil() {
 }
 .kachel.neu .plus{font-size:26px; color:var(--messing)}
 .leerwort{color:var(--nebel); font-style:italic; margin-top:22px}
+.truhe{
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  margin-top:44px; padding-top:18px; border-top:1px solid rgba(168,135,79,.16);
+}
+.truhentext{font-size:10.5px; letter-spacing:.05em; color:var(--nebel)}
 
 /* ---- Leiste ---- */
 .leiste{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:22px}
@@ -2039,7 +2118,7 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung{display:none !important}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks{display:none !important}
   .seite.text{background:none; border:0}
   .druckkopie{
