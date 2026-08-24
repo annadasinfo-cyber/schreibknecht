@@ -2008,8 +2008,11 @@ function Stil() {
 .seite.text textarea:hover::-webkit-scrollbar-thumb{background:rgba(42,33,24,.45); background-clip:content-box}
 .seite.text textarea:focus{outline:none}
 .seite.text textarea::placeholder{color:rgba(42,33,24,.3)}
+/* KEIN position:relative hier — das wuerde das absolute aus .seite
+   ueberschreiben, und die karte richtet sich dann nach der bildhoehe.
+   .seite ist bereits absolut, das reicht dem streifen als anker. */
 .seite.bild{
-  transform:rotateY(180deg); position:relative;
+  transform:rotateY(180deg);
   background:linear-gradient(155deg, #1b1207, #0c0702);
 }
 .kartentitel{
@@ -2038,7 +2041,10 @@ function Stil() {
   background:linear-gradient(rgba(10,6,2,.35), rgba(10,6,2,.82));
   backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
 }
-.seite.bild img{width:100%; flex:1; object-fit:cover; min-height:0}
+.seite.bild img{
+  position:absolute; inset:0; width:100%; height:100%;
+  object-fit:cover; object-position:center;
+}
 .woerter{flex:1; font-size:10px; color:rgba(42,33,24,.45); letter-spacing:.06em}
 .seite .klein{border-color:rgba(42,33,24,.2); color:rgba(42,33,24,.5)}
 .seite .klein:hover{color:var(--tinte); border-color:rgba(42,33,24,.5)}
