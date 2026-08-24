@@ -46,6 +46,38 @@ function machVorleser() {
 }
 const vorleser = typeof window !== "undefined" ? machVorleser() : { da: false };
 
+// Funken: kleine lichtpunkte, die auftauchen und wieder verloeschen.
+// jeder bekommt seinen eigenen platz, seine eigene groesse und sein
+// eigenes tempo, damit nichts im gleichschritt blinkt.
+function machFunken(anzahl) {
+  return Array.from({ length: anzahl }, (_, i) => ({
+    id: i,
+    x: Math.random() * 100,
+    y: Math.random() * 100,
+    gross: 1.2 + Math.random() * 2.2,
+    dauer: 3.5 + Math.random() * 5,
+    warten: Math.random() * 9,
+    weite: 8 + Math.random() * 22,      // wie weit er dabei steigt
+  }));
+}
+
+function Funken() {
+  const punkte = useRef(machFunken(26)).current;
+  return (
+    <div className="funkenfeld" aria-hidden="true">
+      {punkte.map((f) => (
+        <i key={f.id} className="funke" style={{
+          left: f.x + "%", top: f.y + "%",
+          width: f.gross + "px", height: f.gross + "px",
+          animationDuration: f.dauer + "s",
+          animationDelay: f.warten + "s",
+          "--weite": "-" + f.weite + "px",
+        }} />
+      ))}
+    </div>
+  );
+}
+
 // erst nach reihe, dann nach platz — wie man eine auslage liest
 const sortiere = (a, b) => ((a.zeile || 0) - (b.zeile || 0)) || (a.pos - b.pos);
 const zaehle = (t) => (t && t.trim() ? t.trim().split(/\s+/).filter(Boolean).length : 0);
@@ -722,6 +754,16 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
       {/* DAS PULT — klappt unter der auslage auf, die karten oben bleiben sichtbar.
           bis zu zwei karten nebeneinander, aus beliebigen abschnitten. */}
+      {/* wenn beide kerzen aus sind, meldet sich der knecht */}
+      {spruch && (
+        <div className="knechtsagt" onClick={() => setSpruch(null)}>
+          <div className="knechtblase" onClick={(e) => e.stopPropagation()}>
+            <p>{spruch}</p>
+            <button className="btn" onClick={() => setSpruch(null)}>na gut</button>
+          </div>
+        </div>
+      )}
+
       {/* die karte, die gerade am finger haengt */}
       {zug && zug.laeuft && (
         <div className="amfinger" style={{ left: zug.x - zug.dx, top: zug.y - zug.dy }}>
@@ -848,7 +890,22 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren }) {
   );
 }
 
-const STILLE = 45 * 60 * 1000;
+const STILLE = 45 * 60 * 1000;          // dann geht die erste kerze aus
+const STILLE_ZWEI = 55 * 60 * 1000;     // zehn minuten spaeter die zweite
+
+// Was der Knecht sagt, wenn beide kerzen aus sind.
+const SPRUECHE = [
+  "Ich hätte mehr erwartet.",
+  "Die Kerzen brennen. Du nicht.",
+  "Das Pergament wartet. Es ist geduldiger als ich.",
+  "Ein leeres Blatt ist auch eine Aussage. Keine gute.",
+  "Ich habe Autoren kommen und gehen sehen. Meist gehen.",
+  "Deine Figuren stehen herum und schauen sich an.",
+  "Soll ich die Feder für dich halten? Sie wird schwer, ich weiß.",
+  "Irgendwo dort draußen schreibt jemand anders deine Geschichte.",
+  "Die Tinte trocknet ein. Wie so vieles.",
+  "Du warst schon einmal weiter. Ich erinnere mich.",
+];
 
 // ---------- App ----------
 export default function Schreibknecht() {
@@ -1049,11 +1106,30 @@ export default function Schreibknecht() {
   // ---- die Kerze ----
   const gesamt = projekte.reduce((s, p) => s + p.abschnitte.reduce(
     (x, a) => x + a.karten.reduce((y, k) => y + zaehle(k.text), 0), 0), 0);
-  const [erloschen, setErloschen] = useState(false);
+  const [erloschen, setErloschen] = useState(false);      // erste kerze
+  const [dunkel, setDunkel] = useState(false);           // beide kerzen
+  const [spruch, setSpruch] = useState(null);
   const zuletztWort = useRef(Date.now());
-  useEffect(() => { zuletztWort.current = Date.now(); setErloschen(false); }, [gesamt]);
+  const spruchGesagt = useRef(false);
+
   useEffect(() => {
-    const t = setInterval(() => setErloschen(Date.now() - zuletztWort.current > STILLE), 15000);
+    zuletztWort.current = Date.now();
+    setErloschen(false); setDunkel(false);
+    spruchGesagt.current = false;
+  }, [gesamt]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      const still = Date.now() - zuletztWort.current;
+      setErloschen(still > STILLE);
+      const beide = still > STILLE_ZWEI;
+      setDunkel(beide);
+      // der spruch kommt genau einmal je stille
+      if (beide && !spruchGesagt.current) {
+        spruchGesagt.current = true;
+        setSpruch(SPRUECHE[Math.floor(Math.random() * SPRUECHE.length)]);
+      }
+    }, 15000);
     return () => clearInterval(t);
   }, []);
 
@@ -1063,12 +1139,13 @@ export default function Schreibknecht() {
     <div className="huette">
       <Stil />
       <div className={"schein" + (erloschen ? " gedaempft" : "")} aria-hidden="true" />
+      <Funken />
 
-      <header className={"kopf" + (erloschen ? " halbdunkel" : "")}>
-        <Kerze seite="links" />
+      <header className={"kopf" + (erloschen ? " halbdunkel" : "") + (dunkel ? " ganzdunkel" : "")}>
+        <Kerze seite="links" aus={dunkel} />
         <div className="titelblock">
           <h1>Schreibknecht</h1>
-          <p className="motto">„write or die!" <span>dr. wicked</span></p>
+          <p className="motto">🕷 „write or die!" 🕸 <span>dr. wicked</span></p>
         </div>
         <Kerze seite="rechts" aus={erloschen} />
       </header>
@@ -1108,13 +1185,15 @@ function Stil() {
 @import url('https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap');
 
 .huette{
+  /* die farben sind an ihrem foto aus dem spiel gemessen:
+     licht #da7b36 · mittelton #75411a · dunkel #100902 */
   --pergament:#e6d9bb; --pergament2:#d6c49e; --tinte:#2a2118;
-  --kerze:#f2b357; --kerze2:#ffdda0; --messing:#a8874f; --nebel:#6f6350;
+  --kerze:#e08b3c; --kerze2:#ffd79a; --messing:#a87a42; --nebel:#6b5a45;
   position:relative; min-height:100vh; padding:0 0 80px;
   background:
-    radial-gradient(120% 80% at 50% -10%, rgba(242,179,87,.13) 0%, transparent 58%),
-    radial-gradient(140% 100% at 50% 40%, transparent 40%, rgba(0,0,0,.45) 100%),
-    linear-gradient(#16120d, #0c0a07);
+    radial-gradient(110% 70% at 50% -8%, rgba(218,123,54,.22) 0%, transparent 55%),
+    radial-gradient(150% 110% at 50% 42%, transparent 26%, rgba(0,0,0,.72) 100%),
+    linear-gradient(#140c05, #0a0603);
   background-attachment: fixed;
   color:var(--pergament);
   font-family:'Courier Prime', ui-monospace, monospace;
@@ -1122,11 +1201,28 @@ function Stil() {
 .huette *{box-sizing:border-box}
 .schein{
   position:fixed; inset:0; pointer-events:none; z-index:0;
-  background:radial-gradient(60% 45% at 50% 8%, rgba(242,179,87,.10), transparent 70%);
+  background:radial-gradient(58% 42% at 50% 8%, rgba(218,123,54,.16), transparent 70%);
   animation:atmen 6s ease-in-out infinite;
 }
 @keyframes atmen{0%,100%{opacity:.75}50%{opacity:1}}
 .schein.gedaempft{opacity:.42; transition:opacity 2.4s ease}
+
+/* funken — sie steigen langsam auf und verloeschen wieder */
+.funkenfeld{position:fixed; inset:0; pointer-events:none; z-index:0; overflow:hidden}
+.funke{
+  position:absolute; border-radius:50%; opacity:0;
+  background:radial-gradient(circle, #ffe6b8 0%, var(--kerze) 45%, transparent 72%);
+  box-shadow:0 0 6px rgba(224,139,60,.85);
+  animation-name:funkeln; animation-iteration-count:infinite;
+  animation-timing-function:ease-in-out;
+}
+@keyframes funkeln{
+  0%   {opacity:0;   transform:translateY(0) scale(.6)}
+  18%  {opacity:.85; transform:translateY(calc(var(--weite) * .25)) scale(1)}
+  55%  {opacity:.5;  transform:translateY(calc(var(--weite) * .7)) scale(.9)}
+  100% {opacity:0;   transform:translateY(var(--weite)) scale(.5)}
+}
+@media(prefers-reduced-motion:reduce){.funkenfeld{display:none}}
 
 .kopf{
   position:relative; z-index:1;
@@ -1139,7 +1235,28 @@ function Stil() {
   font-size:clamp(30px,7vw,62px); letter-spacing:.05em; line-height:1; color:var(--kerze2);
   text-shadow:0 0 22px rgba(242,179,87,.4), 0 2px 0 rgba(0,0,0,.6);
 }
-.kopf.halbdunkel h1{color:#c9b184; text-shadow:0 0 10px rgba(242,179,87,.14); transition:2s ease}
+.kopf.halbdunkel h1{color:#c9b184; text-shadow:0 0 10px rgba(224,139,60,.14); transition:2s ease}
+.kopf.ganzdunkel h1{color:#8d7a5c; text-shadow:none; transition:3s ease}
+
+/* der knecht meldet sich, wenn beide kerzen aus sind */
+.knechtsagt{
+  position:fixed; inset:0; z-index:80; display:flex; align-items:center; justify-content:center;
+  background:rgba(6,4,2,.72); animation:sagtein .35s ease-out; padding:24px;
+}
+@keyframes sagtein{from{opacity:0}to{opacity:1}}
+.knechtblase{
+  max-width:min(460px,92vw); text-align:center; padding:34px 32px 26px;
+  border:1px solid rgba(224,139,60,.4); border-radius:10px;
+  background:linear-gradient(#180f06, #0d0803);
+  box-shadow:0 22px 60px rgba(0,0,0,.8), 0 0 40px rgba(224,139,60,.14);
+  animation:blaseein .4s cubic-bezier(.2,.9,.3,1);
+}
+@keyframes blaseein{from{opacity:0; transform:translateY(14px) scale(.96)}to{opacity:1; transform:none}}
+.knechtblase p{
+  margin:0 0 22px; font-family:'IM Fell English SC', Georgia, serif;
+  font-size:clamp(19px,3.6vw,27px); line-height:1.45; letter-spacing:.03em;
+  color:var(--kerze2); text-shadow:0 0 22px rgba(224,139,60,.35);
+}
 .motto{
   margin:10px 0 0; font-family:'IM Fell English', Georgia, serif; font-style:italic;
   font-size:clamp(12px,2.2vw,16px); color:var(--nebel); letter-spacing:.06em;
@@ -1606,7 +1723,7 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte{display:none !important}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein{display:none !important}
   .seite.text{background:none; border:0}
   .druckkopie{
