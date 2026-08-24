@@ -445,6 +445,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const [mischt, setMischt] = useState(null);
   const [nurDieser, setNurDieser] = useState(null);
   const [pult, setPult] = useState([]);   // bis zu zwei karten-ids, gross aufgeschlagen
+  const [klein, setKlein] = useState(false);   // pult eingeklappt?
   const [liest, setLiest] = useState(null);   // {id, pause} — wer gerade vorgelesen wird
   const [asche, setAsche] = useState(null);  // zuletzt verbrannte karte, kurz zurueckholbar
 
@@ -457,8 +458,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const uhren = useRef({});
 
   // eine karte aufs pult legen. die dritte schiebt die aelteste runter.
-  const aufsPult = (id) => setPult((l) =>
-    l.includes(id) ? l.filter((x) => x !== id) : [...l, id].slice(-2));
+  const aufsPult = (id) => {
+    setKlein(false);
+    setPult((l) => (l.includes(id) ? l.filter((x) => x !== id) : [...l, id].slice(-2)));
+  };
   const vomPult = (id) => setPult((l) => l.filter((x) => x !== id));
 
   // vorlesen: play und pause. pause haelt an, wo er ist — nicht von vorn.
@@ -903,6 +906,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         ))}
 
         <button className="abschnittneu" onClick={abschnittZu}>+ trennstrich</button>
+        {pult.length > 0 && <div className={"pultplatz" + (klein ? " klein" : "")} />}
       </div>
 
       {/* DAS PULT — klappt unter der auslage auf, die karten oben bleiben sichtbar.
@@ -928,13 +932,20 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       )}
 
       {pult.length > 0 && (
-        <div className="pult">
-          <div className="pultkopf">
+        <div className={"pult" + (klein ? " klein" : "")}>
+          <div className="pultkopf" onDoubleClick={() => setKlein((k) => !k)}>
             <span className="pultname">pult</span>
             <span className="pulthinweis">
-              {pult.length === 1 ? "eine karte — leg eine zweite dazu" : "zwei karten"}
+              {klein
+                ? pult.map((id) => {
+                    const f = findeKarte(id);
+                    return f ? (f.karte.titel || f.karte.text || "karte").trim().slice(0, 30) : "";
+                  }).filter(Boolean).join("  ·  ")
+                : pult.length === 1 ? "eine karte — leg eine zweite dazu" : "zwei karten"}
             </span>
             <span className="fuellung" />
+            <button className="klein" onClick={() => setKlein((k) => !k)}
+              title={klein ? "pult aufklappen" : "pult einklappen"}>{klein ? "▲" : "▼"}</button>
             <button className="klein" onClick={() => setPult([])} title="pult schließen · esc">✕</button>
           </div>
           <div className={"pultblatt" + (pult.length === 2 ? " zwei" : "")}>
@@ -2056,24 +2067,51 @@ function Stil() {
 .siegelzeichen{font-size:30px}
 
 
-/* ---- DAS PULT ---- */
+/* ---- DAS PULT ----
+   es haengt am unteren bildschirmrand und liegt UEBER der auslage.
+   sonst muesste man bei vielen reihen bis ganz nach unten scrollen,
+   um es zu finden. */
 .pult{
-  margin-top:26px; border-top:1px solid rgba(168,135,79,.28); padding-top:18px;
-  animation:pultauf .28s cubic-bezier(.2,.9,.3,1);
+  position:fixed; left:0; right:0; bottom:0; z-index:40;
+  display:flex; flex-direction:column;
+  max-height:min(66vh, 620px);
+  padding:12px clamp(14px,4vw,28px) 16px;
+  border-top:1px solid rgba(224,139,60,.4);
+  background:linear-gradient(rgba(14,9,4,.985), rgba(8,5,2,.995));
+  box-shadow:0 -18px 46px rgba(0,0,0,.75);
+  animation:pultauf .3s cubic-bezier(.2,.9,.3,1);
+  transition:max-height .25s ease, padding .25s ease;
 }
-@keyframes pultauf{from{opacity:0; transform:translateY(-10px)}to{opacity:1; transform:none}}
-.pultkopf{display:flex; align-items:center; gap:12px; margin-bottom:14px}
+@keyframes pultauf{from{opacity:0; transform:translateY(26px)}to{opacity:1; transform:none}}
+
+/* eingeklappt bleibt nur der kopf stehen */
+.pult.klein{max-height:52px; padding-bottom:10px; overflow:hidden}
+.pult.klein .pultblatt{display:none}
+
+/* der freie raum unten, damit die letzte reihe nicht verdeckt liegt */
+.pultplatz{height:min(66vh, 620px); transition:height .25s ease}
+.pultplatz.klein{height:66px}
+
+.pultkopf{
+  display:flex; align-items:center; gap:12px; margin-bottom:12px;
+  flex:0 0 auto; cursor:default; user-select:none;
+}
+.pultblatt{overflow-y:auto; overflow-x:hidden; flex:1; min-height:0; padding-right:2px}
+.pultblatt::-webkit-scrollbar{width:9px}
+.pultblatt::-webkit-scrollbar-track{background:transparent}
+.pultblatt::-webkit-scrollbar-thumb{background:rgba(168,135,79,.3); border-radius:4px}
 .pultname{
   font-family:'IM Fell English SC', Georgia, serif; font-size:14px; letter-spacing:.2em;
   color:var(--kerze2);
 }
 .pulthinweis{font-size:10.5px; letter-spacing:.06em; color:var(--nebel)}
+.pultblatt.raster{display:grid; grid-template-columns:1fr; gap:18px}
 .pultblatt{display:grid; grid-template-columns:1fr; gap:18px}
 .pultblatt.zwei{grid-template-columns:1fr 1fr}
 @media(max-width:820px){.pultblatt.zwei{grid-template-columns:1fr}}
 
 .bogen{
-  display:flex; flex-direction:column; min-height:440px; border-radius:12px; overflow:hidden;
+  display:flex; flex-direction:column; min-height:min(52vh, 440px); border-radius:12px; overflow:hidden;
   border:1px solid rgba(42,33,24,.55);
   background:
     repeating-linear-gradient(0deg, rgba(120,95,55,.05) 0 2px, transparent 2px 5px),
@@ -2219,7 +2257,7 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe{display:none !important}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks{display:none !important}
   .seite.text{background:none; border:0}
   .druckkopie{
@@ -2232,6 +2270,7 @@ function Stil() {
   .neuezeile{display:none !important}
   .reihe{display:block; margin:0}
   .bogen{border:0; background:none; box-shadow:none; min-height:0}
+  .pult{position:static; max-height:none; padding:0; border:0; background:none; box-shadow:none}
   .strichtitel{color:#111; border:0; width:auto !important; font-weight:700}
   .abzahl,.linie{display:none}
 }
