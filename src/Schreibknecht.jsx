@@ -2008,14 +2008,17 @@ function Stil() {
 .seite.text textarea:hover::-webkit-scrollbar-thumb{background:rgba(42,33,24,.45); background-clip:content-box}
 .seite.text textarea:focus{outline:none}
 .seite.text textarea::placeholder{color:rgba(42,33,24,.3)}
-.seite.bild{transform:rotateY(180deg); background:linear-gradient(155deg, #241d15, #171208)}
+.seite.bild{
+  transform:rotateY(180deg); position:relative;
+  background:linear-gradient(155deg, #1b1207, #0c0702);
+}
 .kartentitel{
   flex:1; min-width:0; font-family:'IM Fell English SC', Georgia, serif; font-size:11px;
   letter-spacing:.04em; color:var(--kerze2); background:transparent; border:0; padding:2px 4px;
+  text-shadow:0 1px 3px rgba(0,0,0,.8);
 }
 .kartentitel:focus{outline:none; background:rgba(242,179,87,.08); border-radius:2px}
 .kartentitel::placeholder{color:var(--nebel); font-style:italic; font-size:10px}
-.seite.bild img{width:100%; flex:1; object-fit:cover; min-height:0}
 .bildleer{
   flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px;
   background:transparent; border:0; cursor:pointer; color:var(--messing);
@@ -2025,9 +2028,17 @@ function Stil() {
 .bildleer:hover{color:var(--kerze2)}
 .fuss{
   display:flex; align-items:center; gap:5px; padding:6px 8px;
-  border-top:1px solid rgba(42,33,24,.2); background:rgba(0,0,0,.10);
+  border-top:1px solid rgba(42,33,24,.2); background:rgba(20,12,5,.08);
 }
-.seite.bild .fuss{border-top-color:rgba(168,135,79,.2)}
+/* der streifen unter dem bild liegt DARUEBER und laesst es durchscheinen —
+   sonst schneidet er das bild ab und traegt noch den alten braunton */
+.seite.bild .fuss{
+  position:absolute; left:0; right:0; bottom:0; z-index:2;
+  border-top:1px solid rgba(224,139,60,.22);
+  background:linear-gradient(rgba(10,6,2,.35), rgba(10,6,2,.82));
+  backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
+}
+.seite.bild img{width:100%; flex:1; object-fit:cover; min-height:0}
 .woerter{flex:1; font-size:10px; color:rgba(42,33,24,.45); letter-spacing:.06em}
 .seite .klein{border-color:rgba(42,33,24,.2); color:rgba(42,33,24,.5)}
 .seite .klein:hover{color:var(--tinte); border-color:rgba(42,33,24,.5)}
