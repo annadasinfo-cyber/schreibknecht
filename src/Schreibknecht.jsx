@@ -243,6 +243,35 @@ function verlaengern(alt) {
   return laufendeVerlaengerung;
 }
 
+// ============================================================
+// DIE WARTESCHLANGE
+// Ist das netz weg, geht nichts verloren: jede aenderung wird
+// aufgeschrieben und nachgereicht, sobald es wieder da ist.
+// Sie liegt im browser, ueberlebt also auch ein neuladen.
+// ============================================================
+const WARTE_SCHUB = "sk:warteschlange";
+
+let warteMerk = null;
+const warteLesen = () => {
+  if (warteMerk) return warteMerk;
+  try { warteMerk = JSON.parse(localStorage.getItem(WARTE_SCHUB) || "[]"); }
+  catch { warteMerk = []; }
+  return warteMerk;
+};
+const warteSchreiben = (l) => {
+  warteMerk = l;
+  try { localStorage.setItem(WARTE_SCHUB, JSON.stringify(l)); } catch {}
+};
+const warteAnhaengen = (auftrag) => {
+  const l = [...warteLesen(), { ...auftrag, wann: Date.now() }];
+  warteSchreiben(l);
+  return l.length;
+};
+
+// war das ein netzproblem — oder hat die datenbank ordentlich nein gesagt?
+const istNetzweg = (e) =>
+  e && (e.name === "AbortError" || /netz|verbindung|antwortet nicht|failed|network|load/i.test(String(e.message)));
+
 // ---------- Sprechen mit der Datenbank ----------
 function machApi(holSitzung, setzeSitzung, abmelden) {
   const schicken = async (methode, pfad, koerper, extra, marke) => {
@@ -288,6 +317,25 @@ function machApi(holSitzung, setzeSitzung, abmelden) {
     if (!r.ok) throw new Error((await r.text()).slice(0, 200) || ("status " + r.status));
     const t = await r.text();
     return t ? JSON.parse(t) : null;
+  };
+}
+
+// dieselbe api, aber schreibende auftraege wandern bei netzproblemen
+// in die warteschlange statt verloren zu gehen
+function machApiMitNetz(api, melde) {
+  return async function (methode, pfad, koerper, extra) {
+    try {
+      return await api(methode, pfad, koerper, extra);
+    } catch (e) {
+      const schreibt = methode !== "GET";
+      const anmeldung = /abgemeldet/.test(String(e.message));
+      if (schreibt && !anmeldung && istNetzweg(e)) {
+        const n = warteAnhaengen({ methode, pfad, koerper, extra });
+        melde && melde(n);
+        return null;                 // die aenderung steht ja schon auf dem schirm
+      }
+      throw e;
+    }
   };
 }
 
@@ -508,6 +556,16 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // beim schliessen des pults hoert er auf
   useEffect(() => { if (!pult.length && liest) vorlesenAus(); }, [pult.length]); // eslint-disable-line
   useEffect(() => () => vorleser.aus && vorleser.aus(), []);
+
+  // cmd/strg + enter legt eine neue karte an, ohne die hand von der tastatur
+  useEffect(() => {
+    if (!pult.length) return;
+    const t = (e) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); neueImPult(); }
+    };
+    window.addEventListener("keydown", t);
+    return () => window.removeEventListener("keydown", t);
+  });
 
   // escape schliesst das pult
   useEffect(() => {
@@ -840,7 +898,9 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       }
       await api("POST", "/rest/v1/karten", neu);
       await laden();
-      setPult((l) => [...l, neu.id].slice(-2));
+      // die neue karte kommt IMMER nach rechts — links bleibt das
+      // ausgangsmaterial stehen, aus dem getrennt wird
+      setPult((l) => (l.length < 2 ? [...l, neu.id] : [l[0], neu.id]));
       setKlein(false);
     } catch (e) { sag(String(e.message)); }
   };
@@ -1076,7 +1136,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             </span>
             <span className="fuellung" />
             <button className="klein" onClick={neueImPult}
-              title="neue karte — sie legt sich neben die offene und schlägt sich auf">+</button>
+              title="neue karte rechts daneben · ⌘/strg + enter">+</button>
             <button className="klein" onClick={() => setKlein((k) => !k)}
               title={klein ? "pult aufklappen" : "pult einklappen"}>{klein ? "▲" : "▼"}</button>
             <button className="klein" onClick={() => setPult([])} title="pult schließen · esc">✕</button>
@@ -1269,6 +1329,7 @@ export default function Schreibknecht() {
   const [hand, setHand] = useState(null);   // ausgeschnittene karte, wartet aufs ablegen
   const [geprueft, setGeprueft] = useState(false);  // zugang beim start geprueft?
   const [tage, setTage] = useState([]);            // das tagewerk aller projekte
+  const [warten, setWarten] = useState(() => warteLesen().length);   // noch nicht abgeschickt
   const [laeutet, setLaeutet] = useState(false);   // die glocke schwingt gerade
   const zuletztUhr = useRef(null);
 
@@ -1281,9 +1342,45 @@ export default function Schreibknecht() {
   // AKTUELLEN zugang sieht — auch den gerade verlaengerten
   const sitzungRef = useRef(sitzung);
   useEffect(() => { sitzungRef.current = sitzung; }, [sitzung]);
-  const api = useCallback(
+  const rohApi = useCallback(
     machApi(() => sitzungRef.current, (neu) => setSitzung(neu), abmelden),
     [abmelden]);
+  const api = useCallback(machApiMitNetz(rohApi, setWarten), [rohApi]);
+
+  // ---- die warteschlange nachreichen ----
+  const schiebtGerade = useRef(false);
+  const nachreichen = useCallback(async () => {
+    if (schiebtGerade.current) return;
+    const l = warteLesen();
+    if (!l.length || !sitzungRef.current) return;
+    schiebtGerade.current = true;
+    try {
+      // der reihe nach — die reihenfolge ist wichtig, sonst landet
+      // eine aenderung vor der karte, die sie aendern soll
+      while (warteLesen().length) {
+        const [erster, ...rest] = warteLesen();
+        try {
+          await rohApi(erster.methode, erster.pfad, erster.koerper, erster.extra);
+        } catch (e) {
+          if (istNetzweg(e)) break;          // netz immer noch weg — spaeter weiter
+          // die datenbank hat ordentlich nein gesagt: auftrag verwerfen,
+          // sonst haengt die schlange fuer immer
+        }
+        warteSchreiben(rest);
+        setWarten(rest.length);
+      }
+    } finally { schiebtGerade.current = false; }
+  }, [rohApi]);
+
+  // nachreichen: wenn das netz zurueckkommt, beim start, und alle 20 sekunden
+  useEffect(() => {
+    if (!sitzung) return;
+    nachreichen();
+    const zurueck = () => nachreichen();
+    window.addEventListener("online", zurueck);
+    const t = setInterval(() => { if (warteLesen().length) nachreichen(); }, 20000);
+    return () => { window.removeEventListener("online", zurueck); clearInterval(t); };
+  }, [sitzung, nachreichen]);
 
   const anmelden = async (mail, wort) => {
     setLaeuft(true); setFehler("");
@@ -1321,6 +1418,8 @@ export default function Schreibknecht() {
         api("GET", "/rest/v1/tagewerk?select=*&order=tag.desc&limit=400"),
       ]);
       setTage(tw || []);
+      try { localStorage.setItem("sk:letzterStand",
+        JSON.stringify({ pr, ab, ka, tw, wann: Date.now() })); } catch {}
       setProjekte((pr || []).map((p) => ({
         ...p,
         abschnitte: (ab || []).filter((a) => a.projekt_id === p.id)
@@ -1328,8 +1427,24 @@ export default function Schreibknecht() {
       })));
       setGeladen(true);
     } catch (e) {
-      // auch bei einem fehler nicht ewig "wird geholt" stehen lassen
-      setMsg("konnte nicht laden: " + String(e.message));
+      // netz weg? dann wenigstens den zuletzt gesehenen stand zeigen,
+      // statt vor einer leeren huette zu sitzen
+      let gerettet = null;
+      try { gerettet = JSON.parse(localStorage.getItem("sk:letzterStand") || "null"); } catch {}
+      if (gerettet && gerettet.pr) {
+        const { pr, ab, ka, tw } = gerettet;
+        setProjekte((pr || []).map((p) => ({
+          ...p,
+          abschnitte: (ab || []).filter((a) => a.projekt_id === p.id)
+            .map((a) => ({ ...a, karten: (ka || []).filter((k) => k.abschnitt_id === a.id) })),
+        })));
+        setTage(tw || []);
+        setMsg("kein netz — du siehst den stand von "
+          + new Date(gerettet.wann).toLocaleString("de-DE")
+          + ". was du jetzt schreibst, wird nachgereicht.");
+      } else {
+        setMsg("konnte nicht laden: " + String(e.message));
+      }
       setGeladen(true);
     }
   }, [api]);
@@ -1735,6 +1850,13 @@ export default function Schreibknecht() {
         </div>
       )}
 
+      {warten > 0 && (
+        <div className="warteleiste" onClick={nachreichen} title="jetzt nachreichen">
+          <span className="wartepunkt" />
+          {warten} {warten === 1 ? "änderung wartet" : "änderungen warten"} aufs netz
+        </div>
+      )}
+
       {sitzung && <button className="raus" onClick={abmelden} title="abmelden">⏻</button>}
     </div>
   );
@@ -1905,6 +2027,21 @@ function Stil() {
 }
 .pfortenfehler{margin:2px 0 0; font-size:11.5px; color:#e08070; text-align:center}
 .btn.gross{padding:11px; font-size:13px; letter-spacing:.12em}
+/* was noch nicht abgeschickt werden konnte */
+.warteleiste{
+  position:fixed; left:14px; bottom:14px; z-index:7; cursor:pointer;
+  display:flex; align-items:center; gap:8px; padding:8px 13px; border-radius:4px;
+  border:1px solid rgba(224,139,60,.45); background:rgba(24,15,6,.95);
+  font-size:11px; letter-spacing:.05em; color:var(--pergament2);
+  box-shadow:0 8px 22px rgba(0,0,0,.6);
+}
+.warteleiste:hover{border-color:var(--kerze); color:var(--kerze2)}
+.wartepunkt{
+  width:7px; height:7px; border-radius:50%; background:var(--kerze);
+  animation:wartenpuls 1.6s ease-in-out infinite; flex:0 0 auto;
+}
+@keyframes wartenpuls{0%,100%{opacity:.35}50%{opacity:1}}
+
 .raus{
   position:fixed; right:14px; bottom:14px; z-index:5; width:34px; height:34px; border-radius:50%;
   border:1px solid rgba(168,135,79,.3); background:rgba(0,0,0,.4); color:var(--nebel);
@@ -2353,13 +2490,25 @@ function Stil() {
 
 /* das kreuz zum verbrennen sitzt jetzt OBEN in der ecke, weit weg
    vom umblaettern — sie hatte sich aus versehen eine karte geloescht */
+/* Das kreuz soll in seiner unterlage verschwinden — so wie das auf dem
+   deckblatt im dunklen hintergrund verschwindet. Auf pergament heisst das:
+   pergamentfarben mit blasser tinte, kein dunkler knopf. */
 .verbrennen{
-  position:absolute; top:4px; right:4px; z-index:5; width:22px; height:22px; border-radius:50%;
-  border:1px solid rgba(168,135,79,.4); background:#14110c; color:var(--nebel);
-  font-size:11px; cursor:pointer; opacity:0; transition:.15s;
+  position:absolute; top:5px; right:5px; z-index:5; width:20px; height:20px; border-radius:50%;
+  border:1px solid rgba(42,33,24,.16); background:rgba(224,213,184,.5);
+  color:rgba(42,33,24,.42); font-size:10px; cursor:pointer; opacity:0; transition:.15s;
 }
 .kartenplatz:hover .verbrennen{opacity:1}
-.verbrennen:hover{color:#e08070; border-color:rgba(141,50,38,.75); background:#1d100d}
+.verbrennen:hover{
+  color:rgba(42,33,24,.85); border-color:rgba(42,33,24,.4); background:rgba(230,217,187,.9);
+}
+/* auf der bildseite ist die unterlage dunkel — dort dreht es sich um */
+.karte.um ~ .verbrennen, .kartenplatz:has(.karte.um) .verbrennen{
+  border-color:rgba(224,139,60,.28); background:rgba(24,15,6,.5); color:rgba(224,139,60,.6);
+}
+.kartenplatz:has(.karte.um) .verbrennen:hover{
+  color:var(--kerze2); border-color:rgba(224,139,60,.65); background:rgba(40,22,8,.8);
+}
 .kartenplatz{position:relative}
 
 /* die asche — zurueckholen, solange sie noch warm ist */
@@ -2431,7 +2580,7 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz{display:none !important}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks{display:none !important}
   .seite.text{background:none; border:0}
   .druckkopie{
