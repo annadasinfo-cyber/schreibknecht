@@ -754,16 +754,6 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
       {/* DAS PULT — klappt unter der auslage auf, die karten oben bleiben sichtbar.
           bis zu zwei karten nebeneinander, aus beliebigen abschnitten. */}
-      {/* wenn beide kerzen aus sind, meldet sich der knecht */}
-      {spruch && (
-        <div className="knechtsagt" onClick={() => setSpruch(null)}>
-          <div className="knechtblase" onClick={(e) => e.stopPropagation()}>
-            <p>{spruch}</p>
-            <button className="btn" onClick={() => setSpruch(null)}>na gut</button>
-          </div>
-        </div>
-      )}
-
       {/* die karte, die gerade am finger haengt */}
       {zug && zug.laeuft && (
         <div className="amfinger" style={{ left: zug.x - zug.dx, top: zug.y - zug.dy }}>
@@ -1170,6 +1160,16 @@ export default function Schreibknecht() {
           <span className="handtext">{hand.name || "leere karte"}</span>
           <span className="handhinweis">liegt in der hand — in einem abschnitt ablegen</span>
           <button className="klein" onClick={() => setHand(null)} title="zurücklegen">✕</button>
+        </div>
+      )}
+
+      {/* wenn beide kerzen aus sind, meldet sich der knecht */}
+      {spruch && (
+        <div className="knechtsagt" onClick={() => setSpruch(null)}>
+          <div className="knechtblase" onClick={(e) => e.stopPropagation()}>
+            <p>{spruch}</p>
+            <button className="btn" onClick={() => setSpruch(null)}>na gut</button>
+          </div>
         </div>
       )}
 
