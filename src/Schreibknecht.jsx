@@ -18,6 +18,27 @@ const KNECHT_STAPEL = [
   // hier kommen deine weiteren karten dazu
 ];
 
+// Die karten stecken als text in dieser datei. Diesen text bei JEDEM
+// oeffnen des deckblatts wieder in bilder zu verwandeln ist teuer — im
+// app-fenster merkt man es deutlich. Also machen wir es EINMAL und
+// behalten die fertigen bilder.
+let stapelFertig = null;
+function stapelHolen() {
+  if (stapelFertig) return stapelFertig;
+  stapelFertig = KNECHT_STAPEL.map((text) => {
+    try {
+      const roh = atob(text.slice(text.indexOf(",") + 1));
+      const bytes = new Uint8Array(roh.length);
+      for (let i = 0; i < roh.length; i++) bytes[i] = roh.charCodeAt(i);
+      const adresse = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+      const vorwaermen = new Image();          // schon mal entschluesseln lassen
+      vorwaermen.src = adresse;
+      return adresse;
+    } catch { return text; }
+  });
+  return stapelFertig;
+}
+
 const neueId = () => "id" + Math.random().toString(36).slice(2, 10);
 // ============================================================
 // DER VORLESER · nimmt die Stimme, die im Rechner steckt.
@@ -438,7 +459,8 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
   return (
     <div data-ziel={zielMarke}
       className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")
-        + (angepeilt ? " angepeilt" : "")}>
+        + (angepeilt ? " angepeilt" : "") + (karte.gedreht ? " umgedreht" : "")
+        + (draufMarke ? " zielbereit" : "")}>
       {!zu && <button className="verbrennen" onClick={onWeg}
         title="karte verbrennen">✕</button>}
       {/* der streifen ZUM DRAUFLEGEN sitzt direkt ueber der obersten karte
@@ -1287,7 +1309,7 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
   // Bei jedem Oeffnen werden drei Karten vom Stapel gezogen und zwischen
   // die Kacheln gelegt — jede an eine andere Stelle, jede etwas schief.
   const [gezogen] = useState(() => {
-    const stapel = [...KNECHT_STAPEL];
+    const stapel = [...stapelHolen()];   // schon fertige bilder, kein text mehr
     for (let i = stapel.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [stapel[i], stapel[j]] = [stapel[j], stapel[i]];
@@ -1445,6 +1467,10 @@ export default function Schreibknecht() {
   const [warten, setWarten] = useState(() => warteLesen().length);   // noch nicht abgeschickt
   const [laeutet, setLaeutet] = useState(false);   // die glocke schwingt gerade
   const zuletztUhr = useRef(null);
+
+  // die kartenbilder gleich beim start vorbereiten, nicht erst
+  // wenn das deckblatt aufgeht
+  useEffect(() => { stapelHolen(); }, []);
 
   const abmelden = useCallback(() => {
     sitzungSchreiben(null); setSitzung(null); setGeladen(false); setGeprueft(false);
@@ -2144,9 +2170,13 @@ function Stil() {
 .schein.gedaempft{opacity:.42; transition:opacity 2.4s ease}
 
 /* funken — sie steigen langsam auf und verloeschen wieder */
-.funkenfeld{position:fixed; inset:0; pointer-events:none; z-index:0; overflow:hidden}
+.funkenfeld{
+  position:fixed; inset:0; pointer-events:none; z-index:0; overflow:hidden;
+  contain:strict;                 /* der rest der seite muss dafuer nicht neu rechnen */
+}
 .funke{
   position:absolute; border-radius:50%; opacity:0;
+  will-change:transform, opacity;  /* laeuft dann auf der grafikkarte */
   background:radial-gradient(circle, #ffe6b8 0%, var(--kerze) 45%, transparent 72%);
   box-shadow:0 0 7px rgba(224,139,60,.9), 0 0 16px rgba(224,139,60,.35);
   animation-name:funkeln; animation-iteration-count:infinite;
@@ -2468,7 +2498,12 @@ function Stil() {
 /* die reihen ueber und unter — nur da, solange eine karte in der luft ist */
 .reihe.nurluft{opacity:.5; animation:luft .25s ease-out}
 @keyframes luft{from{opacity:0; transform:translateY(-6px)}to{opacity:.5; transform:none}}
-.kartenplatz{width:198px; height:268px; perspective:1100px; flex:0 0 auto}
+.kartenplatz{
+  width:198px; height:268px; perspective:1100px; flex:0 0 auto;
+  /* karten weit rechts ausserhalb des sichtfelds werden gar nicht erst
+     gezeichnet — bei langen reihen macht das den groessten unterschied */
+  content-visibility:auto; contain-intrinsic-size:198px 268px;
+}
 /* das schildchen, das an der maus haengt — lesbar und richtigherum */
 /* die karte, die am finger haengt — folgt dem zeiger eins zu eins */
 .amfinger{
@@ -2512,7 +2547,7 @@ function Stil() {
 .griff:active{cursor:grabbing}
 .kartenplatz:hover .griff{opacity:1}
 /* solange etwas in der luft ist, hat der ablegepunkt vorrang */
-.kartenplatz:has(.draufleiste) .griff{opacity:0}
+.kartenplatz.zielbereit .griff{opacity:0}
 .griff i{width:3px; height:3px; border-radius:50%; background:rgba(42,33,24,.4)}
 /* das fundament einer spalte bekommt einen balken statt punkten */
 .griff.fundament{gap:0}
@@ -2591,11 +2626,13 @@ function Stil() {
 }
 /* der streifen unter dem bild liegt DARUEBER und laesst es durchscheinen —
    sonst schneidet er das bild ab und traegt noch den alten braunton */
+/* KEIN backdrop-filter hier. Der weichzeichner sieht schoen aus, kostet
+   aber je karte richtig rechenzeit — bei sechzig karten wird die seite
+   davon zaeh. Ein etwas kraeftigerer verlauf tut dasselbe fuer umsonst. */
 .seite.bild .fuss{
   position:absolute; left:0; right:0; bottom:0; z-index:2;
   border-top:1px solid rgba(224,139,60,.22);
-  background:linear-gradient(rgba(10,6,2,.35), rgba(10,6,2,.82));
-  backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px);
+  background:linear-gradient(rgba(10,6,2,0), rgba(10,6,2,.55) 35%, rgba(10,6,2,.92));
 }
 .seite.bild img{
   position:absolute; inset:0; width:100%; height:100%;
@@ -2769,11 +2806,12 @@ function Stil() {
 .verbrennen:hover{
   color:rgba(42,33,24,.85); border-color:rgba(42,33,24,.4); background:rgba(230,217,187,.9);
 }
-/* auf der bildseite ist die unterlage dunkel — dort dreht es sich um */
-.karte.um ~ .verbrennen, .kartenplatz:has(.karte.um) .verbrennen{
+/* auf der bildseite ist die unterlage dunkel — dort dreht es sich um.
+   Die klasse kommt aus dem code; :has() waere bei sechzig karten teuer. */
+.kartenplatz.umgedreht .verbrennen{
   border-color:rgba(224,139,60,.28); background:rgba(24,15,6,.5); color:rgba(224,139,60,.6);
 }
-.kartenplatz:has(.karte.um) .verbrennen:hover{
+.kartenplatz.umgedreht .verbrennen:hover{
   color:var(--kerze2); border-color:rgba(224,139,60,.65); background:rgba(40,22,8,.8);
 }
 .kartenplatz{position:relative}
