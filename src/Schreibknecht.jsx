@@ -273,6 +273,51 @@ const warteAnhaengen = (auftrag) => {
 const istNetzweg = (e) =>
   e && (e.name === "AbortError" || /netz|verbindung|antwortet nicht|failed|network|load/i.test(String(e.message)));
 
+// ============================================================
+// BILDER KLEINRECHNEN
+// Ein handyfoto hat 3-5 MB und wird in einer karte von 198 pixeln
+// gezeigt. Wir rechnen es vor dem hochladen auf eine vernuenftige
+// groesse und sparen damit das fuenfzigfache — an platz, an
+// datenverkehr und an wartezeit.
+// ============================================================
+const BILD_KANTE = 900;      // laengste seite; reicht fuer karte UND pult
+const BILD_GUETE = 0.82;
+
+function bildKleinrechnen(datei) {
+  return new Promise((fertig) => {
+    try {
+      const leser = new FileReader();
+      leser.onload = () => {
+        const bild = new Image();
+        bild.onload = () => {
+          const lang = Math.max(bild.width, bild.height);
+          const mal = lang > BILD_KANTE ? BILD_KANTE / lang : 1;
+          const b = Math.round(bild.width * mal), h = Math.round(bild.height * mal);
+          const tafel = document.createElement("canvas");
+          tafel.width = b; tafel.height = h;
+          const stift = tafel.getContext("2d");
+          stift.imageSmoothingQuality = "high";
+          stift.drawImage(bild, 0, 0, b, h);
+          // webp spart nochmal ein drittel; kann der browser es nicht, dann jpeg
+          const nimm = (art, dann) => tafel.toBlob(
+            (roh) => dann(roh && roh.type === art ? roh : null), art, BILD_GUETE);
+          nimm("image/webp", (webp) => {
+            if (webp && webp.size < datei.size) return fertig({ blob: webp, endung: "webp" });
+            nimm("image/jpeg", (jpeg) => {
+              if (jpeg && jpeg.size < datei.size) return fertig({ blob: jpeg, endung: "jpg" });
+              fertig(null);          // war schon klein genug — dann das original
+            });
+          });
+        };
+        bild.onerror = () => fertig(null);
+        bild.src = leser.result;
+      };
+      leser.onerror = () => fertig(null);
+      leser.readAsDataURL(datei);
+    } catch { fertig(null); }
+  });
+}
+
 // ---------- Sprechen mit der Datenbank ----------
 function machApi(holSitzung, setzeSitzung, abmelden) {
   const schicken = async (methode, pfad, koerper, extra, marke) => {
@@ -436,7 +481,7 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
 
         <div className="seite bild">
           {bildUrl
-            ? <img src={bildUrl} alt="" />
+            ? <img src={bildUrl} alt="" loading="lazy" decoding="async" />
             : <button className="bildleer" disabled={zu}
                 onClick={() => !zu && feld.current && feld.current.click()}>
                 <span className="siegel">{karte.bild ? "…" : "✧"}</span>
@@ -1188,7 +1233,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                     <button className="klein" onClick={() => vomPult(id)} title="vom pult nehmen">✕</button>
                   </div>
                   {f.karte.bild && bilder[f.karte.bild] && (
-                    <img className="bogenbild" src={bilder[f.karte.bild]} alt="" />
+                    <img className="bogenbild" src={bilder[f.karte.bild]} alt=""
+                      loading="lazy" decoding="async" />
                   )}
                   <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
                     readOnly={!!f.karte.gesperrt}
@@ -1237,7 +1283,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
 // ---------- Deckblatt ----------
 function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert,
-                    zurueckspielen, spieltZurueck, dateiFeld, platz, zaehlt, nachsehen }) {
+                    zurueckspielen, spieltZurueck, dateiFeld, platz, zaehlt, nachsehen, eindampfen, dampft }) {
   // Bei jedem Oeffnen werden drei Karten vom Stapel gezogen und zwischen
   // die Kacheln gelegt — jede an eine andere Stelle, jede etwas schief.
   const [gezogen] = useState(() => {
@@ -1327,6 +1373,10 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
       <div className="platzleiste">
         <button className="btn" onClick={nachsehen} disabled={zaehlt}
           title="nachmessen, wie voll es ist">{zaehlt ? "…" : "◫ wie voll?"}</button>
+        <button className="btn" onClick={eindampfen} disabled={dampft}
+          title="alle bilder einmal auf vernünftige größe bringen">
+          {dampft ? "…" : "◍ bilder eindampfen"}
+        </button>
         {platz ? (() => {
           const mb = platz.bytes / 1048576;
           const textMb = platz.text / 1048576;
@@ -1542,26 +1592,52 @@ export default function Schreibknecht() {
   }, [sitzung]);
 
   // ---- Bilder: fuer einen Pfad eine Adresse besorgen ----
-  const holBild = useCallback(async (pfad) => {
-    if (!pfad) return;
+  // Adressen fuer die bilder besorgen — fuer VIELE auf einmal.
+  // Vorher war das eine anfrage je bild; bei vierzig bildern also
+  // vierzig anfragen bei jedem oeffnen.
+  const holBilder = useCallback(async (pfade) => {
+    const liste = [...new Set((pfade || []).filter(Boolean))];
+    if (!liste.length) return;
     try {
-      const d = await api("POST", `/storage/v1/object/sign/kartenbilder/${pfad}`, { expiresIn: 3600 });
-      if (d && d.signedURL) setBilder((b) => ({ ...b, [pfad]: URL_DB + "/storage/v1" + d.signedURL }));
-    } catch {}
+      const d = await api("POST", "/storage/v1/object/sign/kartenbilder",
+        { expiresIn: 36000, paths: liste });
+      if (Array.isArray(d)) {
+        const neu = {};
+        d.forEach((e) => {
+          if (e && e.signedURL && !e.error) neu[e.path] = URL_DB + "/storage/v1" + e.signedURL;
+        });
+        if (Object.keys(neu).length) setBilder((b) => ({ ...b, ...neu }));
+      }
+    } catch {
+      // klappt der sammelweg nicht, dann eben einzeln
+      for (const pfad of liste) {
+        try {
+          const e = await api("POST", `/storage/v1/object/sign/kartenbilder/${pfad}`,
+            { expiresIn: 36000 });
+          if (e && e.signedURL) setBilder((b) => ({ ...b, [pfad]: URL_DB + "/storage/v1" + e.signedURL }));
+        } catch {}
+      }
+    }
   }, [api]);
 
-  // beim Laden alle vorhandenen Bilder anfordern
+  const holBild = useCallback((pfad) => holBilder([pfad]), [holBilder]);
+
+  // beim Laden alle vorhandenen Bilder in EINEM zug anfordern
   const geholt = useRef({});
   useEffect(() => {
     if (!geladen) return;
+    const offen = [];
     projekte.forEach((p) => p.abschnitte.forEach((a) => a.karten.forEach((k) => {
-      if (k.bild && !geholt.current[k.bild]) { geholt.current[k.bild] = true; holBild(k.bild); }
+      if (k.bild && !geholt.current[k.bild]) { geholt.current[k.bild] = true; offen.push(k.bild); }
     })));
-  }, [geladen, projekte, holBild]);
+    if (offen.length) holBilder(offen);
+  }, [geladen, projekte, holBilder]);
 
   // ---- Bild ablegen ----
   const hochladen = useCallback(async (datei, karteId) => {
-    const endung = (datei.name.split(".").pop() || "jpg").toLowerCase();
+    const klein = await bildKleinrechnen(datei);
+    const inhalt = klein ? klein.blob : datei;
+    const endung = klein ? klein.endung : (datei.name.split(".").pop() || "jpg").toLowerCase();
     const pfad = `${sitzung.user.id}/${karteId}.${endung}`;
     const r = await fetch(`${URL_DB}/storage/v1/object/kartenbilder/${pfad}`, {
       method: "POST",
@@ -1569,9 +1645,9 @@ export default function Schreibknecht() {
         apikey: KEY_DB,
         Authorization: "Bearer " + sitzung.access_token,
         "x-upsert": "true",
-        "Content-Type": datei.type || "application/octet-stream",
+        "Content-Type": inhalt.type || "application/octet-stream",
       },
-      body: datei,
+      body: inhalt,
     });
     if (!r.ok) throw new Error((await r.text()).slice(0, 160));
     return pfad;
@@ -1738,6 +1814,76 @@ export default function Schreibknecht() {
       });
     } catch (e) { setMsg("nachsehen ging nicht: " + String(e.message)); }
     setZaehlt(false);
+  };
+
+  // ---- ALTE BILDER EINDAMPFEN ----
+  // Alles, was frueher in voller groesse hochgeladen wurde, einmal
+  // durch dieselbe rechnung schicken. Das holt platz und tempo zurueck,
+  // ohne dass du ein einziges bild neu einbauen musst.
+  const [dampft, setDampft] = useState(false);
+  const eindampfen = async () => {
+    if (!confirm(
+      "alle bilder einmal kleinrechnen?\n\n"
+      + "sie werden dabei auf eine vernünftige größe gebracht — sichtbar\n"
+      + "ändert sich nichts, die karten sind ja nur 198 pixel breit.\n\n"
+      + "mach vorher eine sicherung, falls du unsicher bist.")) return;
+
+    setDampft(true); setMsg("");
+    try {
+      const ka = await api("GET", "/rest/v1/karten?select=id,bild");
+      const mitBild = (ka || []).filter((k) => k.bild);
+      let vorher = 0, nachher = 0, gemacht = 0, uebersprungen = 0;
+
+      for (let i = 0; i < mitBild.length; i++) {
+        const k = mitBild[i];
+        setMsg("bild " + (i + 1) + " von " + mitBild.length + " …");
+        try {
+          const d = await api("POST", `/storage/v1/object/sign/kartenbilder/${k.bild}`,
+            { expiresIn: 600 });
+          if (!d || !d.signedURL) continue;
+          const r = await fetch(URL_DB + "/storage/v1" + d.signedURL);
+          if (!r.ok) continue;
+          const alt = await r.blob();
+          vorher += alt.size;
+
+          const klein = await bildKleinrechnen(
+            new File([alt], "bild", { type: alt.type || "image/jpeg" }));
+          if (!klein || klein.blob.size >= alt.size * 0.92) {
+            nachher += alt.size; uebersprungen++; continue;   // lohnt nicht
+          }
+
+          const neuerPfad = `${sitzungRef.current.user.id}/${k.id}.${klein.endung}`;
+          const hoch = await fetch(`${URL_DB}/storage/v1/object/kartenbilder/${neuerPfad}`, {
+            method: "POST",
+            headers: {
+              apikey: KEY_DB,
+              Authorization: "Bearer " + sitzungRef.current.access_token,
+              "x-upsert": "true",
+              "Content-Type": klein.blob.type,
+            },
+            body: klein.blob,
+          });
+          if (!hoch.ok) { nachher += alt.size; continue; }
+
+          if (neuerPfad !== k.bild) {
+            await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { bild: neuerPfad });
+            // das alte wegraeumen, sonst liegt es weiter im ablagefach
+            await api("DELETE", "/storage/v1/object/kartenbilder", { prefixes: [k.bild] })
+              .catch(() => {});
+          }
+          nachher += klein.blob.size; gemacht++;
+        } catch {}
+      }
+
+      geholt.current = {}; setBilder({});
+      await laden();
+      const mb = (x) => (x / 1048576).toFixed(1);
+      setMsg("eingedampft · " + gemacht + " von " + mitBild.length + " bildern · "
+        + mb(vorher) + " MB → " + mb(nachher) + " MB"
+        + (uebersprungen ? " · " + uebersprungen + " waren schon klein" : ""));
+      setPlatz(null);
+    } catch (e) { setMsg("eindampfen ging nicht: " + String(e.message)); }
+    setDampft(false);
   };
 
   // ---- ZURUECKSPIELEN ----
@@ -1925,7 +2071,8 @@ export default function Schreibknecht() {
                   oeffnen={setOffen} weg={projektWeg} kopieren={projektKopieren}
                   sicherung={sicherung} sichert={sichert}
                   zurueckspielen={zurueckspielen} spieltZurueck={spieltZurueck}
-                  dateiFeld={dateiFeld} platz={platz} zaehlt={zaehlt} nachsehen={nachsehen} />}
+                  dateiFeld={dateiFeld} platz={platz} zaehlt={zaehlt} nachsehen={nachsehen}
+                  eindampfen={eindampfen} dampft={dampft} />}
         {msg && <p className="meldung" onClick={() => setMsg("")}>{msg}</p>}
       </main>
 
