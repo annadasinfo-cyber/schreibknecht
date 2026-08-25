@@ -940,20 +940,42 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
   // ZWISCHEN zwei karten schieben: alles ab hier rueckt einen platz weiter,
   // dann faellt die karte in die entstandene luecke.
+  // ZWISCHEN zwei spalten schieben. Ist die gegriffene karte ein fundament,
+  // wandert die GANZE spalte mit — sonst risse man sie hier wieder auseinander.
   const dazwischen = async (zielA, zielPos, zielZeile, karteId) => {
     const nachAb = projekt.abschnitte[zielA];
-    // ganze spalten ruecken weiter, nicht nur die eine reihe
-    const eigene = new Set(spalteVon(nachAb.karten, zielPos)
-      .filter((k) => k.id === karteId).map((k) => k.id));
-    const ruecken = nachAb.karten.filter(
-      (k) => k.pos >= zielPos && k.id !== karteId && !eigene.has(k.id));
+
+    // wo kommt sie her, und was haengt an ihr?
+    let vonAb = null, karte = null;
+    for (const a of projekt.abschnitte) {
+      const t = a.karten.find((k) => k.id === karteId);
+      if (t) { vonAb = a; karte = t; break; }
+    }
+    if (!karte) { setHand(null); return; }
+
+    const meine = istFundament(vonAb.karten, karte)
+      ? spalteVon(vonAb.karten, karte.pos)
+      : [karte];
+    const meineIds = new Set(meine.map((k) => k.id));
+
+    // alles ab der stelle rueckt einen weiter — ganze spalten
+    const ruecken = nachAb.karten.filter((k) => k.pos >= zielPos && !meineIds.has(k.id));
+
     try {
       // von hinten nach vorn, damit sich nichts gegenseitig ueberholt
       for (const k of [...ruecken].sort((x, y) => y.pos - x.pos)) {
         await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: k.pos + 1 });
       }
-      await api("PATCH", `/rest/v1/karten?id=eq.${karteId}`,
-        { abschnitt_id: nachAb.id, pos: zielPos, zeile: zielZeile });
+      if (meine.length > 1) {
+        // die spalte behaelt ihren aufbau, nur der platz aendert sich
+        for (const k of meine) {
+          await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`,
+            { abschnitt_id: nachAb.id, pos: zielPos });
+        }
+      } else {
+        await api("PATCH", `/rest/v1/karten?id=eq.${karteId}`,
+          { abschnitt_id: nachAb.id, pos: zielPos, zeile: zielZeile });
+      }
       await laden();
     } catch (e) { sag(String(e.message)); }
     setHand(null);
@@ -1017,6 +1039,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 luecken duerfen bleiben. die reihen ueber und unter erscheinen
                 nur, solange eine karte in der luft ist — sonst waere alles
                 voller platzhalter. */}
+            {/* ALLE reihen eines abschnitts liegen in EINEM schieber. Sonst
+                scrollt jede fuer sich, und die karten stehen nicht mehr
+                uebereinander, obwohl sie zusammengehoeren. */}
+            <div className="auslage">
             {(() => {
               const inDerLuft = !!((zug && zug.laeuft) || hand);
               const zeilenDa = a.karten.length ? a.karten.map((k) => k.zeile || 0) : [0];
@@ -1090,6 +1116,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 );
               });
             })()}
+            </div>
           </section>
         ))}
 
@@ -2273,18 +2300,23 @@ function Stil() {
 .abschnittneu:hover{color:var(--kerze2); border-color:rgba(242,179,87,.4)}
 
 /* ---- Karten ---- */
-/* eine reihe ist EINE reihe — sie bricht nicht mehr um, sondern schiebt sich
-   zur seite. sonst sieht eine lange reihe wie zwei aus und beim aufnehmen
-   einer karte springt der umbruch. */
-.reihe{
-  display:flex; flex-wrap:nowrap; gap:14px; align-items:flex-start; margin-bottom:14px;
-  overflow-x:auto; overflow-y:visible; padding-bottom:6px;
+/* DER SCHIEBER — alle reihen eines abschnitts wandern gemeinsam,
+   damit uebereinanderliegende karten uebereinander bleiben */
+.auslage{
+  overflow-x:auto; overflow-y:hidden; padding-bottom:6px;
   scrollbar-width:thin; scrollbar-color:rgba(168,135,79,.35) transparent;
 }
-.reihe::-webkit-scrollbar{height:8px}
-.reihe::-webkit-scrollbar-track{background:transparent}
-.reihe::-webkit-scrollbar-thumb{background:rgba(168,135,79,.3); border-radius:4px}
-.reihe:hover::-webkit-scrollbar-thumb{background:rgba(242,179,87,.45)}
+.auslage::-webkit-scrollbar{height:9px}
+.auslage::-webkit-scrollbar-track{background:transparent}
+.auslage::-webkit-scrollbar-thumb{background:rgba(168,135,79,.3); border-radius:4px}
+.auslage:hover::-webkit-scrollbar-thumb{background:rgba(224,139,60,.5)}
+
+/* eine reihe ist EINE reihe — sie bricht nicht um. sie scrollt aber
+   auch nicht selbst, das macht der schieber fuer alle zusammen. */
+.reihe{
+  display:flex; flex-wrap:nowrap; gap:14px; align-items:flex-start; margin-bottom:14px;
+  width:max-content; min-width:100%;
+}
 .reihe:last-child{margin-bottom:0}
 /* die reihen ueber und unter — nur da, solange eine karte in der luft ist */
 .reihe.nurluft{opacity:.5; animation:luft .25s ease-out}
@@ -2680,6 +2712,7 @@ function Stil() {
   .blatt.ohnebild .druckkopie img{display:none}
   .draufleiste{display:none !important}
   .reihe{display:block; margin:0}
+  .auslage{overflow:visible}
   .bogen{border:0; background:none; box-shadow:none; min-height:0}
   .pult{position:static; max-height:none; padding:0; border:0; background:none; box-shadow:none}
   .strichtitel{color:#111; border:0; width:auto !important; font-weight:700}
