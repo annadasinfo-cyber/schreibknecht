@@ -112,6 +112,20 @@ function glockeSchlagen() {
   } catch {}
 }
 
+// Aus dem datenbank-kauderwelsch einen satz machen, den man lesen kann.
+function verstaendlich(text) {
+  const t = String(text || "");
+  if (/23503|foreign key/i.test(t))
+    return "der abschnitt war noch nicht angelegt — versuch es gleich nochmal";
+  if (/23505|duplicate key/i.test(t))
+    return "das gab es schon einmal — nichts doppelt angelegt";
+  if (/JWT|abgemeldet/i.test(t))
+    return "die anmeldung war abgelaufen";
+  if (/antwortet nicht|netz|failed|network/i.test(t))
+    return "kein netz — was du schreibst, wird nachgereicht";
+  return t;
+}
+
 // ---- das Tagewerk ----
 const heute = () => {
   const d = new Date();
@@ -717,11 +731,12 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
       gedreht: false, pos: 0, zeile };
     try {
+      await abschnittAbwarten(a.id);
       // erst platz machen: alles in dieser reihe rueckt einen weiter
       for (const k of [...ersteReihe].sort((x, y) => y.pos - x.pos)) {
         await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: k.pos + 1 });
       }
-      await api("POST", "/rest/v1/karten", neu);
+      await karteEinlegen(ai, neu);
       await laden();
     } catch (e) { sag(String(e.message)); }
   };
@@ -734,7 +749,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
       gedreht: false, pos: platz, zeile: z };
     aendere((p) => { p.abschnitte[ai].karten = [...p.abschnitte[ai].karten, neu].sort(sortiere); });
-    api("POST", "/rest/v1/karten", neu).catch((e) => sag(String(e.message)));
+    karteEinlegen(ai, neu);
   };
 
   // eine Karte doppeln — landet gleich daneben
@@ -747,7 +762,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const neu = { id: neueId(), abschnitt_id: a.id, text: k.text, titel: k.titel || "",
       bild: k.bild, gedreht: false, pos: platz, zeile: z };
     aendere((p) => { p.abschnitte[ai].karten = [...p.abschnitte[ai].karten, neu].sort(sortiere); });
-    api("POST", "/rest/v1/karten", neu).catch((e) => sag(String(e.message)));
+    karteEinlegen(ai, neu);
     if (k.bild) holBild(k.bild);
   };
 
@@ -808,10 +823,44 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     } catch (e) { sag("bild ging nicht: " + String(e.message)); }
   };
 
+  // Ein neu angelegter abschnitt steht sofort auf dem schirm, ist in der
+  // datenbank aber erst einen wimpernschlag spaeter da. Wer schneller ist
+  // als das netz, wuerde sonst eine karte in einen abschnitt legen, den
+  // es noch nicht gibt. Darum merken wir uns, worauf noch gewartet wird.
+  const abschnittUnterwegs = useRef({});
+
   const abschnittZu = () => {
-    const neu = { id: neueId(), projekt_id: projekt.id, titel: "neuer abschnitt", pos: projekt.abschnitte.length };
+    const neu = { id: neueId(), projekt_id: projekt.id, titel: "neuer abschnitt",
+      pos: projekt.abschnitte.length };
     aendere((p) => { p.abschnitte.push({ ...neu, karten: [] }); });
-    api("POST", "/rest/v1/abschnitte", neu).catch((e) => sag(String(e.message)));
+    const versprechen = api("POST", "/rest/v1/abschnitte", neu)
+      .catch((e) => { sag(String(e.message)); })
+      .finally(() => { delete abschnittUnterwegs.current[neu.id]; });
+    abschnittUnterwegs.current[neu.id] = versprechen;
+  };
+
+  // vor jedem karten-anlegen kurz abwarten, falls der abschnitt noch unterwegs ist
+  const abschnittAbwarten = async (id) => {
+    const w = abschnittUnterwegs.current[id];
+    if (w) { try { await w; } catch {} }
+  };
+
+  // Und ein netz darunter: sagt die datenbank trotzdem, sie kenne den
+  // abschnitt nicht (fehler 23503), legen wir ihn nach und versuchen es
+  // noch einmal. Sonst waere die karte verloren.
+  const karteEinlegen = async (ai, karte) => {
+    const a = projekt.abschnitte[ai];
+    await abschnittAbwarten(a.id);
+    try {
+      await api("POST", "/rest/v1/karten", karte);
+    } catch (e) {
+      if (/23503|foreign key/i.test(String(e.message))) {
+        await api("POST", "/rest/v1/abschnitte",
+          { id: a.id, projekt_id: projekt.id, titel: a.titel, pos: a.pos },
+          { Prefer: "resolution=merge-duplicates" }).catch(() => {});
+        await api("POST", "/rest/v1/karten", karte).catch((f) => sag(String(f.message)));
+      } else sag(String(e.message));
+    }
   };
 
   // einen trennstrich hoeher oder tiefer legen
@@ -960,11 +1009,12 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
       gedreht: false, pos: stelle, zeile };
     try {
+      await abschnittAbwarten(a.id);
       // platz machen: alles ab hier rueckt einen weiter — ganze spalten
       for (const k of a.karten.filter((k) => k.pos >= stelle).sort((x, y) => y.pos - x.pos)) {
         await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: k.pos + 1 });
       }
-      await api("POST", "/rest/v1/karten", neu);
+      await karteEinlegen(quelle.ai, neu);
       await laden();
       // die neue karte kommt IMMER nach rechts — links bleibt das
       // ausgangsmaterial stehen, aus dem getrennt wird
@@ -2099,7 +2149,7 @@ export default function Schreibknecht() {
                   zurueckspielen={zurueckspielen} spieltZurueck={spieltZurueck}
                   dateiFeld={dateiFeld} platz={platz} zaehlt={zaehlt} nachsehen={nachsehen}
                   eindampfen={eindampfen} dampft={dampft} />}
-        {msg && <p className="meldung" onClick={() => setMsg("")}>{msg}</p>}
+        {msg && <p className="meldung" onClick={() => setMsg("")}>{verstaendlich(msg)}</p>}
       </main>
 
       {hand && (
