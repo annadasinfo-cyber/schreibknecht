@@ -479,18 +479,18 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
         title="karte verbrennen">✕</button>}
       {/* der streifen ZUM DRAUFLEGEN sitzt direkt ueber der obersten karte
           einer spalte. er liegt im rand und verschiebt darum nichts. */}
-      {draufMarke && (
+      {draufMarke && !zu && (
         <button className={"draufleiste" + (draufAn ? " angepeilt" : "")}
           data-ziel={draufMarke} title="hier oben drauflegen" />
       )}
 
       {/* die kartenkante — hier packt man an, und die karte folgt dem finger.
           das FUNDAMENT einer spalte traegt alles mit, was darauf steht. */}
-      <div className={"griff" + (traegtSpalte ? " fundament" : "")}
+      {!zu && <div className={"griff" + (traegtSpalte ? " fundament" : "")}
         onPointerDown={onGriff}
         title={traegtSpalte ? "spalte nehmen — alles darüber kommt mit" : "karte nehmen und legen"}>
         <i /><i /><i />
-      </div>
+      </div>}
       <div className={"karte" + (karte.gedreht ? " um" : "")}>
 
         <div className="seite text">
@@ -553,6 +553,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // kann kein handy. so folgt die karte dem zeiger eins zu eins.
   const griffAn = (e, ai, k) => {
     if (e.button != null && e.button !== 0) return;
+    if (k.gesperrt) return;                 // eine zugesperrte karte bleibt liegen
     const kasten = e.currentTarget.closest(".kartenplatz").getBoundingClientRect();
     // die unterste karte traegt die ganze spalte, jede andere geht allein
     const alle = projekt.abschnitte[ai].karten;
@@ -729,6 +730,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // karten in der reihe waere hinten sonst unhandlich weit weg
   const karteVorn = async (ai) => {
     const a = projekt.abschnitte[ai];
+    if (a.gesperrt) return;
     const zeile = a.karten.length ? Math.min(...a.karten.map((k) => k.zeile || 0)) : 0;
     const ersteReihe = a.karten.filter((k) => (k.zeile || 0) === zeile);
     const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
@@ -746,6 +748,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
   const karteZu = (ai, pos, zeile) => {
     const a = projekt.abschnitte[ai];
+    if (a.gesperrt) return;
     const z = zeile != null ? zeile : 0;
     const inZ = a.karten.filter((k) => (k.zeile || 0) === z);
     const platz = pos != null ? pos : (inZ.length ? Math.max(...inZ.map((k) => k.pos)) + 1 : 0);
@@ -758,6 +761,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // eine Karte doppeln — landet gleich daneben
   const karteDoppeln = (ai, k) => {
     const a = projekt.abschnitte[ai];
+    if (a.gesperrt) return;
     const z = k.zeile || 0;
     const belegt = new Set(a.karten.filter((x) => (x.zeile || 0) === z).map((x) => x.pos));
     let platz = k.pos + 1;
@@ -944,6 +948,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // Sonst waere es kein mischen, sondern konfetti.
   const mischen = (ai) => {
     const a = projekt.abschnitte[ai];
+    if (a.gesperrt) return;                 // zu ist zu
     setMischt(a.id);
     setTimeout(() => {
       let neu = [];
@@ -971,6 +976,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // Liegt dort schon eine, tauschen die beiden die Plaetze.
   const legeHin = (zug, zielA, zielPos, zielZeile) => {
     if (!zug) return;
+    if (projekt.abschnitte[zielA].gesperrt) return;   // dort ist zugesperrt
     const vonAb = projekt.abschnitte[zug.ai];
     const nachAb = projekt.abschnitte[zielA];
     const karte = vonAb.karten.find((k) => k.id === zug.id);
@@ -1066,6 +1072,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // spalte an dieser stelle — also ort, pov oder gegenstand zur szene.
   const draufLegen = (zug, zielA, zielPos) => {
     if (!zug) return;
+    if (projekt.abschnitte[zielA].gesperrt) return;
     const vonAb = projekt.abschnitte[zug.ai];
     const nachAb = projekt.abschnitte[zielA];
     const karte = vonAb.karten.find((k) => k.id === zug.id);
@@ -1100,6 +1107,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // wandert die GANZE spalte mit — sonst risse man sie hier wieder auseinander.
   const dazwischen = async (zielA, zielPos, zielZeile, karteId) => {
     const nachAb = projekt.abschnitte[zielA];
+    if (nachAb.gesperrt) { setHand(null); return; }
 
     // wo kommt sie her, und was haengt an ihr?
     let vonAb = null, karte = null;
@@ -1172,18 +1180,21 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       <div className={"blatt" + (mitBild && !nurDieser ? "" : " ohnebild") + (nurDieser ? " einzeln" : "")}>
         {projekt.abschnitte.map((a, ai) => (
           <section key={a.id}
-            className={"abschnitt" + (mischt === a.id ? " mischt" : "") + (nurDieser === a.id ? " gedruckt" : "")}>
+            className={"abschnitt" + (mischt === a.id ? " mischt" : "")
+              + (nurDieser === a.id ? " gedruckt" : "") + (a.gesperrt ? " zugesperrt" : "")}>
 
             <div className="trennstrich">
               <input className="strichtitel" value={a.titel}
                 style={{ width: Math.max(10, (a.titel || "").length + 3) + "ch" }}
                 onChange={(e) => setTitel(ai, e.target.value)} />
               <span className="abzahl">
-                {a.karten.reduce((x, k) => x + zaehle(k.text), 0).toLocaleString("de-DE")}
+                {a.karten.length} {a.karten.length === 1 ? "karte" : "karten"}
+                {" · "}
+                {a.karten.reduce((x, k) => x + zaehle(k.text), 0).toLocaleString("de-DE")} wörter
               </span>
               <span className="linie" />
-              <button className="wuerfel" onClick={() => mischen(ai)}
-                title="karten mischen — neue nachbarschaften">⚄</button>
+              <button className="wuerfel" onClick={() => mischen(ai)} disabled={a.gesperrt}
+                title={a.gesperrt ? "abschnitt ist zugesperrt" : "karten mischen — neue nachbarschaften"}>⚄</button>
               <button className="klein" onClick={() => abschnittDrucken(a.id)}
                 title="nur diesen abschnitt drucken, ohne bilder">⎙</button>
               <button className={"klein schloss" + (a.gesperrt ? " zu" : "")}
@@ -1191,13 +1202,14 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 title={a.gesperrt ? "abschnitt aufschließen" : "ganzen abschnitt sperren"}>
                 {a.gesperrt ? "🔒" : "🔓"}
               </button>
-              <button className="klein" onClick={() => karteVorn(ai)}
-                title="karte vorn anlegen">+</button>
+              <button className="klein" onClick={() => karteVorn(ai)} disabled={a.gesperrt}
+                title={a.gesperrt ? "abschnitt ist zugesperrt" : "karte vorn anlegen"}>+</button>
               <button className="klein" onClick={() => abschnittRuecken(ai, -1)} disabled={ai === 0}
                 title="abschnitt höher legen">↑</button>
               <button className="klein" onClick={() => abschnittRuecken(ai, 1)}
                 disabled={ai === projekt.abschnitte.length - 1} title="abschnitt tiefer legen">↓</button>
-              <button className="klein weg" onClick={() => abschnittWeg(ai)} title="abschnitt entfernen">✕</button>
+              <button className="klein weg" onClick={() => abschnittWeg(ai)} disabled={a.gesperrt}
+                title={a.gesperrt ? "abschnitt ist zugesperrt" : "abschnitt entfernen"}>✕</button>
             </div>
 
             {/* ein abschnitt ist eine auslage aus REIHEN und PLAETZEN.
@@ -2952,6 +2964,18 @@ function Stil() {
 }
 
 .abschnitt{position:relative; padding:15px 0}
+/* ein zugesperrter abschnitt liegt ruhig da — man sieht ihn, aber
+   er laesst sich nicht mehr anfassen */
+.abschnitt.zugesperrt .strichtitel{
+  color:var(--nebel); border-style:dotted; border-color:rgba(168,135,79,.35);
+}
+.abschnitt.zugesperrt .kartenplatz.leer{display:none}
+.abschnitt.zugesperrt .kartenplatz{cursor:default}
+.klein:disabled, .wuerfel:disabled{opacity:.22; cursor:default}
+.klein:disabled:hover, .wuerfel:disabled:hover{
+  color:var(--nebel); border-color:rgba(168,135,79,.22);
+  background:transparent; box-shadow:none; transform:none;
+}
 
 /* Der ablegepunkt sitzt AUF der oberen kante der karte, nicht darueber.
    Die reihe scrollt seitlich, und ein kasten mit seitlichem scrollen
