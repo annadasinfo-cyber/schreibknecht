@@ -603,6 +603,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const [mitBild, setMitBild] = useState(true);
   const [mischt, setMischt] = useState(null);
   const [nurDieser, setNurDieser] = useState(null);
+  const [unsicher, setUnsicher] = useState(0);   // karten, die nur auf dem schirm stehen
   const [pult, setPult] = useState([]);   // bis zu zwei karten-ids, gross aufgeschlagen
   const [klein, setKlein] = useState(false);   // pult eingeklappt?
   const [liest, setLiest] = useState(null);   // {id, pause} — wer gerade vorgelesen wird
@@ -677,7 +678,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const k = projekt.abschnitte[ai].karten[ki];
     aendere((p) => { p.abschnitte[ai].karten[ki].text = wert; });
     clearTimeout(uhren.current[k.id]);
-    uhren.current[k.id] = setTimeout(() => {
+    uhren.current[k.id] = setTimeout(async () => {
+      if (!(await sicherDa(ai, ki))) return;      // karte war gar nicht da — jetzt schon
       api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { text: wert }).catch((e) => sag(String(e.message)));
     }, 2000);
   };
@@ -687,7 +689,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const k = projekt.abschnitte[ai].karten[ki];
     aendere((p) => { p.abschnitte[ai].karten[ki].titel = wert; });
     clearTimeout(uhren.current["t" + k.id]);
-    uhren.current["t" + k.id] = setTimeout(() => {
+    uhren.current["t" + k.id] = setTimeout(async () => {
+      if (!(await sicherDa(ai, ki))) return;
       api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { titel: wert }).catch(() => {});
     }, 1200);
   };
@@ -848,19 +851,55 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // Und ein netz darunter: sagt die datenbank trotzdem, sie kenne den
   // abschnitt nicht (fehler 23503), legen wir ihn nach und versuchen es
   // noch einmal. Sonst waere die karte verloren.
+  // Karten, deren anlegen schiefging. Wer hier drinsteht, existiert nur
+  // auf dem schirm — und das ist gefaehrlich: eine aenderung an einer
+  // karte, die es nicht gibt, meldet die datenbank NICHT als fehler.
+  // Sie sagt brav "erledigt" und aendert nichts. Genau so verschwindet
+  // text still. Darum: vor jeder aenderung nachsehen und notfalls
+  // die karte erst anlegen.
+  const nichtAngelegt = useRef(new Set());
+
   const karteEinlegen = async (ai, karte) => {
     const a = projekt.abschnitte[ai];
     await abschnittAbwarten(a.id);
     try {
       await api("POST", "/rest/v1/karten", karte);
+      nichtAngelegt.current.delete(karte.id);
+      return true;
     } catch (e) {
       if (/23503|foreign key/i.test(String(e.message))) {
+        // der abschnitt fehlt — nachlegen und die karte noch einmal
         await api("POST", "/rest/v1/abschnitte",
           { id: a.id, projekt_id: projekt.id, titel: a.titel, pos: a.pos },
           { Prefer: "resolution=merge-duplicates" }).catch(() => {});
-        await api("POST", "/rest/v1/karten", karte).catch((f) => sag(String(f.message)));
+        try {
+          await api("POST", "/rest/v1/karten", karte);
+          nichtAngelegt.current.delete(karte.id);
+          return true;
+        } catch (f) { sag(String(f.message)); }
+      } else if (/23505|duplicate/i.test(String(e.message))) {
+        nichtAngelegt.current.delete(karte.id);   // gab es schon, alles gut
+        return true;
       } else sag(String(e.message));
     }
+    // gemerkt: diese karte steht nur auf dem schirm
+    nichtAngelegt.current.add(karte.id);
+    setUnsicher(nichtAngelegt.current.size);
+    return false;
+  };
+
+  // Vor jeder aenderung: gibt es die karte ueberhaupt? Wenn nicht,
+  // wird sie mit allem, was inzwischen draufsteht, nachgelegt.
+  const sicherDa = async (ai, ki) => {
+    const k = projekt.abschnitte[ai] && projekt.abschnitte[ai].karten[ki];
+    if (!k || !nichtAngelegt.current.has(k.id)) return true;
+    const a = projekt.abschnitte[ai];
+    const ganz = { id: k.id, abschnitt_id: a.id, text: k.text || "", titel: k.titel || "",
+      bild: k.bild || null, gedreht: !!k.gedreht, pos: k.pos, zeile: k.zeile || 0,
+      gesperrt: !!k.gesperrt };
+    const gut = await karteEinlegen(ai, ganz);
+    if (gut) setUnsicher(nichtAngelegt.current.size);
+    return gut;
   };
 
   // einen trennstrich hoeher oder tiefer legen
@@ -1100,6 +1139,15 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
   return (
     <>
+      {unsicher > 0 && (
+        <div className="unsicherleiste">
+          <span>⚠</span>
+          {unsicher === 1
+            ? "eine karte konnte nicht gespeichert werden — kopier ihren text sicherheitshalber heraus"
+            : unsicher + " karten konnten nicht gespeichert werden — kopier ihre texte sicherheitshalber heraus"}
+        </div>
+      )}
+
       <div className="leiste">
         <button className="btn" onClick={zurueck}>‹ alle projekte</button>
         <input className="projektname" value={projekt.name}
@@ -2447,6 +2495,15 @@ function Stil() {
 .platzwarnung{color:#e0a070; letter-spacing:.06em}
 
 /* ---- Leiste ---- */
+/* wenn eine karte nur auf dem schirm steht und nicht in der datenbank */
+.unsicherleiste{
+  display:flex; align-items:center; gap:10px; margin-bottom:16px;
+  padding:11px 15px; border-radius:4px; font-size:12px; letter-spacing:.04em;
+  border:1px solid rgba(224,128,112,.55); background:rgba(40,14,10,.85);
+  color:#f0c0b0;
+}
+.unsicherleiste span{font-size:15px}
+
 .leiste{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:22px}
 .fuellung{flex:1}
 .btn{
@@ -2935,7 +2992,7 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste, .platzleiste{display:none !important}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks{display:none !important}
   .seite.text{background:none; border:0}
   .druckkopie{
