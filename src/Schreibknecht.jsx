@@ -605,6 +605,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const [mischt, setMischt] = useState(null);
   const [nurDieser, setNurDieser] = useState(null);
   const [unsicher, setUnsicher] = useState(0);   // karten, die nur auf dem schirm stehen
+  const [bildAus, setBildAus] = useState({});    // bild im bogen weggeklappt?
+  const [gross, setGross] = useState(null);      // bild im bogen gross angesehen
   const [pult, setPult] = useState([]);   // bis zu zwei karten-ids, gross aufgeschlagen
   const [klein, setKlein] = useState(false);   // pult eingeklappt?
   const [liest, setLiest] = useState(null);   // {id, pause} — wer gerade vorgelesen wird
@@ -1351,7 +1353,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               const f = findeKarte(id);
               if (!f) return null;
               return (
-                <div className="bogen" key={id}>
+                <div className={"bogen" + (gross === id ? " grossesbild" : "")} key={id}>
                   <div className="bogenkopf">
                     <button className={"klein schloss" + (f.karte.gesperrt ? " zu" : "")}
                       onClick={() => schloss(f.ai, f.ki)}
@@ -1361,16 +1363,30 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                     <input className="bogentitel" value={f.karte.titel || ""} placeholder="beschriftung"
                       readOnly={!!f.karte.gesperrt}
                       onChange={(e) => setTitel2(f.ai, f.ki, e.target.value)} />
+                    {f.karte.bild && (
+                      <button className={"klein" + (bildAus[id] ? "" : " an")}
+                        onClick={() => setBildAus((b) => ({ ...b, [id]: !b[id] }))}
+                        title={bildAus[id] ? "bild zeigen" : "bild wegklappen"}>▤</button>
+                    )}
                     <span className="bogenort">{f.abschnitt.titel}</span>
                     <button className="klein" onClick={() => vomPult(id)} title="vom pult nehmen">✕</button>
                   </div>
-                  {f.karte.bild && bilder[f.karte.bild] && (
-                    <img className="bogenbild" src={bilder[f.karte.bild]} alt=""
-                      loading="lazy" decoding="async" />
-                  )}
-                  <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
-                    readOnly={!!f.karte.gesperrt}
-                    placeholder="…" onChange={(e) => setText(f.ai, f.ki, e.target.value)} />
+                  {/* das bild steht NEBEN dem text, nicht darueber — sonst
+                      bleibt zum schreiben kaum platz. und es laesst sich
+                      ganz wegklappen. */}
+                  <div className={"bogenkoerper" + (bildAus[id] ? " ohnebild" : "")}>
+                    {f.karte.bild && bilder[f.karte.bild] && !bildAus[id] && (
+                      <div className="bogenbildkasten">
+                        <img className="bogenbild" src={bilder[f.karte.bild]} alt=""
+                          loading="lazy" decoding="async"
+                          onClick={() => setGross(gross === id ? null : id)}
+                          title={gross === id ? "wieder klein" : "größer ansehen"} />
+                      </div>
+                    )}
+                    <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
+                      readOnly={!!f.karte.gesperrt}
+                      placeholder="…" onChange={(e) => setText(f.ai, f.ki, e.target.value)} />
+                  </div>
                   <div className="druckkopie" aria-hidden="true">
                     {f.karte.titel ? <b>{f.karte.titel}</b> : null}{f.karte.text}
                   </div>
@@ -2863,7 +2879,26 @@ function Stil() {
 }
 .bogen .klein{border-color:rgba(42,33,24,.22); color:rgba(42,33,24,.5)}
 .bogen .klein:hover{color:var(--tinte); border-color:rgba(42,33,24,.5)}
-.bogenbild{width:100%; max-height:200px; object-fit:cover; flex:0 0 auto}
+/* Bild und Text nebeneinander — das bild nimmt eine schmale spalte,
+   der text bekommt den ganzen rest der hoehe */
+.bogenkoerper{display:flex; flex:1; min-height:0; align-items:stretch}
+.bogenbildkasten{
+  flex:0 0 auto; width:132px; overflow:hidden;
+  border-right:1px solid rgba(42,33,24,.18); background:rgba(42,33,24,.06);
+}
+.bogenbild{
+  width:100%; height:100%; object-fit:cover; display:block; cursor:zoom-in;
+  transition:.2s;
+}
+.bogenbild:hover{filter:brightness(1.08)}
+/* angeklickt wird es breit — dann sieht man es richtig */
+.bogen.grossesbild .bogenbildkasten{width:min(58%, 420px)}
+.bogen.grossesbild .bogenbild{cursor:zoom-out}
+@media(max-width:700px){
+  .bogenkoerper{flex-direction:column}
+  .bogenbildkasten{width:100%; height:110px; border-right:0;
+    border-bottom:1px solid rgba(42,33,24,.18)}
+}
 .bogenfeld{
   flex:1; width:100%; resize:none; border:0; background:transparent; padding:20px 24px;
   font-family:'Courier Prime', monospace; font-size:14.5px; line-height:1.85; color:var(--tinte);
@@ -3017,7 +3052,8 @@ function Stil() {
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
   .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste{display:none !important}
-  .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks{display:none !important}
+  .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks,
+  .bogenbildkasten{display:none !important}
   .seite.text{background:none; border:0}
   .druckkopie{
     display:block; white-space:pre-wrap; color:#111; padding:6px 0 14px;
