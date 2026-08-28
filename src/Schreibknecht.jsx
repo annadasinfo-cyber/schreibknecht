@@ -1690,14 +1690,33 @@ export default function Schreibknecht() {
     setLaeuft(false);
   };
 
+  // ALLES holen, nicht die ersten tausend.
+  // Supabase liefert pro anfrage hoechstens 1000 zeilen. Wer darueber
+  // kommt, bekommt stillschweigend nur einen ausschnitt — nichts geht
+  // verloren, es wird nur nicht mehr abgeholt. Darum seitenweise, bis
+  // nichts mehr nachkommt.
+  const SEITE = 1000;
+  const allesHolen = useCallback(async (pfad) => {
+    const raus = [];
+    for (let von = 0; ; von += SEITE) {
+      const teil = await api("GET", pfad, undefined,
+        { Range: `${von}-${von + SEITE - 1}`, "Range-Unit": "items" });
+      const stueck = teil || [];
+      raus.push(...stueck);
+      if (stueck.length < SEITE) break;
+      if (von > 200000) break;                 // notbremse
+    }
+    return raus;
+  }, [api]);
+
   // ---- alles holen ----
   const laden = useCallback(async () => {
     setMsg("");
     try {
       const [pr, ab, ka, tw] = await Promise.all([
-        api("GET", "/rest/v1/projekte?select=*&order=zuletzt.desc"),
-        api("GET", "/rest/v1/abschnitte?select=*&order=pos.asc"),
-        api("GET", "/rest/v1/karten?select=*&order=pos.asc"),
+        allesHolen("/rest/v1/projekte?select=*&order=zuletzt.desc"),
+        allesHolen("/rest/v1/abschnitte?select=*&order=pos.asc"),
+        allesHolen("/rest/v1/karten?select=*&order=id.asc"),
         api("GET", "/rest/v1/tagewerk?select=*&order=tag.desc&limit=400"),
       ]);
       setTage(tw || []);
@@ -1730,7 +1749,7 @@ export default function Schreibknecht() {
       }
       setGeladen(true);
     }
-  }, [api]);
+  }, [api, allesHolen]);
 
   // beim start: ist der zugang abgelaufen, erst verlaengern — dann holen
   useEffect(() => {
@@ -1883,10 +1902,10 @@ export default function Schreibknecht() {
     setSichert(true); setMsg("");
     try {
       const [pr, ab, ka, tw] = await Promise.all([
-        api("GET", "/rest/v1/projekte?select=*"),
-        api("GET", "/rest/v1/abschnitte?select=*"),
-        api("GET", "/rest/v1/karten?select=*"),
-        api("GET", "/rest/v1/tagewerk?select=*"),
+        allesHolen("/rest/v1/projekte?select=*"),
+        allesHolen("/rest/v1/abschnitte?select=*"),
+        allesHolen("/rest/v1/karten?select=*&order=id.asc"),
+        allesHolen("/rest/v1/tagewerk?select=*"),
       ]);
 
       const paket = {
@@ -1960,9 +1979,9 @@ export default function Schreibknecht() {
     setZaehlt(true); setMsg("");
     try {
       const [pr, ab, ka] = await Promise.all([
-        api("GET", "/rest/v1/projekte?select=id"),
-        api("GET", "/rest/v1/abschnitte?select=id"),
-        api("GET", "/rest/v1/karten?select=id,text,titel,bild"),
+        allesHolen("/rest/v1/projekte?select=id"),
+        allesHolen("/rest/v1/abschnitte?select=id"),
+        allesHolen("/rest/v1/karten?select=id,text,titel,bild&order=id.asc"),
       ]);
       // die bilder im ablagefach nachmessen
       const ordner = sitzungRef.current && sitzungRef.current.user
@@ -2000,7 +2019,7 @@ export default function Schreibknecht() {
 
     setDampft(true); setMsg("");
     try {
-      const ka = await api("GET", "/rest/v1/karten?select=id,bild");
+      const ka = await allesHolen("/rest/v1/karten?select=id,bild&order=id.asc");
       const mitBild = (ka || []).filter((k) => k.bild);
       let vorher = 0, nachher = 0, gemacht = 0, uebersprungen = 0;
 
