@@ -959,12 +959,18 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         const plaetze = [...new Set(k.map((x) => x.pos))].sort((x, y) => x - y);
         const spalten = plaetze.map((pos) => k.filter((x) => x.pos === pos));
 
-        for (let i = spalten.length - 1; i > 0; i--) {
+        // Eine spalte mit einem SCHLOSS bleibt liegen, wo sie ist. Nur die
+        // offenen wandern — und zwar nur auf die uebrigen plaetze. So kann
+        // man das, was schon sitzt, festmachen und den rest neu befragen.
+        const fest = spalten.map((sp) => sp.some((x) => x.gesperrt));
+        const freiePlaetze = plaetze.filter((_, i) => !fest[i]);
+        const freieSpalten = spalten.filter((_, i) => !fest[i]);
+
+        for (let i = freieSpalten.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
-          [spalten[i], spalten[j]] = [spalten[j], spalten[i]];
+          [freieSpalten[i], freieSpalten[j]] = [freieSpalten[j], freieSpalten[i]];
         }
-        // jede spalte bekommt einen der belegten plaetze — luecken bleiben luecken
-        spalten.forEach((sp, i) => sp.forEach((x) => { x.pos = plaetze[i]; }));
+        freieSpalten.forEach((sp, i) => sp.forEach((x) => { x.pos = freiePlaetze[i]; }));
 
         p.abschnitte[ai].karten = [...k].sort(sortiere);
         neu = k.map((x) => ({ id: x.id, pos: x.pos, zeile: x.zeile || 0 }));
@@ -1195,8 +1201,20 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 {a.karten.reduce((x, k) => x + zaehle(k.text), 0).toLocaleString("de-DE")} wörter
               </span>
               <span className="linie" />
-              <button className="wuerfel" onClick={() => mischen(ai)} disabled={a.gesperrt}
-                title={a.gesperrt ? "abschnitt ist zugesperrt" : "karten mischen — neue nachbarschaften"}>⚄</button>
+              {(() => {
+                const plaetze = [...new Set(a.karten.map((k) => k.pos))];
+                const feste = plaetze.filter((pos) =>
+                  a.karten.some((k) => k.pos === pos && k.gesperrt)).length;
+                const frei = plaetze.length - feste;
+                return (
+                  <button className="wuerfel" onClick={() => mischen(ai)}
+                    disabled={a.gesperrt || frei < 2}
+                    title={a.gesperrt ? "abschnitt ist zugesperrt"
+                      : frei < 2 ? "zu wenig offene karten zum mischen"
+                      : feste ? `${frei} karten mischen — ${feste} bleiben mit schloss liegen`
+                      : "karten mischen — neue nachbarschaften"}>⚄</button>
+                );
+              })()}
               <button className="klein" onClick={() => abschnittDrucken(a.id)}
                 title="nur diesen abschnitt drucken, ohne bilder">⎙</button>
               <button className={"klein schloss" + (a.gesperrt ? " zu" : "")}
