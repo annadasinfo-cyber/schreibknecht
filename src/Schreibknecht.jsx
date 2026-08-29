@@ -554,7 +554,8 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
 
 // ---------- Projekt-Seite ----------
 function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag,
-                       hand, setHand, laden, glocke, allesHolen }) {
+                       hand, setHand, laden, glocke, allesHolen,
+                       abschnittHand, setAbschnittHand }) {
   const [zug, setZug] = useState(null);      // {ai, id, karte, dx, dy, x, y, laeuft}
   const [ziel, setZiel] = useState(null);   // worauf gerade gezeigt wird
   const zugRef = useRef(null);
@@ -765,6 +766,25 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     } catch (e) { sag(String(e.message)); }
   });
 
+  // eine NEUE karte genau zwischen zwei bestehende
+  const karteDazwischen = (ai, pos, zeile) => nacheinander(async () => {
+    const a = projekt.abschnitte[ai];
+    if (a.gesperrt) return;
+    const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
+      gedreht: false, pos, zeile: zeile || 0 };
+    try {
+      await abschnittAbwarten(a.id);
+      await api("POST", "/rest/v1/rpc/karte_einfuegen",
+        { p_id: neu.id, p_abschnitt: a.id, p_pos: pos, p_zeile: zeile || 0 });
+      aendere((p) => {
+        p.abschnitte[ai].karten = [
+          ...p.abschnitte[ai].karten.map((x) => (x.pos >= pos ? { ...x, pos: x.pos + 1 } : x)),
+          neu,
+        ].sort(sortiere);
+      });
+    } catch (e) { sag(String(e.message)); }
+  });
+
   const karteZu = (ai, pos, zeile) => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt) return;
@@ -816,8 +836,20 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const woerter = zaehle(k.text);
     if (woerter > 3 && !confirm(
       `„${name || "diese karte"}" verbrennen?\n\n${woerter} wörter gehen dabei weg.`)) return;
-    aendere((p) => { p.abschnitte[ai].karten.splice(ki, 1); });
-    api("DELETE", `/rest/v1/karten?id=eq.${k.id}`).catch(() => {});
+    // Der PLATZ verschwindet mit: alles dahinter rueckt nach vorn.
+    // Nur wenn auf dem platz noch etwas anderes liegt (eine spalte),
+    // bleibt er bestehen — dort fehlt ja nur eine der karten.
+    const spalte = spalteVon(projekt.abschnitte[ai].karten, k.pos);
+    const platzWirdFrei = spalte.length === 1;
+    aendere((p) => {
+      p.abschnitte[ai].karten.splice(ki, 1);
+      if (platzWirdFrei) {
+        p.abschnitte[ai].karten = p.abschnitte[ai].karten
+          .map((x) => (x.pos > k.pos ? { ...x, pos: x.pos - 1 } : x)).sort(sortiere);
+      }
+    });
+    api("POST", "/rest/v1/rpc/karte_entfernen", { p_karte: k.id })
+      .catch(() => api("DELETE", `/rest/v1/karten?id=eq.${k.id}`).catch(() => {}));
     setAsche({ karte: { ...k }, bis: Date.now() + 30000 });
   };
 
@@ -827,7 +859,12 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const k = asche.karte;
     setAsche(null);
     try {
-      await api("POST", "/rest/v1/karten", k);
+      // wieder platz schaffen und die karte an ihre alte stelle
+      await api("POST", "/rest/v1/rpc/karte_einfuegen",
+        { p_id: k.id, p_abschnitt: k.abschnitt_id, p_pos: k.pos, p_zeile: k.zeile || 0 });
+      await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`,
+        { text: k.text || "", titel: k.titel || "", bild: k.bild || null,
+          gedreht: !!k.gedreht, gesperrt: !!k.gesperrt });
       await laden();
     } catch (e) { sag(String(e.message)); }
   };
@@ -935,6 +972,53 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     if (gut) setUnsicher(nichtAngelegt.current.size);
     return gut;
   };
+
+  // ---- ABSCHNITTE: einfuegen, ausschneiden, kopieren ----
+
+  // Ein neuer trennstrich GENAU HIER, nicht ganz unten.
+  const abschnittDazwischen = (pos) => nacheinander(async () => {
+    const neu = { id: neueId(), projekt_id: projekt.id, titel: "neuer abschnitt", pos };
+    try {
+      await api("POST", "/rest/v1/rpc/abschnitt_einfuegen",
+        { p_id: neu.id, p_projekt: projekt.id, p_pos: pos, p_titel: neu.titel });
+      await laden();
+    } catch (e) { sag(String(e.message)); }
+  });
+
+  // Einen ganzen abschnitt mitsamt karten in die hand nehmen —
+  // wie die schere bei einer karte, nur eine ebene hoeher.
+  const abschnittSchneiden = (ai) => {
+    const a = projekt.abschnitte[ai];
+    setAbschnittHand((h) => (h && h.id === a.id
+      ? null
+      : { id: a.id, titel: a.titel, karten: a.karten.length, vonProjekt: projekt.id }));
+  };
+
+  // den abschnitt aus der hand in DIESES projekt legen
+  const abschnittHierher = () => nacheinander(async () => {
+    if (!abschnittHand) return;
+    setMsg("wird verschoben …");
+    try {
+      await api("POST", "/rest/v1/rpc/abschnitt_umziehen",
+        { p_abschnitt: abschnittHand.id, p_projekt: projekt.id });
+      setAbschnittHand(null);
+      await laden();
+      setMsg("");
+    } catch (e) { sag(String(e.message)); }
+  });
+
+  const abschnittKopieren = (ai) => nacheinander(async () => {
+    const a = projekt.abschnitte[ai];
+    setMsg("wird kopiert …");
+    try {
+      await api("POST", "/rest/v1/rpc/abschnitt_kopieren", {
+        p_abschnitt: a.id, p_neue_id: neueId(), p_projekt: null,
+        p_kartenids: a.karten.map(() => neueId()),
+      });
+      await laden();
+      setMsg("");
+    } catch (e) { sag(String(e.message)); }
+  });
 
   // einen trennstrich hoeher oder tiefer legen
   const abschnittRuecken = (ai, richtung) => {
@@ -1285,7 +1369,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
       <div className={"blatt" + (mitBild && !nurDieser ? "" : " ohnebild") + (nurDieser ? " einzeln" : "")}>
         {projekt.abschnitte.map((a, ai) => (
-          <section key={a.id}
+          <React.Fragment key={"f" + a.id}>
+          <button className="abschnittzwischen" onClick={() => abschnittDazwischen(ai)}
+            title="hier einen neuen trennstrich einfügen">+ trennstrich hier</button>
+          <section
             className={"abschnitt" + (mischt === a.id ? " mischt" : "")
               + (nurDieser === a.id ? " gedruckt" : "") + (a.gesperrt ? " zugesperrt" : "")}>
 
@@ -1329,6 +1416,13 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               </button>
               <button className="klein" onClick={() => karteVorn(ai)} disabled={a.gesperrt}
                 title={a.gesperrt ? "abschnitt ist zugesperrt" : "karte vorn anlegen"}>+</button>
+              <button className="klein" onClick={() => abschnittSchneiden(ai)}
+                disabled={a.gesperrt}
+                title={abschnittHand && abschnittHand.id === a.id
+                  ? "liegt in der hand — nochmal tippen legt ihn zurück"
+                  : "ganzen abschnitt in die hand nehmen"}>✂</button>
+              <button className="klein" onClick={() => abschnittKopieren(ai)}
+                title="abschnitt mit allen karten kopieren — die kopie kommt direkt darunter">⧉</button>
               <button className="klein" onClick={() => abschnittRuecken(ai, -1)} disabled={ai === 0}
                 title="abschnitt höher legen">↑</button>
               <button className="klein" onClick={() => abschnittRuecken(ai, 1)}
@@ -1365,12 +1459,24 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                       const k = belegt.get(pos);
                       const marke = `feld:${ai}:${pos}:${z}`;
                       const spaltMarke = `spalt:${ai}:${pos}:${z}`;
-                      const spalt = inDerLuft && k ? (
+                      // Der strich zwischen zwei karten. Beim ziehen ist er
+                      // die stelle zum dazwischenschieben; sonst haelt er sich
+                      // versteckt und zeigt erst beim drueberfahren ein +,
+                      // mit dem hier eine neue karte entsteht.
+                      const spalt = k ? (
                         <button key={"sp" + z + "-" + pos}
-                          className={"spalt" + (ziel === spaltMarke ? " an" : "")}
-                          data-ziel={spaltMarke} title="hier dazwischen schieben"
-                          onClick={() => hand && dazwischen(ai, pos, z, hand.id)}>
+                          className={"spalt" + (ziel === spaltMarke ? " an" : "")
+                            + (inDerLuft ? " inderluft" : "")}
+                          data-ziel={inDerLuft ? spaltMarke : undefined}
+                          title={inDerLuft ? "hier dazwischen schieben"
+                            : "hier eine neue karte einfügen"}
+                          disabled={a.gesperrt}
+                          onClick={() => {
+                            if (hand) dazwischen(ai, pos, z, hand.id);
+                            else if (!inDerLuft) karteDazwischen(ai, pos, z);
+                          }}>
                           <i />
+                          {!inDerLuft && <b className="spaltplus">+</b>}
                         </button>
                       ) : null;
                       if (k) {
@@ -1420,7 +1526,15 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             })()}
             </div>
           </section>
+          </React.Fragment>
         ))}
+
+        {abschnittHand && abschnittHand.vonProjekt !== projekt.id && (
+          <button className="abschnittablage" onClick={() => abschnittHierher()}>
+            ✂ „{abschnittHand.titel}" hier ablegen
+            <small>{abschnittHand.karten} karten wandern mit</small>
+          </button>
+        )}
 
         <button className="abschnittneu" onClick={abschnittZu}>+ trennstrich</button>
         {pult.length > 0 && <div className={"pultplatz" + (klein ? " klein" : "")} />}
@@ -1437,6 +1551,19 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
           {zug.traegt && zug.spalte.length > 1 && (
             <em className="stapelzahl">+ {zug.spalte.length - 1}</em>
           )}
+        </div>
+      )}
+
+      {abschnittHand && (
+        <div className="abschnitthandleiste">
+          <span className="handzeichen">✂</span>
+          <span className="handtext">{abschnittHand.titel}</span>
+          <span className="handhinweis">
+            {abschnittHand.karten} {abschnittHand.karten === 1 ? "karte" : "karten"}
+            {" · projekt öffnen und ablegen"}
+          </span>
+          <button className="klein" onClick={() => setAbschnittHand(null)}
+            title="zurücklegen">✕</button>
         </div>
       )}
 
@@ -1715,6 +1842,7 @@ export default function Schreibknecht() {
   const [msg, setMsg] = useState("");
   const [geladen, setGeladen] = useState(false);
   const [hand, setHand] = useState(null);   // ausgeschnittene karte, wartet aufs ablegen
+  const [abschnittHand, setAbschnittHand] = useState(null);   // ganzer abschnitt in der hand
   const [geprueft, setGeprueft] = useState(false);  // zugang beim start geprueft?
   const [tage, setTage] = useState([]);            // das tagewerk aller projekte
   const [warten, setWarten] = useState(() => warteLesen().length);   // noch nicht abgeschickt
@@ -2417,6 +2545,7 @@ export default function Schreibknecht() {
               ? <ProjektSeite projekt={projekt} api={api} bilder={bilder} holBild={holBild}
                   hochladen={hochladen} aendere={aendere} zurueck={() => setOffen(null)} sag={setMsg}
                   hand={hand} setHand={setHand} laden={laden} allesHolen={allesHolen}
+                  abschnittHand={abschnittHand} setAbschnittHand={setAbschnittHand}
                   glocke={
                     <div className={"glocke" + (laeutet ? " schwingt" : "")
                         + (heutGeschrieben >= ziel ? " voll" : "")}
@@ -2835,6 +2964,42 @@ function Stil() {
 }
 .klein:hover{color:var(--kerze2); border-color:rgba(242,179,87,.45)}
 .klein.weg:hover{color:#e08070; border-color:rgba(141,50,38,.7)}
+/* der schmale streifen zwischen zwei abschnitten — er haelt sich
+   versteckt, bis man mit der maus in die naehe kommt */
+.abschnittzwischen{
+  display:block; width:100%; height:16px; margin:0; padding:0; cursor:pointer;
+  font-family:inherit; font-size:10px; letter-spacing:.14em; line-height:16px;
+  color:transparent; background:transparent; border:0; border-radius:3px;
+  transition:.15s;
+}
+.abschnittzwischen:hover{
+  color:var(--kerze2); background:rgba(224,139,60,.12);
+  box-shadow:inset 0 0 0 1px rgba(224,139,60,.35);
+}
+
+/* der abschnitt, der gerade in der hand liegt */
+.abschnitthandleiste{
+  position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:8;
+  display:flex; align-items:center; gap:10px; padding:9px 14px; border-radius:4px;
+  border:1px solid rgba(224,139,60,.55); background:rgba(20,13,5,.97);
+  box-shadow:0 8px 26px rgba(0,0,0,.7); max-width:min(600px,92vw);
+}
+.abschnittablage{
+  display:flex; flex-direction:column; gap:4px; align-items:flex-start;
+  font-family:'IM Fell English SC', Georgia, serif; font-size:14px; letter-spacing:.06em;
+  padding:14px 20px; margin-bottom:14px; cursor:pointer; border-radius:4px;
+  border:1px dashed rgba(224,139,60,.6); background:rgba(224,139,60,.1);
+  color:var(--kerze2); transition:.15s;
+}
+.abschnittablage:hover{
+  background:rgba(224,139,60,.22); border-color:var(--kerze2);
+  box-shadow:0 0 22px rgba(224,139,60,.3);
+}
+.abschnittablage small{
+  font-family:'Courier Prime', monospace; font-size:10px; letter-spacing:.08em;
+  color:var(--messing);
+}
+
 .abschnittneu{
   font-family:inherit; font-size:11px; letter-spacing:.12em; color:var(--nebel); cursor:pointer;
   background:transparent; border:1px dashed rgba(168,135,79,.3); border-radius:2px; padding:9px 16px;
@@ -3222,8 +3387,20 @@ function Stil() {
 }
 .spalt i::after{
   content:""; position:absolute; top:12%; left:50%; margin-left:-1.5px;
-  width:3px; height:76%; border-radius:2px; background:rgba(242,179,87,.3); transition:.15s;
+  width:3px; height:76%; border-radius:2px; background:transparent; transition:.15s;
 }
+/* solange etwas in der luft ist, ist der strich zu sehen */
+.spalt.inderluft i::after{background:rgba(242,179,87,.3)}
+/* sonst zeigt er erst beim drueberfahren ein + */
+.spaltplus{
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  width:20px; height:20px; border-radius:50%; font-weight:400; font-size:13px;
+  display:flex; align-items:center; justify-content:center;
+  border:1px solid rgba(224,139,60,.5); background:rgba(24,15,6,.9); color:var(--kerze2);
+  opacity:0; transition:.15s; pointer-events:none;
+}
+.spalt i:hover ~ .spaltplus, .spalt:hover .spaltplus{opacity:1}
+.spalt:disabled .spaltplus{display:none}
 .spalt i:hover::after, .spalt.an i::after{
   background:var(--kerze); width:5px; margin-left:-2.5px; box-shadow:0 0 14px rgba(242,179,87,.6);
 }
@@ -3281,7 +3458,8 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis{display:none !important}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis,
+  .abschnittzwischen, .abschnitthandleiste, .abschnittablage, .spaltplus{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks,
   .bogenbildkasten{display:none !important}
   .seite.text{background:none; border:0}
