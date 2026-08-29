@@ -288,10 +288,23 @@ function verlaengern(alt) {
 const WARTE_SCHUB = "sk:warteschlange";
 
 let warteMerk = null;
+// Ein auftrag, der stundenlang liegengeblieben ist, beschreibt einen
+// zustand von damals. Reicht man ihn spaeter nach, schreibt er alte
+// positionen zurueck und macht heutige arbeit kaputt. Darum verfaellt er.
+const WARTE_FRIST = 6 * 60 * 60 * 1000;      // sechs stunden
+
 const warteLesen = () => {
   if (warteMerk) return warteMerk;
-  try { warteMerk = JSON.parse(localStorage.getItem(WARTE_SCHUB) || "[]"); }
-  catch { warteMerk = []; }
+  try {
+    const roh = JSON.parse(localStorage.getItem(WARTE_SCHUB) || "[]");
+    warteMerk = Array.isArray(roh) ? roh : [];      // was anderes als eine liste? dann leer
+  } catch { warteMerk = []; }
+  const jetzt = Date.now();
+  const frisch = warteMerk.filter((a) => !a.wann || jetzt - a.wann < WARTE_FRIST);
+  if (frisch.length !== warteMerk.length) {
+    warteMerk = frisch;
+    try { localStorage.setItem(WARTE_SCHUB, JSON.stringify(frisch)); } catch {}
+  }
   return warteMerk;
 };
 const warteSchreiben = (l) => {
@@ -985,7 +998,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       + "sie bekommen jeweils den nächsten freien platz in ihrer reihe.\n"
       + "alle übrigen karten bleiben, wo sie sind.")) return;
 
-    setRaeumtAuf(true); setMsg("");
+    setRaeumtAuf(true);
+    setMsg("räume auf …");
     try {
       // Direkt aus der datenbank arbeiten, nicht aus dem bild auf dem
       // schirm — sonst raeumt man womoeglich nach einem alten stand.
@@ -1023,8 +1037,11 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         if (runde === 5) setMsg(bewegt + " karten verschoben — bitte nochmal aufräumen");
       }
       await laden();
-    } catch (e) { setMsg(String(e.message)); }
-    setRaeumtAuf(false);
+    } catch (e) {
+      setMsg("aufräumen ging nicht: " + String(e.message));
+    } finally {
+      setRaeumtAuf(false);      // haengt jetzt nicht mehr fest, egal was passiert
+    }
   };
 
   // A.I.M. — gemischt werden SPALTEN, nicht einzelne karten. Eine szene
@@ -2374,9 +2391,18 @@ export default function Schreibknecht() {
       )}
 
       {warten > 0 && (
-        <div className="warteleiste" onClick={nachreichen} title="jetzt nachreichen">
+        <div className="warteleiste">
           <span className="wartepunkt" />
-          {warten} {warten === 1 ? "änderung wartet" : "änderungen warten"} aufs netz
+          <span>{warten} {warten === 1 ? "änderung wartet" : "änderungen warten"}</span>
+          <button className="klein" onClick={nachreichen} title="jetzt abschicken">↑</button>
+          <button className="klein weg" title="verwerfen — sie werden nicht abgeschickt"
+            onClick={() => {
+              if (!confirm(
+                warten + (warten === 1 ? " wartende änderung" : " wartende änderungen")
+                + " verwerfen?\n\nsie werden nicht mehr abgeschickt. was du siehst,\n"
+                + "bleibt so, wie es in der datenbank steht.")) return;
+              warteSchreiben([]); setWarten(0); laden();
+            }}>✕</button>
         </div>
       )}
 
@@ -2562,7 +2588,9 @@ function Stil() {
   font-size:11px; letter-spacing:.05em; color:var(--pergament2);
   box-shadow:0 8px 22px rgba(0,0,0,.6);
 }
-.warteleiste:hover{border-color:var(--kerze); color:var(--kerze2)}
+.warteleiste .klein{border-color:rgba(224,139,60,.35)}
+.warteleiste .klein:hover{color:var(--kerze2); border-color:var(--kerze)}
+.warteleiste .klein.weg:hover{color:#e08070; border-color:rgba(224,128,112,.7)}
 .wartepunkt{
   width:7px; height:7px; border-radius:50%; background:var(--kerze);
   animation:wartenpuls 1.6s ease-in-out infinite; flex:0 0 auto;
