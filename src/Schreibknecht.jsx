@@ -541,7 +541,7 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
 
 // ---------- Projekt-Seite ----------
 function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag,
-                       hand, setHand, laden, glocke }) {
+                       hand, setHand, laden, glocke, allesHolen }) {
   const [zug, setZug] = useState(null);      // {ai, id, karte, dx, dy, x, y, laeuft}
   const [ziel, setZiel] = useState(null);   // worauf gerade gezeigt wird
   const zugRef = useRef(null);
@@ -986,24 +986,43 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       + "alle übrigen karten bleiben, wo sie sind.")) return;
 
     setRaeumtAuf(true); setMsg("");
-    const belegt = new Set();
-    const umzuege = [];
-    for (const k of [...a.karten].sort((x, y) =>
-      (x.pos - y.pos) || ((x.zeile || 0) - (y.zeile || 0))
-      || String(x.created_at || "").localeCompare(String(y.created_at || "")))) {
-      const z = k.zeile || 0;
-      let pos = k.pos;
-      while (belegt.has(pos + ":" + z)) pos++;       // naechster freier platz
-      belegt.add(pos + ":" + z);
-      if (pos !== k.pos) umzuege.push({ id: k.id, pos });
-    }
     try {
-      for (let i = 0; i < umzuege.length; i++) {
-        setMsg("räume auf … " + (i + 1) + " von " + umzuege.length);
-        await api("PATCH", `/rest/v1/karten?id=eq.${umzuege[i].id}`, { pos: umzuege[i].pos });
+      // Direkt aus der datenbank arbeiten, nicht aus dem bild auf dem
+      // schirm — sonst raeumt man womoeglich nach einem alten stand.
+      let bewegt = 0;
+      for (let runde = 1; runde <= 5; runde++) {
+        const stand = await allesHolen(
+          `/rest/v1/karten?select=id,pos,zeile,created_at&abschnitt_id=eq.${a.id}&order=id.asc`);
+
+        const belegt = new Set();
+        const umzuege = [];
+        for (const k of [...stand].sort((x, y) =>
+          ((x.zeile || 0) - (y.zeile || 0)) || (x.pos - y.pos)
+          || String(x.created_at || "").localeCompare(String(y.created_at || ""))
+          || String(x.id).localeCompare(String(y.id)))) {
+          const z = k.zeile || 0;
+          let pos = k.pos;
+          while (belegt.has(pos + ":" + z)) pos++;        // naechster freier platz
+          belegt.add(pos + ":" + z);
+          if (pos !== k.pos) umzuege.push({ id: k.id, pos });
+        }
+
+        if (!umzuege.length) {
+          setMsg(bewegt
+            ? bewegt + " karten haben einen eigenen platz bekommen — jetzt ist alles sichtbar"
+            : "es lag nichts verdeckt — alle karten sind sichtbar");
+          break;
+        }
+
+        for (let i = 0; i < umzuege.length; i++) {
+          setMsg("runde " + runde + " · räume auf … " + (i + 1) + " von " + umzuege.length);
+          await api("PATCH", `/rest/v1/karten?id=eq.${umzuege[i].id}`, { pos: umzuege[i].pos });
+        }
+        bewegt += umzuege.length;
+
+        if (runde === 5) setMsg(bewegt + " karten verschoben — bitte nochmal aufräumen");
       }
       await laden();
-      setMsg(umzuege.length + " karten haben einen eigenen platz bekommen");
     } catch (e) { setMsg(String(e.message)); }
     setRaeumtAuf(false);
   };
@@ -2314,7 +2333,7 @@ export default function Schreibknecht() {
             : projekt
               ? <ProjektSeite projekt={projekt} api={api} bilder={bilder} holBild={holBild}
                   hochladen={hochladen} aendere={aendere} zurueck={() => setOffen(null)} sag={setMsg}
-                  hand={hand} setHand={setHand} laden={laden}
+                  hand={hand} setHand={setHand} laden={laden} allesHolen={allesHolen}
                   glocke={
                     <div className={"glocke" + (laeutet ? " schwingt" : "")
                         + (heutGeschrieben >= ziel ? " voll" : "")}
