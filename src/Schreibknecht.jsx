@@ -752,12 +752,16 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       gedreht: false, pos: 0, zeile };
     try {
       await abschnittAbwarten(a.id);
-      // erst platz machen: alles in dieser reihe rueckt einen weiter
-      for (const k of [...ersteReihe].sort((x, y) => y.pos - x.pos)) {
-        await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: k.pos + 1 });
-      }
-      await karteEinlegen(ai, neu);
-      await laden();
+      // EIN auftrag: die datenbank macht platz und legt die karte hinein
+      await api("POST", "/rest/v1/rpc/karte_einfuegen",
+        { p_id: neu.id, p_abschnitt: a.id, p_pos: 0, p_zeile: zeile });
+      // auf dem schirm gleich richtig, ohne alles neu zu holen
+      aendere((p) => {
+        p.abschnitte[ai].karten = [
+          ...p.abschnitte[ai].karten.map((k) => (k.pos >= 0 ? { ...k, pos: k.pos + 1 } : k)),
+          neu,
+        ].sort(sortiere);
+      });
     } catch (e) { sag(String(e.message)); }
   });
 
@@ -1162,12 +1166,16 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       gedreht: false, pos: stelle, zeile };
     try {
       await abschnittAbwarten(a.id);
-      // platz machen: alles ab hier rueckt einen weiter — ganze spalten
-      for (const k of a.karten.filter((k) => k.pos >= stelle).sort((x, y) => y.pos - x.pos)) {
-        await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: k.pos + 1 });
-      }
-      await karteEinlegen(quelle.ai, neu);
-      await laden();
+      // EIN auftrag statt einer anfrage je karte
+      await api("POST", "/rest/v1/rpc/karte_einfuegen",
+        { p_id: neu.id, p_abschnitt: a.id, p_pos: stelle, p_zeile: zeile });
+      aendere((p) => {
+        p.abschnitte[quelle.ai].karten = [
+          ...p.abschnitte[quelle.ai].karten.map((k) =>
+            (k.pos >= stelle ? { ...k, pos: k.pos + 1 } : k)),
+          neu,
+        ].sort(sortiere);
+      });
       // die neue karte kommt IMMER nach rechts — links bleibt das
       // ausgangsmaterial stehen, aus dem getrennt wird
       setPult((l) => (l.length < 2 ? [...l, neu.id] : [l[0], neu.id]));
@@ -1233,20 +1241,11 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const ruecken = nachAb.karten.filter((k) => k.pos >= zielPos && !meineIds.has(k.id));
 
     try {
-      // von hinten nach vorn, damit sich nichts gegenseitig ueberholt
-      for (const k of [...ruecken].sort((x, y) => y.pos - x.pos)) {
-        await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { pos: k.pos + 1 });
-      }
-      if (meine.length > 1) {
-        // die spalte behaelt ihren aufbau, nur der platz aendert sich
-        for (const k of meine) {
-          await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`,
-            { abschnitt_id: nachAb.id, pos: zielPos });
-        }
-      } else {
-        await api("PATCH", `/rest/v1/karten?id=eq.${karteId}`,
-          { abschnitt_id: nachAb.id, pos: zielPos, zeile: zielZeile });
-      }
+      // EIN auftrag: platz machen und verschieben passiert in der datenbank
+      await api("POST", "/rest/v1/rpc/karte_dazwischen", {
+        p_karte: karteId, p_abschnitt: nachAb.id, p_pos: zielPos,
+        p_zeile: zielZeile, p_spalte: meine.length > 1,
+      });
       await laden();
     } catch (e) { sag(String(e.message)); }
     setHand(null);
@@ -1555,7 +1554,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
 // ---------- Deckblatt ----------
 function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert,
-                    zurueckspielen, spieltZurueck, dateiFeld, platz, zaehlt, nachsehen, eindampfen, dampft }) {
+                    zurueckspielen, spieltZurueck, dateiFeld, platz, zaehlt, nachsehen, eindampfen, dampft, allesAufraeumen, raeumtAlles }) {
   // Bei jedem Oeffnen werden drei Karten vom Stapel gezogen und zwischen
   // die Kacheln gelegt — jede an eine andere Stelle, jede etwas schief.
   const [gezogen] = useState(() => {
@@ -1648,6 +1647,10 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
         <button className="btn" onClick={eindampfen} disabled={dampft}
           title="alle bilder einmal auf vernünftige größe bringen">
           {dampft ? "…" : "◍ bilder eindampfen"}
+        </button>
+        <button className="btn" onClick={allesAufraeumen} disabled={raeumtAlles}
+          title="verdeckte karten in allen abschnitten freilegen">
+          {raeumtAlles ? "…" : "⌸ plätze aufräumen"}
         </button>
         {platz ? (() => {
           const mb = platz.bytes / 1048576;
@@ -2181,6 +2184,69 @@ export default function Schreibknecht() {
     setDampft(false);
   };
 
+  // ---- ALLE ABSCHNITTE AUFRAEUMEN ----
+  // Nach genau derselben rechnung, die auch die anzeige benutzt: eine
+  // fehlende reihe zaehlt als reihe null. Genau daran ist die reparatur
+  // per hand vorbeigelaufen — sql sieht "leer" und "null" als zwei
+  // verschiedene faecher, die app sieht eines.
+  const [raeumtAlles, setRaeumtAlles] = useState(false);
+  const allesAufraeumen = async () => {
+    if (!confirm(
+      "alle abschnitte durchgehen und verdeckte karten freilegen?\n\n"
+      + "jede karte, die unter einer anderen liegt, bekommt den nächsten\n"
+      + "freien platz in ihrer reihe. alles andere bleibt liegen.\n\n"
+      + "wichtig: schließ vorher alle anderen fenster der app.")) return;
+
+    setRaeumtAlles(true); setMsg("");
+    try {
+      let bewegt = 0, abschnitteBetroffen = 0;
+      for (let runde = 1; runde <= 4; runde++) {
+        const alle = await allesHolen(
+          "/rest/v1/karten?select=id,abschnitt_id,pos,zeile,created_at&order=id.asc");
+
+        // nach abschnitt buendeln
+        const nachAbschnitt = new Map();
+        for (const k of alle) {
+          if (!nachAbschnitt.has(k.abschnitt_id)) nachAbschnitt.set(k.abschnitt_id, []);
+          nachAbschnitt.get(k.abschnitt_id).push(k);
+        }
+
+        const umzuege = [];
+        for (const [, karten] of nachAbschnitt) {
+          const belegt = new Set();
+          let hierBewegt = false;
+          for (const k of [...karten].sort((x, y) =>
+            ((x.zeile || 0) - (y.zeile || 0)) || (x.pos - y.pos)
+            || String(x.created_at || "").localeCompare(String(y.created_at || ""))
+            || String(x.id).localeCompare(String(y.id)))) {
+            const z = k.zeile || 0;                  // fehlende reihe = reihe null
+            let pos = k.pos;
+            while (belegt.has(pos + ":" + z)) pos++;
+            belegt.add(pos + ":" + z);
+            if (pos !== k.pos) { umzuege.push({ id: k.id, pos, zeile: z }); hierBewegt = true; }
+          }
+          if (hierBewegt && runde === 1) abschnitteBetroffen++;
+        }
+
+        if (!umzuege.length) break;
+
+        for (let i = 0; i < umzuege.length; i++) {
+          setMsg("runde " + runde + " · " + (i + 1) + " von " + umzuege.length + " …");
+          // die reihe wird mitgeschrieben, damit "leer" endgueltig zu null wird
+          await api("PATCH", `/rest/v1/karten?id=eq.${umzuege[i].id}`,
+            { pos: umzuege[i].pos, zeile: umzuege[i].zeile });
+        }
+        bewegt += umzuege.length;
+      }
+      await laden();
+      setMsg(bewegt
+        ? bewegt + " karten freigelegt in " + abschnitteBetroffen + " abschnitten"
+        : "es lag nichts verdeckt");
+    } catch (e) {
+      setMsg("aufräumen ging nicht: " + String(e.message));
+    } finally { setRaeumtAlles(false); }
+  };
+
   // ---- ZURUECKSPIELEN ----
   // Die sicherung wieder einlesen. Alles behaelt seine alten kennungen,
   // darum wird nichts doppelt: was schon da ist, wird aufgefrischt,
@@ -2367,7 +2433,8 @@ export default function Schreibknecht() {
                   sicherung={sicherung} sichert={sichert}
                   zurueckspielen={zurueckspielen} spieltZurueck={spieltZurueck}
                   dateiFeld={dateiFeld} platz={platz} zaehlt={zaehlt} nachsehen={nachsehen}
-                  eindampfen={eindampfen} dampft={dampft} />}
+                  eindampfen={eindampfen} dampft={dampft}
+                  allesAufraeumen={allesAufraeumen} raeumtAlles={raeumtAlles} />}
         {msg && <p className="meldung" onClick={() => setMsg("")}>{verstaendlich(msg)}</p>}
       </main>
 
