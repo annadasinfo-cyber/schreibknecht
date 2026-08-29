@@ -899,7 +899,11 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const schlange = useRef(Promise.resolve());
   const nacheinander = (tue) => {
     const dran = schlange.current.then(tue, tue);
-    schlange.current = dran.catch(() => {});
+    // ein fehler darf hier nicht still verschwinden — sonst passiert
+    // scheinbar einfach nichts und niemand weiss warum
+    schlange.current = dran.catch((e) => {
+      sag("da ging etwas schief: " + String(e && e.message ? e.message : e));
+    });
     return dran;
   };
 
@@ -997,26 +1001,26 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // den abschnitt aus der hand in DIESES projekt legen
   const abschnittHierher = () => nacheinander(async () => {
     if (!abschnittHand) return;
-    setMsg("wird verschoben …");
+    sag("wird verschoben …");
     try {
       await api("POST", "/rest/v1/rpc/abschnitt_umziehen",
         { p_abschnitt: abschnittHand.id, p_projekt: projekt.id });
       setAbschnittHand(null);
       await laden();
-      setMsg("");
+      sag("");
     } catch (e) { sag(String(e.message)); }
   });
 
   const abschnittKopieren = (ai) => nacheinander(async () => {
     const a = projekt.abschnitte[ai];
-    setMsg("wird kopiert …");
+    sag("wird kopiert …");
     try {
       await api("POST", "/rest/v1/rpc/abschnitt_kopieren", {
         p_abschnitt: a.id, p_neue_id: neueId(), p_projekt: null,
         p_kartenids: a.karten.map(() => neueId()),
       });
       await laden();
-      setMsg("");
+      sag("");
     } catch (e) { sag(String(e.message)); }
   });
 
@@ -1087,7 +1091,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       + "alle übrigen karten bleiben, wo sie sind.")) return;
 
     setRaeumtAuf(true);
-    setMsg("räume auf …");
+    sag("räume auf …");
     try {
       // Direkt aus der datenbank arbeiten, nicht aus dem bild auf dem
       // schirm — sonst raeumt man womoeglich nach einem alten stand.
@@ -1110,23 +1114,23 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         }
 
         if (!umzuege.length) {
-          setMsg(bewegt
+          sag(bewegt
             ? bewegt + " karten haben einen eigenen platz bekommen — jetzt ist alles sichtbar"
             : "es lag nichts verdeckt — alle karten sind sichtbar");
           break;
         }
 
         for (let i = 0; i < umzuege.length; i++) {
-          setMsg("runde " + runde + " · räume auf … " + (i + 1) + " von " + umzuege.length);
+          sag("runde " + runde + " · räume auf … " + (i + 1) + " von " + umzuege.length);
           await api("PATCH", `/rest/v1/karten?id=eq.${umzuege[i].id}`, { pos: umzuege[i].pos });
         }
         bewegt += umzuege.length;
 
-        if (runde === 5) setMsg(bewegt + " karten verschoben — bitte nochmal aufräumen");
+        if (runde === 5) sag(bewegt + " karten verschoben — bitte nochmal aufräumen");
       }
       await laden();
     } catch (e) {
-      setMsg("aufräumen ging nicht: " + String(e.message));
+      sag("aufräumen ging nicht: " + String(e.message));
     } finally {
       setRaeumtAuf(false);      // haengt jetzt nicht mehr fest, egal was passiert
     }
