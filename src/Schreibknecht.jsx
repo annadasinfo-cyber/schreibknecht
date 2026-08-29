@@ -730,7 +730,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
   // das + oben im trennstrich legt die karte GANZ VORN an — bei vielen
   // karten in der reihe waere hinten sonst unhandlich weit weg
-  const karteVorn = async (ai) => {
+  const karteVorn = (ai) => nacheinander(async () => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt) return;
     const zeile = a.karten.length ? Math.min(...a.karten.map((k) => k.zeile || 0)) : 0;
@@ -746,7 +746,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       await karteEinlegen(ai, neu);
       await laden();
     } catch (e) { sag(String(e.message)); }
-  };
+  });
 
   const karteZu = (ai, pos, zeile) => {
     const a = projekt.abschnitte[ai];
@@ -837,6 +837,17 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // als das netz, wuerde sonst eine karte in einen abschnitt legen, den
   // es noch nicht gibt. Darum merken wir uns, worauf noch gewartet wird.
   const abschnittUnterwegs = useRef({});
+
+  // Wer karten anlegt, muss dabei andere verschieben. Laufen zwei solche
+  // vorgaenge gleichzeitig, ueberholen sich die verschiebungen und zwei
+  // karten landen auf demselben platz — dann verdeckt eine die andere.
+  // Darum: immer nur einer nach dem anderen.
+  const schlange = useRef(Promise.resolve());
+  const nacheinander = (tue) => {
+    const dran = schlange.current.then(tue, tue);
+    schlange.current = dran.catch(() => {});
+    return dran;
+  };
 
   const abschnittZu = () => {
     const neu = { id: neueId(), projekt_id: projekt.id, titel: "neuer abschnitt",
@@ -945,6 +956,58 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
   // A.I.M. — mischen. Die BELEGTEN Plaetze bleiben, nur die Karten
   // wechseln untereinander die Fächer. Luecken bleiben Luecken.
+  // ---- PLAETZE AUFRAEUMEN ----
+  // Zwei karten auf demselben platz IN DERSELBEN REIHE koennen nicht
+  // beide zu sehen sein — eine verdeckt die andere. Passiert ist das,
+  // wenn sich beim schnellen anlegen die verschiebe-auftraege ueberholt
+  // haben. Hier wird jede verdeckte karte auf den naechsten freien
+  // platz gesetzt; alles andere bleibt, wo es ist.
+  const verdeckte = (a) => {
+    const belegt = new Set();
+    let n = 0;
+    for (const k of [...a.karten].sort((x, y) =>
+      (x.pos - y.pos) || ((x.zeile || 0) - (y.zeile || 0))
+      || String(x.created_at || "").localeCompare(String(y.created_at || "")))) {
+      const schluessel = k.pos + ":" + (k.zeile || 0);
+      if (belegt.has(schluessel)) n++;
+      else belegt.add(schluessel);
+    }
+    return n;
+  };
+
+  const [raeumtAuf, setRaeumtAuf] = useState(false);
+  const aufraeumen = async (ai) => {
+    const a = projekt.abschnitte[ai];
+    const wieviele = verdeckte(a);
+    if (!wieviele) return;
+    if (!confirm(
+      `${wieviele} ${wieviele === 1 ? "karte liegt" : "karten liegen"} verdeckt unter anderen.\n\n`
+      + "sie bekommen jeweils den nächsten freien platz in ihrer reihe.\n"
+      + "alle übrigen karten bleiben, wo sie sind.")) return;
+
+    setRaeumtAuf(true); setMsg("");
+    const belegt = new Set();
+    const umzuege = [];
+    for (const k of [...a.karten].sort((x, y) =>
+      (x.pos - y.pos) || ((x.zeile || 0) - (y.zeile || 0))
+      || String(x.created_at || "").localeCompare(String(y.created_at || "")))) {
+      const z = k.zeile || 0;
+      let pos = k.pos;
+      while (belegt.has(pos + ":" + z)) pos++;       // naechster freier platz
+      belegt.add(pos + ":" + z);
+      if (pos !== k.pos) umzuege.push({ id: k.id, pos });
+    }
+    try {
+      for (let i = 0; i < umzuege.length; i++) {
+        setMsg("räume auf … " + (i + 1) + " von " + umzuege.length);
+        await api("PATCH", `/rest/v1/karten?id=eq.${umzuege[i].id}`, { pos: umzuege[i].pos });
+      }
+      await laden();
+      setMsg(umzuege.length + " karten haben einen eigenen platz bekommen");
+    } catch (e) { setMsg(String(e.message)); }
+    setRaeumtAuf(false);
+  };
+
   // A.I.M. — gemischt werden SPALTEN, nicht einzelne karten. Eine szene
   // nimmt ihren ort, ihren pov und alles andere mit, was auf ihr steht.
   // Sonst waere es kein mischen, sondern konfetti.
@@ -1053,7 +1116,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // Eine neue karte direkt aus dem pult heraus — sie legt sich gleich
   // NEBEN die karte, an der man gerade sitzt, und schlaegt sich mit auf.
   // Zum trennen von altem material und zum einsortieren von recherche.
-  const neueImPult = async () => {
+  const neueImPult = () => nacheinander(async () => {
     const quelle = findeKarte(pult[pult.length - 1]);
     if (!quelle) return;
     const a = projekt.abschnitte[quelle.ai];
@@ -1074,7 +1137,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       setPult((l) => (l.length < 2 ? [...l, neu.id] : [l[0], neu.id]));
       setKlein(false);
     } catch (e) { sag(String(e.message)); }
-  };
+  });
 
   // OBEN DRAUF: die karte (oder die ganze spalte) legt sich auf die
   // spalte an dieser stelle — also ort, pov oder gegenstand zur szene.
@@ -1113,7 +1176,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // dann faellt die karte in die entstandene luecke.
   // ZWISCHEN zwei spalten schieben. Ist die gegriffene karte ein fundament,
   // wandert die GANZE spalte mit — sonst risse man sie hier wieder auseinander.
-  const dazwischen = async (zielA, zielPos, zielZeile, karteId) => {
+  const dazwischen = (zielA, zielPos, zielZeile, karteId) => nacheinander(async () => {
     const nachAb = projekt.abschnitte[zielA];
     if (nachAb.gesperrt) { setHand(null); return; }
 
@@ -1151,7 +1214,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       await laden();
     } catch (e) { sag(String(e.message)); }
     setHand(null);
-  };
+  });
 
   return (
     <>
@@ -1200,6 +1263,13 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 {" · "}
                 {a.karten.reduce((x, k) => x + zaehle(k.text), 0).toLocaleString("de-DE")} wörter
               </span>
+              {verdeckte(a) > 0 && (
+                <button className="verdeckthinweis" onClick={() => aufraeumen(ai)}
+                  disabled={raeumtAuf || a.gesperrt}
+                  title="jede verdeckte karte bekommt einen eigenen platz">
+                  ⚠ {verdeckte(a)} verdeckt — aufräumen
+                </button>
+              )}
               <span className="linie" />
               {(() => {
                 const plaetze = [...new Set(a.karten.map((k) => k.pos))];
@@ -2629,6 +2699,15 @@ function Stil() {
 }
 .strichtitel:focus{outline:none; color:var(--kerze2); border-color:rgba(242,179,87,.5)}
 .abzahl{font-size:10px; color:var(--nebel); letter-spacing:.06em; flex:0 0 auto}
+/* wenn karten unter anderen liegen und darum nicht zu sehen sind */
+.verdeckthinweis{
+  flex:0 0 auto; font-family:inherit; font-size:10.5px; letter-spacing:.05em; cursor:pointer;
+  padding:4px 10px; border-radius:3px;
+  border:1px solid rgba(224,128,112,.55); background:rgba(40,14,10,.7); color:#f0c0b0;
+  transition:.15s;
+}
+.verdeckthinweis:hover:not(:disabled){background:rgba(60,20,14,.9); border-color:#e08070}
+.verdeckthinweis:disabled{opacity:.4; cursor:default}
 .linie{flex:1; height:1px; background:linear-gradient(90deg, rgba(168,135,79,.45), rgba(168,135,79,.08))}
 .wuerfel{
   font-size:18px; line-height:1; padding:4px 9px; cursor:pointer; color:var(--kerze);
@@ -3088,7 +3167,7 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste{display:none !important}
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks,
   .bogenbildkasten{display:none !important}
   .seite.text{background:none; border:0}
