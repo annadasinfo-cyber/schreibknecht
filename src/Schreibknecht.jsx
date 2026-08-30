@@ -999,12 +999,13 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   };
 
   // den abschnitt aus der hand in DIESES projekt legen
-  const abschnittHierher = () => nacheinander(async () => {
+  const abschnittHierher = (pos) => nacheinander(async () => {
     if (!abschnittHand) return;
     sag("wird verschoben …");
     try {
       await api("POST", "/rest/v1/rpc/abschnitt_umziehen",
-        { p_abschnitt: abschnittHand.id, p_projekt: projekt.id });
+        { p_abschnitt: abschnittHand.id, p_projekt: projekt.id,
+          p_pos: pos == null ? null : pos });
       setAbschnittHand(null);
       await laden();
       sag("");
@@ -1374,8 +1375,15 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       <div className={"blatt" + (mitBild && !nurDieser ? "" : " ohnebild") + (nurDieser ? " einzeln" : "")}>
         {projekt.abschnitte.map((a, ai) => (
           <React.Fragment key={"f" + a.id}>
-          <button className="abschnittzwischen" onClick={() => abschnittDazwischen(ai)}
-            title="hier einen neuen trennstrich einfügen">+ trennstrich hier</button>
+          {abschnittHand && abschnittHand.vonProjekt !== projekt.id ? (
+            <button className="abschnittzwischen ablage" onClick={() => abschnittHierher(ai)}
+              title={"„" + abschnittHand.titel + "\u201c hier ablegen"}>
+              ✋ „{abschnittHand.titel}" hier ablegen
+            </button>
+          ) : (
+            <button className="abschnittzwischen" onClick={() => abschnittDazwischen(ai)}
+              title="hier einen neuen trennstrich einfügen">+ trennstrich hier</button>
+          )}
           <section
             className={"abschnitt" + (mischt === a.id ? " mischt" : "")
               + (nurDieser === a.id ? " gedruckt" : "") + (a.gesperrt ? " zugesperrt" : "")}>
@@ -1534,8 +1542,9 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         ))}
 
         {abschnittHand && abschnittHand.vonProjekt !== projekt.id && (
-          <button className="abschnittablage" onClick={() => abschnittHierher()}>
-            ✂ „{abschnittHand.titel}" hier ablegen
+          <button className="abschnittablage"
+            onClick={() => abschnittHierher(projekt.abschnitte.length)}>
+            ✋ „{abschnittHand.titel}" hier unten ablegen
             <small>{abschnittHand.karten} karten wandern mit</small>
           </button>
         )}
@@ -2979,6 +2988,16 @@ function Stil() {
 .abschnittzwischen:hover{
   color:var(--kerze2); background:rgba(224,139,60,.12);
   box-shadow:inset 0 0 0 1px rgba(224,139,60,.35);
+}
+/* liegt ein abschnitt in der hand, sind alle stellen deutlich sichtbar */
+.abschnittzwischen.ablage{
+  height:34px; line-height:34px; margin:6px 0; font-size:12px; letter-spacing:.06em;
+  color:var(--kerze2); background:rgba(224,139,60,.14);
+  box-shadow:inset 0 0 0 1px rgba(224,139,60,.5);
+}
+.abschnittzwischen.ablage:hover{
+  background:rgba(224,139,60,.3);
+  box-shadow:inset 0 0 0 1px var(--kerze2), 0 0 18px rgba(224,139,60,.35);
 }
 
 /* der abschnitt, der gerade in der hand liegt */
