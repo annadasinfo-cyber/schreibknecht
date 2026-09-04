@@ -216,6 +216,32 @@ function Funken() {
 // erst nach reihe, dann nach platz — wie man eine auslage liest
 const sortiere = (a, b) => ((a.zeile || 0) - (b.zeile || 0)) || (a.pos - b.pos);
 
+// Ein PLATZ gilt als gesperrt, sobald eine karte darauf ein schloss hat.
+// Gesperrte plaetze bleiben liegen — verschiebungen springen darueber
+// hinweg. Sonst wuerde die bild-karte, die als wegweiser vorn steht,
+// bei jeder neuen karte einen platz weiterwandern.
+const platzGesperrt = (karten, pos) =>
+  karten.some((k) => k.pos === pos && k.gesperrt);
+
+// Wo landet eine neue karte wirklich, und welche plaetze ruecken mit?
+// Dieselbe rechnung wie in der datenbank, damit der schirm sofort stimmt.
+const einfuegePlan = (karten, wunsch) => {
+  let ziel = Math.max(wunsch, 0);
+  while (platzGesperrt(karten, ziel)) ziel++;
+
+  const betroffen = [...new Set(karten.map((k) => k.pos))]
+    .filter((pos) => pos >= ziel && !platzGesperrt(karten, pos))
+    .sort((a, b) => b - a);                       // von hinten nach vorn
+
+  const wohin = new Map();
+  for (const pos of betroffen) {
+    let frei = pos + 1;
+    while (platzGesperrt(karten, frei)) frei++;
+    wohin.set(pos, frei);
+  }
+  return { ziel, wohin };
+};
+
 // Eine SPALTE ist alles, was auf demselben platz uebereinanderliegt:
 // unten die szene, darueber ort, pov, gegenstand. Sie gehoert zusammen
 // und wandert zusammen.
@@ -753,13 +779,16 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       gedreht: false, pos: 0, zeile };
     try {
       await abschnittAbwarten(a.id);
+      const plan = einfuegePlan(a.karten, 0);
+      neu.pos = plan.ziel;
       // EIN auftrag: die datenbank macht platz und legt die karte hinein
       await api("POST", "/rest/v1/rpc/karte_einfuegen",
         { p_id: neu.id, p_abschnitt: a.id, p_pos: 0, p_zeile: zeile });
       // auf dem schirm gleich richtig, ohne alles neu zu holen
       aendere((p) => {
         p.abschnitte[ai].karten = [
-          ...p.abschnitte[ai].karten.map((k) => (k.pos >= 0 ? { ...k, pos: k.pos + 1 } : k)),
+          ...p.abschnitte[ai].karten.map((k) =>
+            (plan.wohin.has(k.pos) ? { ...k, pos: plan.wohin.get(k.pos) } : k)),
           neu,
         ].sort(sortiere);
       });
@@ -774,11 +803,14 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       gedreht: false, pos, zeile: zeile || 0 };
     try {
       await abschnittAbwarten(a.id);
+      const plan = einfuegePlan(a.karten, pos);
+      neu.pos = plan.ziel;
       await api("POST", "/rest/v1/rpc/karte_einfuegen",
         { p_id: neu.id, p_abschnitt: a.id, p_pos: pos, p_zeile: zeile || 0 });
       aendere((p) => {
         p.abschnitte[ai].karten = [
-          ...p.abschnitte[ai].karten.map((x) => (x.pos >= pos ? { ...x, pos: x.pos + 1 } : x)),
+          ...p.abschnitte[ai].karten.map((x) =>
+            (plan.wohin.has(x.pos) ? { ...x, pos: plan.wohin.get(x.pos) } : x)),
           neu,
         ].sort(sortiere);
       });
@@ -1256,12 +1288,14 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     try {
       await abschnittAbwarten(a.id);
       // EIN auftrag statt einer anfrage je karte
+      const plan = einfuegePlan(a.karten, stelle);
+      neu.pos = plan.ziel;
       await api("POST", "/rest/v1/rpc/karte_einfuegen",
         { p_id: neu.id, p_abschnitt: a.id, p_pos: stelle, p_zeile: zeile });
       aendere((p) => {
         p.abschnitte[quelle.ai].karten = [
           ...p.abschnitte[quelle.ai].karten.map((k) =>
-            (k.pos >= stelle ? { ...k, pos: k.pos + 1 } : k)),
+            (plan.wohin.has(k.pos) ? { ...k, pos: plan.wohin.get(k.pos) } : k)),
           neu,
         ].sort(sortiere);
       });
@@ -2762,7 +2796,15 @@ function Stil() {
 }
 @media(prefers-reduced-motion:reduce){.flamme i,.flamme b,.schein,.rauch{animation:none}}
 
-.tisch{position:relative; z-index:1; max-width:1120px; margin:0 auto; padding:26px 20px}
+/* ============================================================
+   DIE BREITE DES TISCHES — hier und nur hier.
+   Zum Zurueckbauen: max-width auf 1120px setzen.
+   ============================================================ */
+.tisch{
+  position:relative; z-index:1; margin:0 auto;
+  max-width:none;                       /* volle fensterbreite */
+  padding:26px clamp(14px, 2vw, 34px);
+}
 
 /* ---- Pforte ---- */
 .pforte{display:flex; justify-content:center; padding:40px 0}
@@ -3318,7 +3360,10 @@ function Stil() {
     border-bottom:1px solid rgba(42,33,24,.18)}
 }
 .bogenfeld{
-  flex:1; width:100%; resize:none; border:0; background:transparent; padding:20px 24px;
+  flex:1; width:100%; resize:none; border:0; background:transparent;
+  /* auf sehr breiten schirmen wuerden die zeilen sonst unlesbar lang —
+     der text bleibt darum in einer angenehmen spalte */
+  padding:20px max(24px, calc((100% - 82ch) / 2));
   font-family:'Courier Prime', monospace; font-size:14.5px; line-height:1.85; color:var(--tinte);
 }
 .bogenfeld:focus{outline:none}
