@@ -218,6 +218,34 @@ function Funken() {
   );
 }
 
+// Die Spinne. Alle paar minuten laeuft sie einmal ueber den oberen rand
+// und ist wieder weg. Selten genug, dass es ein ereignis bleibt.
+function Spinne() {
+  const [laeuft, setLaeuft] = useState(null);
+  useEffect(() => {
+    let uhr;
+    const naechste = () => {
+      const pause = (3 + Math.random() * 5) * 60 * 1000;      // 3 bis 8 minuten
+      uhr = setTimeout(() => {
+        const richtung = Math.random() < 0.5 ? "hin" : "her";
+        const hoehe = 8 + Math.random() * 40;               // px vom oberen rand
+        const dauer = 9 + Math.random() * 6;                // sekunden
+        setLaeuft({ richtung, hoehe, dauer, id: Date.now() });
+        setTimeout(() => { setLaeuft(null); naechste(); }, dauer * 1000 + 500);
+      }, pause);
+    };
+    naechste();
+    return () => clearTimeout(uhr);
+  }, []);
+  if (!laeuft) return null;
+  return (
+    <span key={laeuft.id} className={"spinne " + laeuft.richtung} aria-hidden="true"
+      style={{ top: laeuft.hoehe + "px", animationDuration: laeuft.dauer + "s" }}>
+      🕷
+    </span>
+  );
+}
+
 // erst nach reihe, dann nach platz — wie man eine auslage liest
 const sortiere = (a, b) => ((a.zeile || 0) - (b.zeile || 0)) || (a.pos - b.pos);
 
@@ -518,7 +546,13 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
     <div data-ziel={zielMarke}
       className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")
         + (angepeilt ? " angepeilt" : "") + (karte.gedreht ? " umgedreht" : "")
-        + (draufMarke ? " zielbereit" : "")}>
+        + (draufMarke ? " zielbereit" : "")}
+      style={{
+        // der luftzug: jede karte wiegt sich in ihrem eigenen takt.
+        // der takt kommt aus der kennung, damit er beim neuladen gleich bleibt.
+        "--takt": (7 + (karte.id.charCodeAt(2) % 5)) + "s",
+        "--versatz": "-" + (karte.id.charCodeAt(3) % 9) + "s",
+      }}>
       {!zu && <button className="verbrennen" onClick={onWeg}
         title="karte verbrennen">✕</button>}
       {/* der streifen ZUM DRAUFLEGEN sitzt direkt ueber der obersten karte
@@ -2578,6 +2612,7 @@ export default function Schreibknecht() {
       <div className={"schein" + (erloschen ? " gedaempft" : "")} aria-hidden="true" />
       <Funken />
       <div className="fassung" aria-hidden="true" />
+      <Spinne />
 
       <header className={"kopf" + (erloschen ? " halbdunkel" : "") + (dunkel ? " ganzdunkel" : "")}>
         <Kerze seite="links" aus={dunkel} />
@@ -2810,6 +2845,30 @@ function Stil() {
   max-width:none;                       /* volle fensterbreite */
   padding:26px clamp(14px, 2vw, 34px);
 }
+
+/* die spinne krabbelt einmal quer ueber den oberen rand */
+.spinne{
+  position:fixed; z-index:3; pointer-events:none; font-size:15px; line-height:1;
+  filter:drop-shadow(0 1px 2px rgba(0,0,0,.8)) brightness(.55);
+  animation-timing-function:linear; animation-fill-mode:forwards;
+}
+.spinne.hin{left:-30px; animation-name:krabbelhin}
+.spinne.her{right:-30px; animation-name:krabbelher; transform:scaleX(-1)}
+@keyframes krabbelhin{
+  0%{transform:translateX(0) translateY(0) rotate(0deg)}
+  25%{transform:translateX(25vw) translateY(-3px) rotate(-6deg)}
+  50%{transform:translateX(50vw) translateY(2px) rotate(4deg)}
+  75%{transform:translateX(75vw) translateY(-2px) rotate(-5deg)}
+  100%{transform:translateX(calc(100vw + 60px)) translateY(0) rotate(0deg)}
+}
+@keyframes krabbelher{
+  0%{transform:scaleX(-1) translateX(0) translateY(0) rotate(0deg)}
+  25%{transform:scaleX(-1) translateX(25vw) translateY(-3px) rotate(6deg)}
+  50%{transform:scaleX(-1) translateX(50vw) translateY(2px) rotate(-4deg)}
+  75%{transform:scaleX(-1) translateX(75vw) translateY(-2px) rotate(5deg)}
+  100%{transform:scaleX(-1) translateX(calc(100vw + 60px)) translateY(0) rotate(0deg)}
+}
+@media(prefers-reduced-motion:reduce){.spinne{display:none}}
 
 /* ---- Pforte ---- */
 .pforte{display:flex; justify-content:center; padding:40px 0}
@@ -3098,6 +3157,19 @@ function Stil() {
 /* die reihen ueber und unter — nur da, solange eine karte in der luft ist */
 .reihe.nurluft{opacity:.5; animation:luft .25s ease-out}
 @keyframes luft{from{opacity:0; transform:translateY(-6px)}to{opacity:.5; transform:none}}
+/* der luftzug — papier bei offenem fenster. ein halbes grad, langsam,
+   jede karte in ihrem eigenen takt. man sieht es kaum, merkt nur,
+   dass die auslage lebt. */
+@keyframes luftzug{
+  0%,100%{transform:rotate(-.35deg) translateY(0)}
+  38%{transform:rotate(.3deg) translateY(-1px)}
+  70%{transform:rotate(-.15deg) translateY(.5px)}
+}
+.kartenplatz:not(.ziehend):not(.inhand){
+  animation:luftzug var(--takt, 8s) ease-in-out var(--versatz, 0s) infinite;
+}
+@media(prefers-reduced-motion:reduce){.kartenplatz{animation:none !important}}
+
 .kartenplatz{
   width:198px; height:268px; perspective:1100px; flex:0 0 auto;
   /* karten weit rechts ausserhalb des sichtfelds werden gar nicht erst
@@ -3356,9 +3428,9 @@ function Stil() {
   transition:.2s;
 }
 .bogenbild:hover{filter:brightness(1.08)}
-/* angeklickt wird es breit — dann sieht man es richtig */
-.bogen.grossesbild .bogenbildkasten{width:min(58%, 420px)}
-.bogen.grossesbild .bogenbild{cursor:zoom-out}
+/* angeklickt wird es breit — und GANZ gezeigt, nichts wird abgeschnitten */
+.bogen.grossesbild .bogenbildkasten{width:min(58%, 480px); background:rgba(20,13,5,.55)}
+.bogen.grossesbild .bogenbild{cursor:zoom-out; object-fit:contain}
 @media(max-width:700px){
   .bogenkoerper{flex-direction:column}
   .bogenbildkasten{width:100%; height:110px; border-right:0;
@@ -3532,7 +3604,7 @@ function Stil() {
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
   .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis,
-  .abschnittzwischen, .abschnitthandleiste, .abschnittablage, .spaltplus{display:none !important}
+  .abschnittzwischen, .abschnitthandleiste, .abschnittablage, .spaltplus, .spinne{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks,
   .bogenbildkasten{display:none !important}
   .seite.text{background:none; border:0}
