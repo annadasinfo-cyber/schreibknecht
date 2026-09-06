@@ -1211,6 +1211,23 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // A.I.M. — gemischt werden SPALTEN, nicht einzelne karten. Eine szene
   // nimmt ihren ort, ihren pov und alles andere mit, was auf ihr steht.
   // Sonst waere es kein mischen, sondern konfetti.
+  // Die mischregel — spalten wandern, schloesser bleiben liegen,
+  // luecken bleiben luecken. Aendert die karten an ort und stelle.
+  const mischeKarten = (k) => {
+    const plaetze = [...new Set(k.map((x) => x.pos))].sort((x, y) => x - y);
+    const spalten = plaetze.map((pos) => k.filter((x) => x.pos === pos));
+    const fest = spalten.map((sp) => sp.some((x) => x.gesperrt));
+    const freiePlaetze = plaetze.filter((_, i) => !fest[i]);
+    const freieSpalten = spalten.filter((_, i) => !fest[i]);
+    if (freieSpalten.length < 2) return false;
+    for (let i = freieSpalten.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [freieSpalten[i], freieSpalten[j]] = [freieSpalten[j], freieSpalten[i]];
+    }
+    freieSpalten.forEach((sp, i) => sp.forEach((x) => { x.pos = freiePlaetze[i]; }));
+    return true;
+  };
+
   const mischen = (ai) => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt) return;                 // zu ist zu
@@ -1219,26 +1236,33 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       let neu = [];
       aendere((p) => {
         const k = p.abschnitte[ai].karten;
-        const plaetze = [...new Set(k.map((x) => x.pos))].sort((x, y) => x - y);
-        const spalten = plaetze.map((pos) => k.filter((x) => x.pos === pos));
-
-        // Eine spalte mit einem SCHLOSS bleibt liegen, wo sie ist. Nur die
-        // offenen wandern — und zwar nur auf die uebrigen plaetze. So kann
-        // man das, was schon sitzt, festmachen und den rest neu befragen.
-        const fest = spalten.map((sp) => sp.some((x) => x.gesperrt));
-        const freiePlaetze = plaetze.filter((_, i) => !fest[i]);
-        const freieSpalten = spalten.filter((_, i) => !fest[i]);
-
-        for (let i = freieSpalten.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [freieSpalten[i], freieSpalten[j]] = [freieSpalten[j], freieSpalten[i]];
+        if (mischeKarten(k)) {
+          p.abschnitte[ai].karten = [...k].sort(sortiere);
+          neu = k.map((x) => ({ id: x.id, pos: x.pos, zeile: x.zeile || 0 }));
         }
-        freieSpalten.forEach((sp, i) => sp.forEach((x) => { x.pos = freiePlaetze[i]; }));
-
-        p.abschnitte[ai].karten = [...k].sort(sortiere);
-        neu = k.map((x) => ({ id: x.id, pos: x.pos, zeile: x.zeile || 0 }));
       });
       neu.forEach((x) => setzePos(x.id, x.pos, x.zeile, a.id));
+      setTimeout(() => setMischt(null), 420);
+    }, 260);
+  };
+
+  // Alle abschnitte auf einmal — jeder fuer sich, nach derselben regel.
+  // Zugesperrte abschnitte und karten mit schloss bleiben, wo sie sind.
+  const allesMischen = () => {
+    setMischt("alle");
+    setTimeout(() => {
+      const neu = [];
+      aendere((p) => {
+        p.abschnitte.forEach((a) => {
+          if (a.gesperrt) return;
+          const k = a.karten;
+          if (mischeKarten(k)) {
+            a.karten = [...k].sort(sortiere);
+            k.forEach((x) => neu.push({ id: x.id, pos: x.pos, zeile: x.zeile || 0, ab: a.id }));
+          }
+        });
+      });
+      neu.forEach((x) => setzePos(x.id, x.pos, x.zeile, x.ab));
       setTimeout(() => setMischt(null), 420);
     }, 260);
   };
@@ -1426,8 +1450,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
       <div className="leiste">
         <button className="btn" onClick={zurueck}>‹ alle projekte</button>
+        <span className="wachsend namenkasten" data-wert={projekt.name || " "}>
         <input className="projektname" value={projekt.name}
-          style={{ width: Math.max(14, (projekt.name || "").length + 3) + "ch" }}
           onChange={(e) => {
             const v = e.target.value;
             aendere((p) => { p.name = v; });
@@ -1436,7 +1460,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               api("PATCH", `/rest/v1/projekte?id=eq.${projekt.id}`, { name: v }).catch(() => {});
             }, 1200);
           }} />
+        </span>
         <span className="fuellung" />
+        <button className="wuerfel gross" onClick={allesMischen}
+          title="alle abschnitte mischen — jeder für sich, schlösser bleiben liegen">⚄</button>
         {glocke}
         <label className="schalter">
           <input type="checkbox" checked={mitBild} onChange={(e) => setMitBild(e.target.checked)} />
@@ -1458,13 +1485,17 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               title="hier einen neuen trennstrich einfügen">+ trennstrich hier</button>
           )}
           <section
-            className={"abschnitt" + (mischt === a.id ? " mischt" : "")
+            className={"abschnitt" + (mischt === a.id || mischt === "alle" ? " mischt" : "")
               + (nurDieser === a.id ? " gedruckt" : "") + (a.gesperrt ? " zugesperrt" : "")}>
 
             <div className="trennstrich">
-              <input className="strichtitel" value={a.titel}
-                style={{ width: Math.max(10, (a.titel || "").length + 3) + "ch" }}
-                onChange={(e) => setTitel(ai, e.target.value)} />
+              {/* das feld misst sich am echten text: ein unsichtbarer zwilling
+                  in derselben schrift gibt die breite vor. eine zeichenzahl
+                  reicht nicht — kapitaelchen und laufweite sind breiter. */}
+              <span className="wachsend strichkasten" data-wert={a.titel || " "}>
+                <input className="strichtitel" value={a.titel}
+                  onChange={(e) => setTitel(ai, e.target.value)} />
+              </span>
               <span className="abzahl">
                 {a.karten.length} {a.karten.length === 1 ? "karte" : "karten"}
                 {" · "}
@@ -1804,7 +1835,8 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
             style={{ transform: `rotate(${k.kippt}deg)` }} />)}
         {projekte.map((p, i) => {
           const s = streuung(p.id);
-          const n = p.abschnitte.reduce((x, a) => x + a.karten.length, 0);
+          const n = p.abschnitte.reduce((x, a) =>
+            x + (p.kartenGeladen ? a.karten.length : (a.anzahl || 0)), 0);
           return (
             <React.Fragment key={p.id}>
             {karteHier(i)}
@@ -2033,23 +2065,65 @@ export default function Schreibknecht() {
   }, [api]);
 
   // ---- alles holen ----
+  // Die karten EINES projekts holen. Beim start werden nur projekte und
+  // abschnitte geladen; die karten kommen erst, wenn man ein projekt
+  // oeffnet. Sonst wuerde jeder start bei tausenden karten alles ziehen.
+  const kartenHolen = useCallback(async (projektId, abschnittIds) => {
+    if (!abschnittIds.length) return [];
+    const raus = [];
+    // in haeppchen, damit die adresse nicht zu lang wird
+    for (let i = 0; i < abschnittIds.length; i += 40) {
+      const stueck = abschnittIds.slice(i, i + 40);
+      const ka = await allesHolen(
+        `/rest/v1/karten?select=*&abschnitt_id=in.(${stueck.join(",")})&order=id.asc`);
+      raus.push(...ka);
+    }
+    return raus;
+  }, [allesHolen]);
+
+  const offenRef = useRef(null);
   const laden = useCallback(async () => {
     setMsg("");
     try {
-      const [pr, ab, ka, tw] = await Promise.all([
+      const [pr, ab, zaehl, tw] = await Promise.all([
         allesHolen("/rest/v1/projekte?select=*&order=zuletzt.desc"),
         allesHolen("/rest/v1/abschnitte?select=*&order=pos.asc"),
-        allesHolen("/rest/v1/karten?select=*&order=id.asc"),
+        // nur die kennungen — leicht, auch bei zehntausend karten
+        allesHolen("/rest/v1/karten?select=id,abschnitt_id&order=id.asc"),
         api("GET", "/rest/v1/tagewerk?select=*&order=tag.desc&limit=400"),
       ]);
       setTage(tw || []);
+
+      // wie viele karten je abschnitt, ohne sie zu laden
+      const anzahl = {};
+      (zaehl || []).forEach((k) => { anzahl[k.abschnitt_id] = (anzahl[k.abschnitt_id] || 0) + 1; });
+
+      // die karten des gerade offenen projekts kommen gleich mit
+      const offenId = offenRef.current;
+      const offenAb = (ab || []).filter((a) => a.projekt_id === offenId).map((a) => a.id);
+      const ka = offenId ? await kartenHolen(offenId, offenAb) : [];
+
       try { localStorage.setItem("sk:letzterStand",
-        JSON.stringify({ pr, ab, ka, tw, wann: Date.now() })); } catch {}
-      setProjekte((pr || []).map((p) => ({
-        ...p,
-        abschnitte: (ab || []).filter((a) => a.projekt_id === p.id)
-          .map((a) => ({ ...a, karten: (ka || []).filter((k) => k.abschnitt_id === a.id) })),
-      })));
+        JSON.stringify({ pr, ab, ka, tw, anzahl, wann: Date.now() })); } catch {}
+
+      setProjekte((alt) => (pr || []).map((p) => {
+        const vorher = alt.find((x) => x.id === p.id);
+        const istOffen = p.id === offenId;
+        return {
+          ...p,
+          kartenGeladen: istOffen || !!(vorher && vorher.kartenGeladen),
+          abschnitte: (ab || []).filter((a) => a.projekt_id === p.id).map((a) => {
+            const vorherAb = vorher && vorher.abschnitte.find((x) => x.id === a.id);
+            return {
+              ...a,
+              anzahl: anzahl[a.id] || 0,
+              karten: istOffen
+                ? (ka || []).filter((k) => k.abschnitt_id === a.id)
+                : (vorherAb && vorher.kartenGeladen ? vorherAb.karten : []),
+            };
+          }),
+        };
+      }));
       setGeladen(true);
     } catch (e) {
       // netz weg? dann wenigstens den zuletzt gesehenen stand zeigen,
@@ -2057,11 +2131,14 @@ export default function Schreibknecht() {
       let gerettet = null;
       try { gerettet = JSON.parse(localStorage.getItem("sk:letzterStand") || "null"); } catch {}
       if (gerettet && gerettet.pr) {
-        const { pr, ab, ka, tw } = gerettet;
+        const { pr, ab, ka, tw, anzahl } = gerettet;
         setProjekte((pr || []).map((p) => ({
           ...p,
+          kartenGeladen: (ka || []).some((k) =>
+            (ab || []).some((a) => a.id === k.abschnitt_id && a.projekt_id === p.id)),
           abschnitte: (ab || []).filter((a) => a.projekt_id === p.id)
-            .map((a) => ({ ...a, karten: (ka || []).filter((k) => k.abschnitt_id === a.id) })),
+            .map((a) => ({ ...a, anzahl: (anzahl || {})[a.id] || 0,
+              karten: (ka || []).filter((k) => k.abschnitt_id === a.id) })),
         })));
         setTage(tw || []);
         setMsg("kein netz — du siehst den stand von "
@@ -2072,7 +2149,7 @@ export default function Schreibknecht() {
       }
       setGeladen(true);
     }
-  }, [api, allesHolen]);
+  }, [api, allesHolen, kartenHolen]);
 
   // beim start: ist der zugang abgelaufen, erst verlaengern — dann holen
   useEffect(() => {
@@ -2199,11 +2276,18 @@ export default function Schreibknecht() {
   const projektKopieren = async (p) => {
     try {
       setMsg("wird kopiert …");
+      // die karten sind womoeglich noch nicht geladen — erst holen
+      let quelle = p;
+      if (!p.kartenGeladen) {
+        const ka = await kartenHolen(p.id, p.abschnitte.map((a) => a.id));
+        quelle = { ...p, abschnitte: p.abschnitte.map((a) =>
+          ({ ...a, karten: ka.filter((k) => k.abschnitt_id === a.id) })) };
+      }
       const neuP = { id: neueId(), name: p.name + " (kopie)",
         zuletzt: new Date().toISOString(), created_at: new Date().toISOString() };
       await api("POST", "/rest/v1/projekte", neuP);
-      for (let i = 0; i < p.abschnitte.length; i++) {
-        const a = p.abschnitte[i];
+      for (let i = 0; i < quelle.abschnitte.length; i++) {
+        const a = quelle.abschnitte[i];
         const neuA = { id: neueId(), projekt_id: neuP.id, titel: a.titel, pos: i };
         await api("POST", "/rest/v1/abschnitte", neuA);
         const karten = a.karten.map((k, n) => ({
@@ -2540,7 +2624,15 @@ export default function Schreibknecht() {
   const zuletztWort = useRef(Date.now());
   const spruchGesagt = useRef(false);
 
+  const gesamtVorher = useRef(null);
   useEffect(() => {
+    // beim nachladen eines projekts springt die zahl — das ist kein
+    // schreiben. nur echte aenderungen entzuenden die kerze neu.
+    if (gesamtVorher.current === null || Math.abs(gesamt - gesamtVorher.current) > 400) {
+      gesamtVorher.current = gesamt;
+      return;
+    }
+    gesamtVorher.current = gesamt;
     zuletztWort.current = Date.now();
     setErloschen(false); setDunkel(false);
     spruchGesagt.current = false;
@@ -2563,6 +2655,31 @@ export default function Schreibknecht() {
 
   const projekt = projekte.find((p) => p.id === offen) || null;
 
+  // oeffnet man ein projekt, dessen karten noch nicht da sind: nachholen
+  const [holtKarten, setHoltKarten] = useState(false);
+  useEffect(() => {
+    offenRef.current = offen;
+    if (!offen || !geladen) return;
+    const p = projekte.find((x) => x.id === offen);
+    if (!p || p.kartenGeladen) return;
+    let fort = false;
+    setHoltKarten(true);
+    (async () => {
+      try {
+        const ka = await kartenHolen(p.id, p.abschnitte.map((a) => a.id));
+        if (fort) return;
+        setProjekte((l) => l.map((x) => (x.id !== p.id ? x : {
+          ...x, kartenGeladen: true,
+          abschnitte: x.abschnitte.map((a) => ({
+            ...a, karten: ka.filter((k) => k.abschnitt_id === a.id),
+          })),
+        })));
+      } catch (e) { setMsg(verstaendlich(String(e.message))); }
+      if (!fort) setHoltKarten(false);
+    })();
+    return () => { fort = true; };
+  }, [offen, geladen, kartenHolen]); // eslint-disable-line
+
   // Wortzahl des offenen Projekts
   const projektWorte = projekt
     ? projekt.abschnitte.reduce((x, a) => x + a.karten.reduce((y, k) => y + zaehle(k.text), 0), 0)
@@ -2575,7 +2692,10 @@ export default function Schreibknecht() {
   // Beim Öffnen eines Projekts den Tagesanfang festhalten, danach mitschreiben.
   const werkUhr = useRef(null);
   useEffect(() => {
-    if (!projekt || !geladen) return;
+    // erst wenn die karten wirklich da sind — sonst wuerde der sprung
+    // von null auf den echten stand als tagesleistung gezaehlt und
+    // die glocke laeutet beim blossen oeffnen
+    if (!projekt || !geladen || !projekt.kartenGeladen) return;
     const tag = heute();
     const da = tage.find((t) => t.projekt_id === projekt.id && t.tag === tag);
 
@@ -2629,7 +2749,9 @@ export default function Schreibknecht() {
           : !geladen
             ? <p className="leerwort">wird geholt …</p>
             : projekt
-              ? <ProjektSeite projekt={projekt} api={api} bilder={bilder} holBild={holBild}
+              ? (holtKarten && !projekt.kartenGeladen)
+                ? <p className="leerwort">karten werden geholt …</p>
+                : <ProjektSeite projekt={projekt} api={api} bilder={bilder} holBild={holBild}
                   hochladen={hochladen} aendere={aendere} zurueck={() => setOffen(null)} sag={setMsg}
                   hand={hand} setHand={setHand} laden={laden} allesHolen={allesHolen}
                   abschnittHand={abschnittHand} setAbschnittHand={setAbschnittHand}
@@ -3010,11 +3132,12 @@ function Stil() {
 }
 .btn:hover:not(:disabled){color:var(--kerze2); border-color:rgba(242,179,87,.55)}
 .btn:disabled{opacity:.4; cursor:default}
-.projektname{
+.namenkasten::after, .projektname{
   font-family:'IM Fell English SC', Georgia, serif; font-size:22px; letter-spacing:.03em;
-  color:var(--kerze2); background:transparent; border:0; border-bottom:1px solid transparent;
-  padding:2px 4px; flex:0 0 auto; max-width:100%;
+  padding:2px 4px; border:0; border-bottom:1px solid transparent;
 }
+.projektname{color:var(--kerze2); background:transparent}
+.namenkasten{min-width:160px}
 .projektname:focus{outline:none; border-bottom-color:rgba(242,179,87,.5)}
 /* die glocke — sie schweigt, bis das tagewerk getan ist */
 .glocke{position:relative; display:flex; align-items:center; cursor:default}
@@ -3053,12 +3176,29 @@ function Stil() {
 .abschnitt{margin-bottom:34px; transition:opacity .26s}
 .abschnitt.mischt{opacity:.25}
 .trennstrich{display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap}
-.strichtitel{
-  font-family:'IM Fell English SC', Georgia, serif; font-size:14px; letter-spacing:.14em;
-  color:var(--messing); background:transparent; padding:3px 8px;
-  border:1px solid rgba(168,135,79,.25); border-radius:2px;
-  flex:0 0 auto; max-width:100%;   /* sonst quetscht die kopfzeile den titel zusammen */
+/* Ein feld, das mit seinem inhalt waechst: der kasten legt einen
+   unsichtbaren zwilling des textes in dieselbe zelle wie das feld.
+   Der zwilling bestimmt die breite, das feld fuellt sie aus. */
+.wachsend{
+  display:inline-grid; grid-template-areas:"zelle"; align-items:center;
+  flex:0 0 auto; max-width:100%;
 }
+.wachsend::after{
+  content:attr(data-wert) "  "; grid-area:zelle; visibility:hidden; white-space:pre;
+  pointer-events:none;
+}
+.wachsend > input{grid-area:zelle; width:100%; min-width:0}
+
+/* zwilling und feld muessen dieselbe schrift tragen */
+.strichkasten::after, .strichtitel{
+  font-family:'IM Fell English SC', Georgia, serif; font-size:14px; letter-spacing:.14em;
+  padding:3px 8px; border:1px solid transparent;
+}
+.strichtitel{
+  color:var(--messing); background:transparent;
+  border-color:rgba(168,135,79,.25); border-radius:2px;
+}
+.strichkasten{min-width:80px}
 .strichtitel:focus{outline:none; color:var(--kerze2); border-color:rgba(242,179,87,.5)}
 .abzahl{font-size:10px; color:var(--nebel); letter-spacing:.06em; flex:0 0 auto}
 /* wenn karten unter anderen liegen und darum nicht zu sehen sind */
@@ -3076,6 +3216,7 @@ function Stil() {
   background:transparent; border:1px solid rgba(242,179,87,.3); border-radius:2px; transition:.15s;
 }
 .wuerfel:hover{background:rgba(242,179,87,.12); box-shadow:0 0 14px rgba(242,179,87,.25); transform:rotate(-12deg)}
+.wuerfel.gross{font-size:22px; padding:5px 11px; margin-right:6px}
 .klein{
   font-family:inherit; font-size:12px; line-height:1; padding:5px 8px; cursor:pointer;
   color:var(--nebel); background:transparent; border:1px solid rgba(168,135,79,.22);
