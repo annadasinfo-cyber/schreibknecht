@@ -550,9 +550,12 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 }
 
 // ---------- eine Karte ----------
-function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDoppeln, onSchneiden,
-                inHand, aufPult, onAufsPult, onGriff, onSchloss, ziehend, zielMarke, angepeilt,
-                traegtSpalte, draufMarke, draufAn }) {
+// Die karte zeichnet sich nur neu, wenn sich an IHR etwas geaendert hat.
+// Sonst wuerde jeder tastendruck in einer karte alle anderen mitziehen —
+// bei zweitausend karten ein spuerbarer ruck bei jedem buchstaben.
+const Karte = React.memo(function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg,
+                onDoppeln, onSchneiden, inHand, aufPult, onAufsPult, onGriff, onSchloss, ziehend,
+                zielMarke, angepeilt, traegtSpalte, draufMarke, draufAn }) {
   const zu = !!karte.gesperrt;
   const feld = useRef(null);
 
@@ -632,7 +635,15 @@ function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg, onDop
       </div>
     </div>
   );
-}
+}, (a, b) =>
+  a.karte === b.karte
+  && a.karte.text === b.karte.text && a.karte.titel === b.karte.titel
+  && a.karte.bild === b.karte.bild && a.karte.gedreht === b.karte.gedreht
+  && a.karte.gesperrt === b.karte.gesperrt
+  && a.bildUrl === b.bildUrl && a.inHand === b.inHand
+  && a.aufPult === b.aufPult && a.ziehend === b.ziehend && a.angepeilt === b.angepeilt
+  && a.traegtSpalte === b.traegtSpalte && a.draufMarke === b.draufMarke && a.draufAn === b.draufAn
+  && a.zielMarke === b.zielMarke);
 
 // ---------- Projekt-Seite ----------
 function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag,
@@ -775,7 +786,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // sofort auf dem schirm, zwei sekunden spaeter in der datenbank
   const setText = (ai, ki, wert) => {
     const k = projekt.abschnitte[ai].karten[ki];
-    aendere((p) => { p.abschnitte[ai].karten[ki].text = wert; });
+    aendere((p) => {
+      const alt = p.abschnitte[ai].karten[ki];
+      p.abschnitte[ai].karten[ki] = { ...alt, text: wert };   // neue karte, damit das memo es sieht
+    });
     clearTimeout(uhren.current[k.id]);
     uhren.current[k.id] = setTimeout(async () => {
       if (!(await sicherDa(ai, ki))) return;      // karte war gar nicht da — jetzt schon
@@ -786,7 +800,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // beschriftung auf der bildseite
   const setTitel2 = (ai, ki, wert) => {
     const k = projekt.abschnitte[ai].karten[ki];
-    aendere((p) => { p.abschnitte[ai].karten[ki].titel = wert; });
+    aendere((p) => {
+      const alt = p.abschnitte[ai].karten[ki];
+      p.abschnitte[ai].karten[ki] = { ...alt, titel: wert };   // neue karte, damit das memo es sieht
+    });
     clearTimeout(uhren.current["t" + k.id]);
     uhren.current["t" + k.id] = setTimeout(async () => {
       if (!(await sicherDa(ai, ki))) return;
@@ -798,7 +815,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const schloss = (ai, ki) => {
     const k = projekt.abschnitte[ai].karten[ki];
     const neu = !k.gesperrt;
-    aendere((p) => { p.abschnitte[ai].karten[ki].gesperrt = neu; });
+    aendere((p) => {
+      const alt = p.abschnitte[ai].karten[ki];
+      p.abschnitte[ai].karten[ki] = { ...alt, gesperrt: neu };   // neue karte, damit das memo es sieht
+    });
     api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { gesperrt: neu }).catch((e) => sag(String(e.message)));
   };
 
@@ -819,7 +839,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const drehen = (ai, ki) => {
     const k = projekt.abschnitte[ai].karten[ki];
     const neu = !k.gedreht;
-    aendere((p) => { p.abschnitte[ai].karten[ki].gedreht = neu; });
+    aendere((p) => {
+      const alt = p.abschnitte[ai].karten[ki];
+      p.abschnitte[ai].karten[ki] = { ...alt, gedreht: neu };   // neue karte, damit das memo es sieht
+    });
     api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { gedreht: neu }).catch(() => {});
     if (neu && k.bild) holBild(k.bild);
   };
@@ -960,14 +983,20 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const setBild = async (ai, ki, datei) => {
     const k = projekt.abschnitte[ai].karten[ki];
     if (!datei) {
-      aendere((p) => { p.abschnitte[ai].karten[ki].bild = null; });
+      aendere((p) => {
+      const alt = p.abschnitte[ai].karten[ki];
+      p.abschnitte[ai].karten[ki] = { ...alt, bild: null };   // neue karte, damit das memo es sieht
+    });
       api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { bild: null }).catch(() => {});
       return;
     }
     try {
       sag("bild wird abgelegt …");
       const pfad = await hochladen(datei, k.id);
-      aendere((p) => { p.abschnitte[ai].karten[ki].bild = pfad; });
+      aendere((p) => {
+      const alt = p.abschnitte[ai].karten[ki];
+      p.abschnitte[ai].karten[ki] = { ...alt, bild: pfad };   // neue karte, damit das memo es sieht
+    });
       await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { bild: pfad });
       holBild(pfad);
       sag("");
@@ -1175,12 +1204,11 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // wenn sich beim schnellen anlegen die verschiebe-auftraege ueberholt
   // haben. Hier wird jede verdeckte karte auf den naechsten freien
   // platz gesetzt; alles andere bleibt, wo es ist.
+  // zum ZAEHLEN braucht es keine reihenfolge — nur zum aufraeumen
   const verdeckte = (a) => {
     const belegt = new Set();
     let n = 0;
-    for (const k of [...a.karten].sort((x, y) =>
-      (x.pos - y.pos) || ((x.zeile || 0) - (y.zeile || 0))
-      || String(x.created_at || "").localeCompare(String(y.created_at || "")))) {
+    for (const k of a.karten) {
       const schluessel = k.pos + ":" + (k.zeile || 0);
       if (belegt.has(schluessel)) n++;
       else belegt.add(schluessel);
@@ -1596,6 +1624,19 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             <div className="auslage">
             {(() => {
               const inDerLuft = !!((zug && zug.laeuft) || hand);
+
+              // Die spalten EINMAL fuer den ganzen abschnitt aufbauen. Vorher
+              // fragte jede karte dreimal "wer liegt auf meinem platz" und
+              // ging dafuer jedes mal alle karten durch — bei 2000 karten
+              // millionen von vergleichen je tastendruck.
+              const spalten = new Map();
+              a.karten.forEach((k) => {
+                if (!spalten.has(k.pos)) spalten.set(k.pos, []);
+                spalten.get(k.pos).push(k);
+              });
+              spalten.forEach((sp) => sp.sort((x, y) => (x.zeile || 0) - (y.zeile || 0)));
+              const spalteBei = (pos) => spalten.get(pos) || [];
+
               const zeilenDa = a.karten.length ? a.karten.map((k) => k.zeile || 0) : [0];
               const vonZ = Math.min(...zeilenDa);
               const bisZ = Math.max(...zeilenDa);
@@ -1644,12 +1685,12 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                             zielMarke={marke} angepeilt={ziel === marke}
                             onGriff={(e) => griffAn(e, ai, k)}
                             onSchloss={() => schloss(ai, ki)}
-                            traegtSpalte={spalteVon(a.karten, pos).length > 1
-                              && istFundament(a.karten, k)}
+                            traegtSpalte={spalteBei(pos).length > 1
+                              && spalteBei(pos)[spalteBei(pos).length - 1].id === k.id}
                             draufMarke={inDerLuft
-                              && spalteVon(a.karten, pos)[0].id === k.id
+                              && spalteBei(pos)[0].id === k.id
                               && !(zug && zug.laeuft && zug.ai === ai
-                                   && spalteVon(a.karten, pos).some((x) => x.id === zug.id))
+                                   && spalteBei(pos).some((x) => x.id === zug.id))
                               ? `drauf:${ai}:${pos}:0` : null}
                             draufAn={ziel === `drauf:${ai}:${pos}:0`}
                             onText={(v) => setText(ai, ki, v)}
@@ -2768,6 +2809,7 @@ export default function Schreibknecht() {
   return (
     <div className="huette">
       <Stil />
+      <div className="grund" aria-hidden="true" />
       <div className={"schein" + (erloschen ? " gedaempft" : "")} aria-hidden="true" />
       <Funken />
       <div className="fassung" aria-hidden="true" />
@@ -2870,13 +2912,10 @@ function Stil() {
   /* nach ihrem bild gemessen: dunkel #040001 · glimmen #590e09 · blau #125397.
      fast schwarz, ein tiefes rot von oben, und ein kaltes blau als gegenlicht
      von unten — das macht das warme pergament der karten erst richtig warm. */
-  background:
-    radial-gradient(90% 55% at 50% -6%, rgba(150,28,14,.42) 0%, rgba(89,14,9,.18) 30%, transparent 58%),
-    radial-gradient(70% 45% at 8% 100%, rgba(18,83,151,.16) 0%, transparent 60%),
-    radial-gradient(60% 40% at 96% 96%, rgba(18,83,151,.08) 0%, transparent 60%),
-    radial-gradient(120% 88% at 50% 38%, transparent 10%, rgba(0,0,0,.94) 94%),
-    linear-gradient(#0d0405, #030101);
-  background-attachment: fixed;
+  background:#030101;
+  /* die verlaeufe liegen auf .grund — einer festen schicht dahinter.
+     background-attachment:fixed haette safari bei jedem scrollen den
+     ganzen hintergrund neu malen lassen. */
   color:var(--pergament);
   font-family:'Courier Prime', ui-monospace, monospace;
 }
@@ -2887,6 +2926,17 @@ function Stil() {
   background:
     radial-gradient(115% 80% at 50% 40%, transparent 40%, rgba(0,0,0,.6) 76%, rgba(0,0,0,.95) 100%),
     linear-gradient(90deg, rgba(0,0,0,.85) 0%, transparent 8%, transparent 92%, rgba(0,0,0,.85) 100%);
+}
+/* der grund: alle verlaeufe auf EINER festen schicht, einmal gemalt */
+.grund{
+  position:fixed; inset:0; z-index:0; pointer-events:none;
+  background:
+    radial-gradient(90% 55% at 50% -6%, rgba(150,28,14,.42) 0%, rgba(89,14,9,.18) 30%, transparent 58%),
+    radial-gradient(70% 45% at 8% 100%, rgba(18,83,151,.16) 0%, transparent 60%),
+    radial-gradient(60% 40% at 96% 96%, rgba(18,83,151,.08) 0%, transparent 60%),
+    radial-gradient(120% 88% at 50% 38%, transparent 10%, rgba(0,0,0,.94) 94%),
+    linear-gradient(#0d0405, #030101);
+  transform:translateZ(0);          /* auf die grafikkarte, bleibt dort liegen */
 }
 .schein{
   position:fixed; inset:0; pointer-events:none; z-index:0;
@@ -3350,7 +3400,9 @@ function Stil() {
   38%{transform:rotate(.3deg) translateY(-1px)}
   70%{transform:rotate(-.15deg) translateY(.5px)}
 }
-.kartenplatz:not(.ziehend):not(.inhand){
+/* nur die ersten dreissig je reihe wiegen sich — das ist, was man sieht.
+   bei zweitausend karten waeren es sonst zweitausend dauerbewegungen. */
+.kartenplatz:not(.ziehend):not(.inhand):nth-child(-n+45){
   animation:luftzug var(--takt, 8s) ease-in-out var(--versatz, 0s) infinite;
 }
 @media(prefers-reduced-motion:reduce){.kartenplatz{animation:none !important}}
@@ -3788,7 +3840,7 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis,
+  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .grund, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis,
   .abschnittzwischen, .abschnitthandleiste, .abschnittablage, .spaltplus, .spinne{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks,
   .bogenbildkasten{display:none !important}
