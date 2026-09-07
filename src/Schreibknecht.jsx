@@ -426,10 +426,27 @@ function bildKleinrechnen(datei) {
 }
 
 // ---------- Sprechen mit der Datenbank ----------
+// Der browser laesst nur eine handvoll anfragen gleichzeitig raus. Damit
+// die uhr fuer "antwortet nicht" erst laeuft, wenn eine anfrage wirklich
+// unterwegs ist, halten wir selbst die tuer: hoechstens sechs auf einmal,
+// der rest wartet hier — ohne dass die uhr tickt.
+let unterwegs = 0;
+const wartende = [];
+const tuerAuf = () => new Promise((los) => {
+  if (unterwegs < 6) { unterwegs++; los(); }
+  else wartende.push(los);
+});
+const tuerZu = () => {
+  const naechster = wartende.shift();
+  if (naechster) naechster();          // der platz geht direkt weiter
+  else unterwegs--;
+};
+
 function machApi(holSitzung, setzeSitzung, abmelden) {
   const schicken = async (methode, pfad, koerper, extra, marke) => {
+    await tuerAuf();
     const abbruch = new AbortController();
-    const uhr = setTimeout(() => abbruch.abort(), 20000);
+    const uhr = setTimeout(() => abbruch.abort(), 20000);   // laeuft erst JETZT
     try {
       return await fetch(URL_DB + pfad, {
         method: methode,
@@ -446,7 +463,7 @@ function machApi(holSitzung, setzeSitzung, abmelden) {
       throw new Error(e.name === "AbortError"
         ? "die datenbank antwortet nicht"
         : (e.message || "keine verbindung"));
-    } finally { clearTimeout(uhr); }
+    } finally { clearTimeout(uhr); tuerZu(); }
   };
 
   return async function api(methode, pfad, koerper, extra) {
@@ -1131,6 +1148,25 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const setzePos = (karteId, pos, zeile, abschnittId) =>
     api("PATCH", `/rest/v1/karten?id=eq.${karteId}`, { pos, zeile, abschnitt_id: abschnittId }).catch(() => {});
 
+  // Viele plaetze in EINEM auftrag. Bei hunderten karten sonst hunderte
+  // anfragen, von denen der browser nur sechs gleichzeitig rauslaesst.
+  const setzeViele = (liste) => {
+    if (!liste.length) return Promise.resolve();
+    return api("POST", "/rest/v1/rpc/karten_setzen", { p_karten: liste })
+      .catch((e) => {
+        // ohne die funktion in der datenbank: notfalls einzeln, aber in haeppchen
+        if (/karten_setzen|404|not find/i.test(String(e.message))) {
+          return (async () => {
+            for (let i = 0; i < liste.length; i += 6) {
+              await Promise.all(liste.slice(i, i + 6).map((x) =>
+                setzePos(x.id, x.pos, x.zeile, x.abschnitt_id)));
+            }
+          })();
+        }
+        sag(String(e.message));
+      });
+  };
+
   // A.I.M. — mischen. Die BELEGTEN Plaetze bleiben, nur die Karten
   // wechseln untereinander die Fächer. Luecken bleiben Luecken.
   // ---- PLAETZE AUFRAEUMEN ----
@@ -1238,10 +1274,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         const k = p.abschnitte[ai].karten;
         if (mischeKarten(k)) {
           p.abschnitte[ai].karten = [...k].sort(sortiere);
-          neu = k.map((x) => ({ id: x.id, pos: x.pos, zeile: x.zeile || 0 }));
+          neu = k.map((x) => ({ id: x.id, pos: x.pos, zeile: x.zeile || 0, abschnitt_id: a.id }));
         }
       });
-      neu.forEach((x) => setzePos(x.id, x.pos, x.zeile, a.id));
+      setzeViele(neu);
       setTimeout(() => setMischt(null), 420);
     }, 260);
   };
@@ -1258,11 +1294,11 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
           const k = a.karten;
           if (mischeKarten(k)) {
             a.karten = [...k].sort(sortiere);
-            k.forEach((x) => neu.push({ id: x.id, pos: x.pos, zeile: x.zeile || 0, ab: a.id }));
+            k.forEach((x) => neu.push({ id: x.id, pos: x.pos, zeile: x.zeile || 0, abschnitt_id: a.id }));
           }
         });
       });
-      neu.forEach((x) => setzePos(x.id, x.pos, x.zeile, x.ab));
+      setzeViele(neu);
       setTimeout(() => setMischt(null), 420);
     }, 260);
   };
@@ -1308,8 +1344,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         }
       });
 
-      meine.forEach((k) => setzePos(k.id, zielPos, k.zeile || 0, nachAb.id));
-      dortSpalte.forEach((k) => setzePos(k.id, altePos, k.zeile || 0, vonAb.id));
+      setzeViele([
+        ...meine.map((k) => ({ id: k.id, pos: zielPos, zeile: k.zeile || 0, abschnitt_id: nachAb.id })),
+        ...dortSpalte.map((k) => ({ id: k.id, pos: altePos, zeile: k.zeile || 0, abschnitt_id: vonAb.id })),
+      ]);
       return;
     }
 
@@ -1399,7 +1437,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       if (zug.ai !== zielA) p.abschnitte[zug.ai].karten = vk.sort(sortiere);
     });
 
-    meine.forEach((k) => setzePos(k.id, zielPos, (k.zeile || 0) + rutsch, nachAb.id));
+    setzeViele(meine.map((k) =>
+      ({ id: k.id, pos: zielPos, zeile: (k.zeile || 0) + rutsch, abschnitt_id: nachAb.id })));
   };
 
   // ZWISCHEN zwei karten schieben: alles ab hier rueckt einen platz weiter,
@@ -2828,10 +2867,15 @@ function Stil() {
   --pergament:#e6d9bb; --pergament2:#d6c49e; --tinte:#2a2118;
   --kerze:#e08b3c; --kerze2:#ffd79a; --messing:#a87a42; --nebel:#6b5a45;
   position:relative; min-height:100vh; padding:0 0 80px;
+  /* nach ihrem bild gemessen: dunkel #040001 · glimmen #590e09 · blau #125397.
+     fast schwarz, ein tiefes rot von oben, und ein kaltes blau als gegenlicht
+     von unten — das macht das warme pergament der karten erst richtig warm. */
   background:
-    radial-gradient(105% 62% at 50% -8%, rgba(218,123,54,.24) 0%, transparent 52%),
-    radial-gradient(120% 88% at 50% 38%, transparent 14%, rgba(0,0,0,.92) 96%),
-    linear-gradient(#140c05, #050301);
+    radial-gradient(90% 55% at 50% -6%, rgba(150,28,14,.42) 0%, rgba(89,14,9,.18) 30%, transparent 58%),
+    radial-gradient(70% 45% at 8% 100%, rgba(18,83,151,.16) 0%, transparent 60%),
+    radial-gradient(60% 40% at 96% 96%, rgba(18,83,151,.08) 0%, transparent 60%),
+    radial-gradient(120% 88% at 50% 38%, transparent 10%, rgba(0,0,0,.94) 94%),
+    linear-gradient(#0d0405, #030101);
   background-attachment: fixed;
   color:var(--pergament);
   font-family:'Courier Prime', ui-monospace, monospace;
@@ -2841,12 +2885,12 @@ function Stil() {
 .fassung{
   position:fixed; inset:0; pointer-events:none; z-index:2;
   background:
-    radial-gradient(115% 80% at 50% 40%, transparent 44%, rgba(0,0,0,.55) 78%, rgba(0,0,0,.9) 100%),
-    linear-gradient(90deg, rgba(0,0,0,.75) 0%, transparent 9%, transparent 91%, rgba(0,0,0,.75) 100%);
+    radial-gradient(115% 80% at 50% 40%, transparent 40%, rgba(0,0,0,.6) 76%, rgba(0,0,0,.95) 100%),
+    linear-gradient(90deg, rgba(0,0,0,.85) 0%, transparent 8%, transparent 92%, rgba(0,0,0,.85) 100%);
 }
 .schein{
   position:fixed; inset:0; pointer-events:none; z-index:0;
-  background:radial-gradient(58% 42% at 50% 8%, rgba(218,123,54,.16), transparent 70%);
+  background:radial-gradient(58% 42% at 50% 8%, rgba(160,32,16,.22), transparent 70%);
   animation:atmen 6s ease-in-out infinite;
 }
 @keyframes atmen{0%,100%{opacity:.75}50%{opacity:1}}
