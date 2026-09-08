@@ -578,7 +578,7 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 // bei zweitausend karten ein spuerbarer ruck bei jedem buchstaben.
 const Karte = React.memo(function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg,
                 onDoppeln, onSchneiden, inHand, aufPult, onAufsPult, onGriff, onSchloss, ziehend,
-                zielMarke, angepeilt, traegtSpalte, draufMarke, draufAn, abseits }) {
+                zielMarke, angepeilt, traegtSpalte, draufMarke, draufAn, abseits, gefunden }) {
   const zu = !!karte.gesperrt;
   const feld = useRef(null);
 
@@ -589,7 +589,8 @@ const Karte = React.memo(function Karte({ karte, bildUrl, onText, onTitel, onBil
     <div data-ziel={zielMarke}
       className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")
         + (angepeilt ? " angepeilt" : "") + (karte.gedreht ? " umgedreht" : "")
-        + (draufMarke ? " zielbereit" : "") + (abseits ? " abseits" : "")}
+        + (draufMarke ? " zielbereit" : "") + (abseits ? " abseits" : "")
+        + (gefunden ? " gefunden" : "")}
       style={{
         // der luftzug: jede karte wiegt sich in ihrem eigenen takt.
         // der takt kommt aus der kennung, damit er beim neuladen gleich bleibt.
@@ -666,7 +667,7 @@ const Karte = React.memo(function Karte({ karte, bildUrl, onText, onTitel, onBil
   && a.bildUrl === b.bildUrl && a.inHand === b.inHand
   && a.aufPult === b.aufPult && a.ziehend === b.ziehend && a.angepeilt === b.angepeilt
   && a.traegtSpalte === b.traegtSpalte && a.draufMarke === b.draufMarke && a.draufAn === b.draufAn
-  && a.zielMarke === b.zielMarke && a.abseits === b.abseits);
+  && a.zielMarke === b.zielMarke && a.abseits === b.abseits && a.gefunden === b.gefunden);
 
 // ---------- Projekt-Seite ----------
 function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag,
@@ -1730,8 +1731,22 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                     <span className="suchzeichen">⌕</span>
                     <input className="ti absuchfeld" value={text} placeholder="hier suchen"
                       onChange={(e) => {
-                        setAbSuche((x) => ({ ...x, [a.id]: e.target.value }));
+                        const wert = e.target.value;
+                        setAbSuche((x) => ({ ...x, [a.id]: wert }));
                         setAbTreffer((t) => ({ ...t, [a.id]: -1 }));
+                        // schon beim tippen zur ersten fundstelle rollen
+                        clearTimeout(uhren.current["s" + a.id]);
+                        uhren.current["s" + a.id] = setTimeout(() => {
+                          const w = sucheWoerter(wert);
+                          if (!w.length) return;
+                          const erster = a.karten.filter((k) => sucheTrifft(k, w)).sort(sortiere)[0];
+                          if (!erster) return;
+                          setAbTreffer((t) => ({ ...t, [a.id]: 0 }));
+                          const el = document.querySelector(
+                            `[data-ziel="feld:${ai}:${erster.pos}:${erster.zeile || 0}"]`);
+                          if (el && el.scrollIntoView)
+                            el.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+                        }, 350);
                       }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") {
@@ -1885,6 +1900,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                           {spalt}
                           <Karte karte={k} bildUrl={k.bild ? bilder[k.bild] : null}
                             abseits={suchWoerter.length > 0 && !sucheTrifft(k, suchWoerter)}
+                            gefunden={suchWoerter.length > 0 && sucheTrifft(k, suchWoerter)}
                             ziehend={zug && zug.laeuft && zug.id === k.id}
                             zielMarke={marke} angepeilt={ziel === marke}
                             onGriff={(e) => griffAn(e, ai, k)}
@@ -3586,6 +3602,10 @@ function Stil() {
 .trefferzahl.hat{color:var(--kerze2); border-color:rgba(224,139,60,.55); background:rgba(224,139,60,.12)}
 .trefferzahl.neu{color:var(--messing); border-style:dashed}
 .kartenplatz.abseits{opacity:.22; filter:saturate(.4)}
+/* die fundstelle leuchtet */
+.kartenplatz.gefunden .seite{
+  border-color:var(--kerze); box-shadow:0 0 0 2px rgba(224,139,60,.5), 0 0 26px rgba(224,139,60,.35);
+}
 .kartenplatz.abseits:hover{opacity:.6}
 
 /* ---- Leiste ---- */
