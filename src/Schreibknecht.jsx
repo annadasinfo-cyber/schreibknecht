@@ -249,6 +249,29 @@ function Spinne() {
 // erst nach reihe, dann nach platz — wie man eine auslage liest
 const sortiere = (a, b) => ((a.zeile || 0) - (b.zeile || 0)) || (a.pos - b.pos);
 
+// ---- SUCHE ----
+// Trifft der suchtext diese karte? Gross/klein egal, umlaute egal,
+// mehrere woerter muessen alle vorkommen (in beliebiger reihenfolge).
+const glatt = (t) => String(t || "").toLowerCase()
+  .replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss");
+const sucheTrifft = (karte, woerter) => {
+  if (!woerter.length) return true;
+  const heu = glatt(karte.titel) + " " + glatt(karte.text);
+  return woerter.every((w) => heu.includes(w));
+};
+const sucheWoerter = (text) => glatt(text).split(/\s+/).filter((w) => w.length >= 2);
+
+// ein kurzer ausschnitt um den ersten treffer herum
+const ausschnitt = (text, woerter) => {
+  const t = String(text || "");
+  const g = glatt(t);
+  let i = -1;
+  for (const w of woerter) { i = g.indexOf(w); if (i >= 0) break; }
+  if (i < 0) return t.slice(0, 90);
+  const von = Math.max(0, i - 40);
+  return (von > 0 ? "…" : "") + t.slice(von, von + 100).replace(/\s+/g, " ") + (von + 100 < t.length ? "…" : "");
+};
+
 // Ein PLATZ gilt als gesperrt, sobald eine karte darauf ein schloss hat.
 // Gesperrte plaetze bleiben liegen — verschiebungen springen darueber
 // hinweg. Sonst wuerde die bild-karte, die als wegweiser vorn steht,
@@ -555,7 +578,7 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
 // bei zweitausend karten ein spuerbarer ruck bei jedem buchstaben.
 const Karte = React.memo(function Karte({ karte, bildUrl, onText, onTitel, onBild, onDrehen, onWeg,
                 onDoppeln, onSchneiden, inHand, aufPult, onAufsPult, onGriff, onSchloss, ziehend,
-                zielMarke, angepeilt, traegtSpalte, draufMarke, draufAn }) {
+                zielMarke, angepeilt, traegtSpalte, draufMarke, draufAn, abseits }) {
   const zu = !!karte.gesperrt;
   const feld = useRef(null);
 
@@ -566,7 +589,7 @@ const Karte = React.memo(function Karte({ karte, bildUrl, onText, onTitel, onBil
     <div data-ziel={zielMarke}
       className={"kartenplatz" + (ziehend ? " ziehend" : "") + (inHand ? " inhand" : "")
         + (angepeilt ? " angepeilt" : "") + (karte.gedreht ? " umgedreht" : "")
-        + (draufMarke ? " zielbereit" : "")}
+        + (draufMarke ? " zielbereit" : "") + (abseits ? " abseits" : "")}
       style={{
         // der luftzug: jede karte wiegt sich in ihrem eigenen takt.
         // der takt kommt aus der kennung, damit er beim neuladen gleich bleibt.
@@ -643,12 +666,14 @@ const Karte = React.memo(function Karte({ karte, bildUrl, onText, onTitel, onBil
   && a.bildUrl === b.bildUrl && a.inHand === b.inHand
   && a.aufPult === b.aufPult && a.ziehend === b.ziehend && a.angepeilt === b.angepeilt
   && a.traegtSpalte === b.traegtSpalte && a.draufMarke === b.draufMarke && a.draufAn === b.draufAn
-  && a.zielMarke === b.zielMarke);
+  && a.zielMarke === b.zielMarke && a.abseits === b.abseits);
 
 // ---------- Projekt-Seite ----------
 function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag,
                        hand, setHand, laden, glocke, allesHolen,
-                       abschnittHand, setAbschnittHand }) {
+                       abschnittHand, setAbschnittHand,
+                       suche, setSuche, fern, suchtFern, springe, springZu, setSpringZu,
+                       alleProjekte }) {
   const [zug, setZug] = useState(null);      // {ai, id, karte, dx, dy, x, y, laeuft}
   const [ziel, setZiel] = useState(null);   // worauf gerade gezeigt wird
   const zugRef = useRef(null);
@@ -759,6 +784,20 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     window.addEventListener("keydown", t);
     return () => window.removeEventListener("keydown", t);
   });
+
+  // aus der suche hierher gesprungen: karte aufs pult und ins bild rollen
+  useEffect(() => {
+    if (!springZu || !projekt.kartenGeladen) return;
+    const f = findeKarte(springZu);
+    if (!f) return;
+    setPult((l) => (l.includes(springZu) ? l : [...l, springZu].slice(-2)));
+    setKlein(false);
+    setSpringZu(null);
+    setTimeout(() => {
+      const el = document.querySelector(`[data-ziel="feld:${f.ai}:${f.karte.pos}:${f.karte.zeile || 0}"]`);
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    }, 80);
+  }, [springZu, projekt.kartenGeladen]); // eslint-disable-line
 
   // escape schliesst das pult
   useEffect(() => {
@@ -1403,6 +1442,15 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     if (dort) setzePos(dort.id, altePos, alteZeile, alterAb);
   };
 
+  // wohin gehoert eine karte in einem anderen projekt? (fuer die weite suche)
+  const wohin = (abschnittId) => {
+    for (const p of alleProjekte) {
+      const a = p.abschnitte.find((x) => x.id === abschnittId);
+      if (a) return { projekt: p, abschnitt: a };
+    }
+    return null;
+  };
+
   // Eine neue karte direkt aus dem pult heraus — sie legt sich gleich
   // NEBEN die karte, an der man gerade sitzt, und schlaegt sich mit auf.
   // Zum trennen von altem material und zum einsortieren von recherche.
@@ -1528,6 +1576,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             }, 1200);
           }} />
         </span>
+        <Suchfeld suche={suche} setSuche={setSuche} imProjekt />
         <span className="fuellung" />
         <button className="wuerfel gross" onClick={allesMischen}
           title="alle abschnitte mischen — jeder für sich, schlösser bleiben liegen">⚄</button>
@@ -1539,7 +1588,42 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         <button className="btn" onClick={() => window.print()}>drucken</button>
       </div>
 
-      <div className={"blatt" + (mitBild && !nurDieser ? "" : " ohnebild") + (nurDieser ? " einzeln" : "")}>
+      {/* die trefferliste — zum hinspringen */}
+      {(() => {
+        const woerter = sucheWoerter(suche.text);
+        if (!woerter.length) return null;
+        let treffer;
+        if (suche.bereich === "alle") {
+          treffer = fern.map((k) => ({ karte: k, wo: wohin(k.abschnitt_id) }));
+        } else {
+          treffer = [];
+          projekt.abschnitte.forEach((a) => a.karten.forEach((k) => {
+            if (sucheTrifft(k, woerter)) treffer.push({ karte: k, wo: { abschnitt: a, projekt } });
+          }));
+        }
+        return (
+          <div className="trefferliste">
+            <div className="trefferkopf">
+              {suchtFern ? "suche …" : treffer.length + (treffer.length === 1 ? " treffer" : " treffer")}
+              {suche.bereich === "alle" && treffer.length >= 200 && " (die ersten 200)"}
+            </div>
+            {treffer.slice(0, 60).map(({ karte, wo }) => (
+              <button key={karte.id} className="treffer"
+                onClick={() => springe(karte.id, karte.abschnitt_id)}>
+                <b>{karte.titel || ausschnitt(karte.text, woerter).slice(0, 40) || "ohne titel"}</b>
+                <span>{ausschnitt(karte.text, woerter)}</span>
+                <i>
+                  {wo && wo.projekt && wo.projekt.id !== projekt.id ? wo.projekt.name + " · " : ""}
+                  {wo && wo.abschnitt ? wo.abschnitt.titel : ""}
+                </i>
+              </button>
+            ))}
+          </div>
+        );
+      })()}
+
+      <div className={"blatt" + (mitBild && !nurDieser ? "" : " ohnebild") + (nurDieser ? " einzeln" : "")
+        + (sucheWoerter(suche.text).length ? " gesucht" : "")}>
         {projekt.abschnitte.map((a, ai) => (
           <React.Fragment key={"f" + a.id}>
           {abschnittHand && abschnittHand.vonProjekt !== projekt.id ? (
@@ -1563,6 +1647,11 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 <input className="strichtitel" value={a.titel}
                   onChange={(e) => setTitel(ai, e.target.value)} />
               </span>
+              {sucheWoerter(suche.text).length > 0 && (() => {
+                const w = sucheWoerter(suche.text);
+                const n = a.karten.filter((k) => sucheTrifft(k, w)).length;
+                return <span className={"trefferzahl" + (n ? " hat" : "")}>{n} treffer</span>;
+              })()}
               <span className="abzahl">
                 {a.karten.length} {a.karten.length === 1 ? "karte" : "karten"}
                 {" · "}
@@ -1624,6 +1713,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             <div className="auslage">
             {(() => {
               const inDerLuft = !!((zug && zug.laeuft) || hand);
+              const suchWoerter = sucheWoerter(suche.text);
 
               // Die spalten EINMAL fuer den ganzen abschnitt aufbauen. Vorher
               // fragte jede karte dreimal "wer liegt auf meinem platz" und
@@ -1681,6 +1771,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                           <React.Fragment key={k.id}>
                           {spalt}
                           <Karte karte={k} bildUrl={k.bild ? bilder[k.bild] : null}
+                            abseits={suchWoerter.length > 0 && !sucheTrifft(k, suchWoerter)}
                             ziehend={zug && zug.laeuft && zug.id === k.id}
                             zielMarke={marke} angepeilt={ziel === marke}
                             onGriff={(e) => griffAn(e, ai, k)}
@@ -1876,9 +1967,38 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   );
 }
 
+// ---------- Suche ----------
+// Ein feld, drei reichweiten. Auf der auslage werden treffer hell und der
+// rest gedaempft; darunter eine liste zum hinspringen.
+function Suchfeld({ suche, setSuche, imProjekt }) {
+  return (
+    <div className="suche">
+      <span className="suchzeichen">⌕</span>
+      <input className="ti suchfeld" value={suche.text} placeholder="suchen …"
+        onChange={(e) => setSuche((x) => ({ ...x, text: e.target.value }))}
+        onKeyDown={(e) => { if (e.key === "Escape") setSuche((x) => ({ ...x, text: "" })); }} />
+      {suche.text && (
+        <button className="klein" onClick={() => setSuche((x) => ({ ...x, text: "" }))}
+          title="suche leeren">✕</button>
+      )}
+      <span className="suchbereich">
+        {imProjekt && (
+          <button className={"klein" + (suche.bereich === "projekt" ? " an" : "")}
+            onClick={() => setSuche((x) => ({ ...x, bereich: "projekt" }))}
+            title="nur in diesem projekt — je abschnitt gezählt">projekt</button>
+        )}
+        <button className={"klein" + (suche.bereich === "alle" ? " an" : "")}
+          onClick={() => setSuche((x) => ({ ...x, bereich: "alle" }))}
+          title="in allen projekten">alle</button>
+      </span>
+    </div>
+  );
+}
+
 // ---------- Deckblatt ----------
 function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert,
-                    zurueckspielen, spieltZurueck, dateiFeld, platz, zaehlt, nachsehen, eindampfen, dampft, allesAufraeumen, raeumtAlles }) {
+                    zurueckspielen, spieltZurueck, dateiFeld, platz, zaehlt, nachsehen, eindampfen, dampft, allesAufraeumen, raeumtAlles,
+                    suche, setSuche, fern, suchtFern, springe, wohin }) {
   // Bei jedem Oeffnen werden drei Karten vom Stapel gezogen und zwischen
   // die Kacheln gelegt — jede an eine andere Stelle, jede etwas schief.
   const [gezogen] = useState(() => {
@@ -1909,6 +2029,27 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
 
   return (
     <div className="deckblatt">
+      <div className="deckkopf">
+        <Suchfeld suche={suche} setSuche={setSuche} imProjekt={false} />
+      </div>
+      {sucheWoerter(suche.text).length > 0 && (
+        <div className="trefferliste">
+          <div className="trefferkopf">
+            {suchtFern ? "suche …" : fern.length + " treffer"}{fern.length >= 200 && " (die ersten 200)"}
+          </div>
+          {fern.slice(0, 60).map((k) => {
+            const wo = wohin(k.abschnitt_id);
+            const w = sucheWoerter(suche.text);
+            return (
+              <button key={k.id} className="treffer" onClick={() => springe(k.id, k.abschnitt_id)}>
+                <b>{k.titel || ausschnitt(k.text, w).slice(0, 40) || "ohne titel"}</b>
+                <span>{ausschnitt(k.text, w)}</span>
+                <i>{wo ? wo.projekt.name + " · " + wo.abschnitt.titel : ""}</i>
+              </button>
+            );
+          })}
+        </div>
+      )}
       <div className="kachelfeld">
         {projekte.length === 0 && gezogen.map((k) =>
           <img key={k.id} className="knechtkarte" src={k.bild} alt=""
@@ -2041,6 +2182,10 @@ export default function Schreibknecht() {
   const [geladen, setGeladen] = useState(false);
   const [hand, setHand] = useState(null);   // ausgeschnittene karte, wartet aufs ablegen
   const [abschnittHand, setAbschnittHand] = useState(null);   // ganzer abschnitt in der hand
+  const [suche, setSuche] = useState({ text: "", bereich: "projekt" });   // was und wie weit
+  const [fern, setFern] = useState([]);          // treffer aus der datenbank (bereich "alle")
+  const [suchtFern, setSuchtFern] = useState(false);
+  const [springZu, setSpringZu] = useState(null); // karte, die nach dem oeffnen aufs pult soll
   const [geprueft, setGeprueft] = useState(false);  // zugang beim start geprueft?
   const [tage, setTage] = useState([]);            // das tagewerk aller projekte
   const [warten, setWarten] = useState(() => warteLesen().length);   // noch nicht abgeschickt
@@ -2321,6 +2466,47 @@ export default function Schreibknecht() {
     if (!r.ok) throw new Error((await r.text()).slice(0, 160));
     return pfad;
   }, [sitzung]);
+
+  // ---- die weite suche: alle projekte, direkt in der datenbank ----
+  const fernUhr = useRef(null);
+  useEffect(() => {
+    if (suche.bereich !== "alle" && offen) { setFern([]); return; }
+    const woerter = sucheWoerter(suche.text);
+    if (!woerter.length) { setFern([]); return; }
+    clearTimeout(fernUhr.current);
+    fernUhr.current = setTimeout(async () => {
+      setSuchtFern(true);
+      try {
+        // jedes wort muss in titel ODER text vorkommen
+        const teile = woerter.map((w) => {
+          const m = w.replace(/[%,()]/g, "");
+          return `or(titel.ilike.*${m}*,text.ilike.*${m}*)`;
+        });
+        const pfad = "/rest/v1/karten?select=id,titel,text,abschnitt_id"
+          + "&and=(" + teile.join(",") + ")&limit=200";
+        const d = await api("GET", pfad);
+        setFern((d || []).filter((k) => sucheTrifft(k, woerter)));
+      } catch (e) { setMsg(verstaendlich(String(e.message))); }
+      setSuchtFern(false);
+    }, 350);
+  }, [suche.text, suche.bereich, offen]); // eslint-disable-line
+
+  // wohin gehoert eine karte? projekt und abschnitt aus dem geruest
+  const wohinGehoert = (abschnittId) => {
+    for (const p of projekte) {
+      const a = p.abschnitte.find((x) => x.id === abschnittId);
+      if (a) return { projekt: p, abschnitt: a };
+    }
+    return null;
+  };
+
+  // zu einer karte springen: projekt oeffnen, dann aufs pult
+  const springe = (karteId, abschnittId) => {
+    const wo = wohinGehoert(abschnittId);
+    if (!wo) return;
+    setSpringZu(karteId);
+    if (offen !== wo.projekt.id) setOffen(wo.projekt.id);
+  };
 
   // ---- ein Projekt aendern ----
   const aendere = (fn) => {
@@ -2836,6 +3022,9 @@ export default function Schreibknecht() {
                   hochladen={hochladen} aendere={aendere} zurueck={() => setOffen(null)} sag={setMsg}
                   hand={hand} setHand={setHand} laden={laden} allesHolen={allesHolen}
                   abschnittHand={abschnittHand} setAbschnittHand={setAbschnittHand}
+                  suche={suche} setSuche={setSuche} fern={fern} suchtFern={suchtFern}
+                  springe={springe} springZu={springZu} setSpringZu={setSpringZu}
+                  alleProjekte={projekte}
                   glocke={
                     <div className={"glocke" + (laeutet ? " schwingt" : "")
                         + (heutGeschrieben >= ziel ? " voll" : "")}
@@ -2853,7 +3042,9 @@ export default function Schreibknecht() {
                   zurueckspielen={zurueckspielen} spieltZurueck={spieltZurueck}
                   dateiFeld={dateiFeld} platz={platz} zaehlt={zaehlt} nachsehen={nachsehen}
                   eindampfen={eindampfen} dampft={dampft}
-                  allesAufraeumen={allesAufraeumen} raeumtAlles={raeumtAlles} />}
+                  allesAufraeumen={allesAufraeumen} raeumtAlles={raeumtAlles}
+                  suche={{ ...suche, bereich: "alle" }} setSuche={setSuche}
+                  fern={fern} suchtFern={suchtFern} springe={springe} wohin={wohinGehoert} />}
         {msg && <p className="meldung" onClick={() => setMsg("")}>{verstaendlich(msg)}</p>}
       </main>
 
@@ -3206,6 +3397,51 @@ function Stil() {
 }
 .platzzahlen.eng .platzriegel u{background:linear-gradient(90deg, var(--kerze), #e08070)}
 .platzwarnung{color:#e0a070; letter-spacing:.06em}
+
+/* ---- Suche ---- */
+.suche{display:flex; align-items:center; gap:6px; flex:0 1 auto}
+.suchzeichen{color:var(--nebel); font-size:16px; line-height:1}
+.suchfeld{width:min(260px, 40vw); padding:6px 10px; font-size:12px}
+.suchbereich{display:flex; gap:4px}
+.suchbereich .klein{font-size:10px; letter-spacing:.06em; padding:4px 7px}
+.deckkopf{display:flex; justify-content:flex-end; margin-bottom:16px}
+
+.trefferliste{
+  margin:0 0 20px; border:1px solid rgba(224,139,60,.25); border-radius:4px;
+  background:rgba(12,7,3,.75); max-height:min(46vh, 420px); overflow-y:auto;
+}
+.trefferkopf{
+  padding:8px 14px; font-size:10.5px; letter-spacing:.12em; color:var(--nebel);
+  border-bottom:1px solid rgba(168,135,79,.15);
+  font-family:'IM Fell English SC', Georgia, serif;
+}
+.treffer{
+  display:grid; grid-template-columns:minmax(120px, 220px) 1fr auto; gap:14px; align-items:baseline;
+  width:100%; text-align:left; padding:9px 14px; cursor:pointer;
+  background:transparent; border:0; border-bottom:1px solid rgba(168,135,79,.1);
+  font-family:inherit; color:var(--pergament2); transition:.12s;
+}
+.treffer:last-child{border-bottom:0}
+.treffer:hover{background:rgba(224,139,60,.1)}
+.treffer b{
+  font-family:'IM Fell English SC', Georgia, serif; font-weight:400; font-size:13px;
+  color:var(--kerze2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.treffer span{font-size:11.5px; line-height:1.5; color:var(--pergament2); opacity:.85}
+.treffer i{font-style:normal; font-size:10px; letter-spacing:.06em; color:var(--messing); white-space:nowrap}
+@media(max-width:700px){
+  .treffer{grid-template-columns:1fr}
+  .suchfeld{width:100%}
+}
+
+/* auf der auslage: treffer hell, der rest zurueck */
+.trefferzahl{
+  font-size:10px; letter-spacing:.06em; padding:2px 8px; border-radius:3px; flex:0 0 auto;
+  color:var(--nebel); border:1px solid rgba(168,135,79,.2);
+}
+.trefferzahl.hat{color:var(--kerze2); border-color:rgba(224,139,60,.55); background:rgba(224,139,60,.12)}
+.kartenplatz.abseits{opacity:.22; filter:saturate(.4)}
+.kartenplatz.abseits:hover{opacity:.6}
 
 /* ---- Leiste ---- */
 /* wenn eine karte nur auf dem schirm steht und nicht in der datenbank */
@@ -3841,7 +4077,8 @@ function Stil() {
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
   .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .grund, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis,
-  .abschnittzwischen, .abschnitthandleiste, .abschnittablage, .spaltplus, .spinne{display:none !important}
+  .abschnittzwischen, .abschnitthandleiste, .abschnittablage, .spaltplus, .spinne,
+  .suche, .trefferliste, .trefferzahl, .deckkopf{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks,
   .bogenbildkasten{display:none !important}
   .seite.text{background:none; border:0}
