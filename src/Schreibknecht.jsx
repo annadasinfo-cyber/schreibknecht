@@ -740,6 +740,23 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const [bildAus, setBildAus] = useState({});    // bild im bogen weggeklappt?
   const [gross, setGross] = useState(null);      // bild im bogen gross angesehen
   const [pult, setPult] = useState([]);   // bis zu zwei karten-ids, gross aufgeschlagen
+  const [abSuche, setAbSuche] = useState({});   // suchtext je abschnitt (id → text)
+  const [abTreffer, setAbTreffer] = useState({}); // welcher treffer gerade angesteuert ist
+
+  // zur naechsten fundstelle in einem abschnitt rollen
+  const zumTreffer = (ai, richtung = 1) => {
+    const a = projekt.abschnitte[ai];
+    const w = sucheWoerter(abSuche[a.id] || "");
+    if (!w.length) return;
+    const gefunden = a.karten.filter((k) => sucheTrifft(k, w)).sort(sortiere);
+    if (!gefunden.length) return;
+    const bisher = abTreffer[a.id] ?? -1;
+    const naechster = (bisher + richtung + gefunden.length) % gefunden.length;
+    setAbTreffer((t) => ({ ...t, [a.id]: naechster }));
+    const k = gefunden[naechster];
+    const el = document.querySelector(`[data-ziel="feld:${ai}:${k.pos}:${k.zeile || 0}"]`);
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
+  };
   const [klein, setKlein] = useState(false);   // pult eingeklappt?
   const [liest, setLiest] = useState(null);   // {id, pause} — wer gerade vorgelesen wird
   const [asche, setAsche] = useState(null);  // zuletzt verbrannte karte, kurz zurueckholbar
@@ -888,6 +905,32 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
   // das + oben im trennstrich legt die karte GANZ VORN an — bei vielen
   // karten in der reihe waere hinten sonst unhandlich weit weg
+  // eine karte mit titel anlegen — vorn, hinter den schloessern — und aufschlagen
+  const karteMitTitel = (ai, titel) => nacheinander(async () => {
+    const a = projekt.abschnitte[ai];
+    if (a.gesperrt || !titel) return;
+    const zeile = a.karten.length ? Math.min(...a.karten.map((k) => k.zeile || 0)) : 0;
+    const plan = einfuegePlan(a.karten, 0);
+    const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel, bild: null,
+      gedreht: false, pos: plan.ziel, zeile };
+    try {
+      await abschnittAbwarten(a.id);
+      await api("POST", "/rest/v1/rpc/karte_einfuegen",
+        { p_id: neu.id, p_abschnitt: a.id, p_pos: 0, p_zeile: zeile });
+      await api("PATCH", `/rest/v1/karten?id=eq.${neu.id}`, { titel });
+      aendere((p) => {
+        p.abschnitte[ai].karten = [
+          ...p.abschnitte[ai].karten.map((k) =>
+            (plan.wohin.has(k.pos) ? { ...k, pos: plan.wohin.get(k.pos) } : k)),
+          neu,
+        ].sort(sortiere);
+      });
+      abschnittFrisch(ai);
+      setPult((l) => [...l, neu.id].slice(-2));
+      setKlein(false);
+    } catch (e) { sag(String(e.message)); }
+  });
+
   const karteVorn = (ai) => nacheinander(async () => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt) return;
@@ -902,7 +945,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       // EIN auftrag: die datenbank macht platz und legt die karte hinein
       await api("POST", "/rest/v1/rpc/karte_einfuegen",
         { p_id: neu.id, p_abschnitt: a.id, p_pos: 0, p_zeile: zeile });
-      // auf dem schirm gleich richtig, ohne alles neu zu holen
+      // auf dem schirm gleich richtig, dann zur sicherheit frisch holen
       aendere((p) => {
         p.abschnitte[ai].karten = [
           ...p.abschnitte[ai].karten.map((k) =>
@@ -910,8 +953,20 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
           neu,
         ].sort(sortiere);
       });
+      abschnittFrisch(ai);
     } catch (e) { sag(String(e.message)); }
   });
+
+  // Einen abschnitt frisch aus der datenbank holen — nach jedem einfuegen.
+  // So zeigt der schirm immer, was wirklich gespeichert ist, auch wenn
+  // die datenbank anders gerechnet hat als die app.
+  const abschnittFrisch = async (ai) => {
+    const a = projekt.abschnitte[ai];
+    try {
+      const ka = await allesHolen(`/rest/v1/karten?select=*&abschnitt_id=eq.${a.id}&order=id.asc`);
+      aendere((p) => { p.abschnitte[ai].karten = [...ka].sort(sortiere); });
+    } catch {}
+  };
 
   // eine NEUE karte genau zwischen zwei bestehende
   const karteDazwischen = (ai, pos, zeile) => nacheinander(async () => {
@@ -932,6 +987,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
           neu,
         ].sort(sortiere);
       });
+      abschnittFrisch(ai);
     } catch (e) { sag(String(e.message)); }
   });
 
@@ -948,19 +1004,34 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   };
 
   // eine Karte doppeln — landet gleich daneben
-  const karteDoppeln = (ai, k) => {
+  // Doppeln: die kopie liegt DIREKT NEBEN dem original. Alles dahinter
+  // rueckt einen platz weiter — sonst landet sie bei dichten plaetzen
+  // am ende, und bei 250 karten ist das ende weit weg.
+  const karteDoppeln = (ai, k) => nacheinander(async () => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt) return;
     const z = k.zeile || 0;
-    const belegt = new Set(a.karten.filter((x) => (x.zeile || 0) === z).map((x) => x.pos));
-    let platz = k.pos + 1;
-    while (belegt.has(platz)) platz++;          // erster freier platz dahinter
+    const stelle = k.pos + 1;
+    const plan = einfuegePlan(a.karten, stelle);
     const neu = { id: neueId(), abschnitt_id: a.id, text: k.text, titel: k.titel || "",
-      bild: k.bild, gedreht: false, pos: platz, zeile: z };
-    aendere((p) => { p.abschnitte[ai].karten = [...p.abschnitte[ai].karten, neu].sort(sortiere); });
-    karteEinlegen(ai, neu);
-    if (k.bild) holBild(k.bild);
-  };
+      bild: k.bild, gedreht: false, pos: plan.ziel, zeile: z };
+    try {
+      await abschnittAbwarten(a.id);
+      await api("POST", "/rest/v1/rpc/karte_einfuegen",
+        { p_id: neu.id, p_abschnitt: a.id, p_pos: stelle, p_zeile: z });
+      await api("PATCH", `/rest/v1/karten?id=eq.${neu.id}`,
+        { text: neu.text, titel: neu.titel, bild: neu.bild });
+      aendere((p) => {
+        p.abschnitte[ai].karten = [
+          ...p.abschnitte[ai].karten.map((x) =>
+            (plan.wohin.has(x.pos) ? { ...x, pos: plan.wohin.get(x.pos) } : x)),
+          neu,
+        ].sort(sortiere);
+      });
+      abschnittFrisch(ai);
+      if (k.bild) holBild(k.bild);
+    } catch (e) { sag(String(e.message)); }
+  });
 
   // in die Hand nehmen — wie eine echte Karte, die man hochhebt
   const schneiden = (k) => {
@@ -1476,6 +1547,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
           neu,
         ].sort(sortiere);
       });
+      abschnittFrisch(quelle.ai);
       // die neue karte kommt IMMER nach rechts — links bleibt das
       // ausgangsmaterial stehen, aus dem getrennt wird
       setPult((l) => (l.length < 2 ? [...l, neu.id] : [l[0], neu.id]));
@@ -1647,6 +1719,44 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 <input className="strichtitel" value={a.titel}
                   onChange={(e) => setTitel(ai, e.target.value)} />
               </span>
+              {/* suche NUR in diesem abschnitt — enter springt zum naechsten treffer */}
+              {(() => {
+                const text = abSuche[a.id] || "";
+                const w = sucheWoerter(text);
+                const n = w.length ? a.karten.filter((k) => sucheTrifft(k, w)).length : 0;
+                const dran = w.length && n ? ((abTreffer[a.id] ?? -1) + 1) : 0;
+                return (
+                  <span className={"absuche" + (text ? " offen" : "")}>
+                    <span className="suchzeichen">⌕</span>
+                    <input className="ti absuchfeld" value={text} placeholder="hier suchen"
+                      onChange={(e) => {
+                        setAbSuche((x) => ({ ...x, [a.id]: e.target.value }));
+                        setAbTreffer((t) => ({ ...t, [a.id]: -1 }));
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          if (w.length && n === 0) {
+                            // nichts gefunden: dann wird der suchtext der titel einer neuen karte
+                            karteMitTitel(ai, text.trim());
+                            setAbSuche((x) => ({ ...x, [a.id]: "" }));
+                          } else zumTreffer(ai, e.shiftKey ? -1 : 1);
+                        }
+                        if (e.key === "Escape") setAbSuche((x) => ({ ...x, [a.id]: "" }));
+                      }} />
+                    {w.length > 0 && (
+                      <span className={"trefferzahl" + (n ? " hat" : " neu")}
+                        title={n ? "enter: nächster treffer" : "enter: karte mit diesem titel anlegen"}>
+                        {n ? (dran ? dran + " von " : "") + n : "enter = anlegen"}
+                      </span>
+                    )}
+                    {text && (
+                      <button className="klein" title="suche leeren"
+                        onClick={() => setAbSuche((x) => ({ ...x, [a.id]: "" }))}>✕</button>
+                    )}
+                  </span>
+                );
+              })()}
               {sucheWoerter(suche.text).length > 0 && (() => {
                 const w = sucheWoerter(suche.text);
                 const n = a.karten.filter((k) => sucheTrifft(k, w)).length;
@@ -1713,7 +1823,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             <div className="auslage">
             {(() => {
               const inDerLuft = !!((zug && zug.laeuft) || hand);
-              const suchWoerter = sucheWoerter(suche.text);
+              // die abschnitts-suche geht vor, sonst die projekt-suche
+              const suchWoerter = sucheWoerter(abSuche[a.id] || "").length
+                ? sucheWoerter(abSuche[a.id] || "")
+                : sucheWoerter(suche.text);
 
               // Die spalten EINMAL fuer den ganzen abschnitt aufbauen. Vorher
               // fragte jede karte dreimal "wer liegt auf meinem platz" und
@@ -1964,6 +2077,23 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         </div>
       )}
     </>
+  );
+}
+
+// ---------- nach oben ----------
+// erscheint, sobald man ein stueck gescrollt hat, und zieht einen zurueck
+function NachOben() {
+  const [da, setDa] = useState(false);
+  useEffect(() => {
+    const schau = () => setDa(window.scrollY > 500);
+    schau();
+    window.addEventListener("scroll", schau, { passive: true });
+    return () => window.removeEventListener("scroll", schau);
+  }, []);
+  if (!da) return null;
+  return (
+    <button className="nachoben" title="zum seitenanfang"
+      onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>↑</button>
   );
 }
 
@@ -3084,6 +3214,7 @@ export default function Schreibknecht() {
       )}
 
       {sitzung && <button className="raus" onClick={abmelden} title="abmelden">⏻</button>}
+      <NachOben />
     </div>
   );
 }
@@ -3319,6 +3450,13 @@ function Stil() {
 }
 @keyframes wartenpuls{0%,100%{opacity:.35}50%{opacity:1}}
 
+.nachoben{
+  position:fixed; right:14px; bottom:58px; z-index:5; width:34px; height:34px; border-radius:50%;
+  border:1px solid rgba(224,139,60,.4); background:rgba(0,0,0,.55); color:var(--kerze2);
+  cursor:pointer; font-size:15px; animation:sagtein .2s ease-out;
+}
+.nachoben:hover{border-color:var(--kerze); background:rgba(40,22,8,.85); box-shadow:0 0 14px rgba(224,139,60,.35)}
+
 .raus{
   position:fixed; right:14px; bottom:14px; z-index:5; width:34px; height:34px; border-radius:50%;
   border:1px solid rgba(168,135,79,.3); background:rgba(0,0,0,.4); color:var(--nebel);
@@ -3434,12 +3572,19 @@ function Stil() {
   .suchfeld{width:100%}
 }
 
+/* die kleine suche im trennstrich */
+.absuche{display:flex; align-items:center; gap:5px; flex:0 0 auto}
+.absuche .suchzeichen{font-size:13px; opacity:.6}
+.absuchfeld{width:110px; padding:4px 8px; font-size:11px; transition:width .15s}
+.absuche.offen .absuchfeld, .absuchfeld:focus{width:180px}
+
 /* auf der auslage: treffer hell, der rest zurueck */
 .trefferzahl{
   font-size:10px; letter-spacing:.06em; padding:2px 8px; border-radius:3px; flex:0 0 auto;
   color:var(--nebel); border:1px solid rgba(168,135,79,.2);
 }
 .trefferzahl.hat{color:var(--kerze2); border-color:rgba(224,139,60,.55); background:rgba(224,139,60,.12)}
+.trefferzahl.neu{color:var(--messing); border-style:dashed}
 .kartenplatz.abseits{opacity:.22; filter:saturate(.4)}
 .kartenplatz.abseits:hover{opacity:.6}
 
@@ -4078,7 +4223,7 @@ function Stil() {
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
   .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .grund, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis,
   .abschnittzwischen, .abschnitthandleiste, .abschnittablage, .spaltplus, .spinne,
-  .suche, .trefferliste, .trefferzahl, .deckkopf{display:none !important}
+  .suche, .trefferliste, .trefferzahl, .deckkopf, .absuche, .nachoben{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks,
   .bogenbildkasten{display:none !important}
   .seite.text{background:none; border:0}
