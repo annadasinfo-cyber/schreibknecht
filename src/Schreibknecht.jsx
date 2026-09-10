@@ -1137,8 +1137,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   };
 
   const abschnittZu = () => {
+    // max+1, nicht die anzahl — sonst kann die zahl schon vergeben sein
     const neu = { id: neueId(), projekt_id: projekt.id, titel: "neuer abschnitt",
-      pos: projekt.abschnitte.length };
+      pos: projekt.abschnitte.length
+        ? Math.max(...projekt.abschnitte.map((a) => a.pos || 0)) + 1 : 0 };
     aendere((p) => { p.abschnitte.push({ ...neu, karten: [] }); });
     const versprechen = api("POST", "/rest/v1/abschnitte", neu)
       .catch((e) => { sag(String(e.message)); })
@@ -1255,18 +1257,24 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   });
 
   // einen trennstrich hoeher oder tiefer legen
-  const abschnittRuecken = (ai, richtung) => {
+  const abschnittRuecken = (ai, richtung) => nacheinander(async () => {
     const ziel = ai + richtung;
     if (ziel < 0 || ziel >= projekt.abschnitte.length) return;
-    const a = projekt.abschnitte[ai], b = projekt.abschnitte[ziel];
-    aendere((p) => {
-      const x = p.abschnitte[ai];
-      p.abschnitte[ai] = { ...p.abschnitte[ziel], pos: ai };
-      p.abschnitte[ziel] = { ...x, pos: ziel };
-    });
-    api("PATCH", `/rest/v1/abschnitte?id=eq.${a.id}`, { pos: ziel }).catch(() => {});
-    api("PATCH", `/rest/v1/abschnitte?id=eq.${b.id}`, { pos: ai }).catch(() => {});
-  };
+    // die neue reihenfolge, dann ALLE zahlen dicht und eindeutig vergeben —
+    // sonst koennen zwei abschnitte dieselbe zahl tragen und beim naechsten
+    // laden entscheidet der zufall, wer vorn steht
+    const reihe = [...projekt.abschnitte];
+    [reihe[ai], reihe[ziel]] = [reihe[ziel], reihe[ai]];
+    const neu = reihe.map((a, i) => ({ ...a, pos: i }));
+    aendere((p) => { p.abschnitte = neu; });
+    try {
+      for (const a of neu) {
+        if (a.pos !== (projekt.abschnitte.find((x) => x.id === a.id) || {}).pos) {
+          await api("PATCH", `/rest/v1/abschnitte?id=eq.${a.id}`, { pos: a.pos });
+        }
+      }
+    } catch (e) { sag(String(e.message)); }
+  });
 
   const abschnittWeg = (ai) => {
     const a = projekt.abschnitte[ai];
@@ -2459,7 +2467,7 @@ export default function Schreibknecht() {
     try {
       const [pr, ab, zaehl, tw] = await Promise.all([
         allesHolen("/rest/v1/projekte?select=*&order=zuletzt.desc"),
-        allesHolen("/rest/v1/abschnitte?select=*&order=pos.asc"),
+        allesHolen("/rest/v1/abschnitte?select=*&order=pos.asc,created_at.asc,id.asc"),
         // nur die kennungen — leicht, auch bei zehntausend karten
         allesHolen("/rest/v1/karten?select=id,abschnitt_id&order=id.asc"),
         api("GET", "/rest/v1/tagewerk?select=*&order=tag.desc&limit=400"),
@@ -2910,6 +2918,28 @@ export default function Schreibknecht() {
 
     setRaeumtAlles(true); setMsg("");
     try {
+      // ---- erst die abschnitte: je projekt dicht und eindeutig durchnummerieren ----
+      // zwei abschnitte mit derselben zahl wandern beim laden scheinbar von
+      // selbst — hier bekommt jeder seine eigene, in der reihenfolge, die
+      // gerade zu sehen ist
+      setMsg("abschnitte …");
+      const alleAb = await allesHolen(
+        "/rest/v1/abschnitte?select=id,projekt_id,pos,created_at&order=pos.asc,created_at.asc,id.asc");
+      const jeProjekt = new Map();
+      for (const a of alleAb) {
+        if (!jeProjekt.has(a.projekt_id)) jeProjekt.set(a.projekt_id, []);
+        jeProjekt.get(a.projekt_id).push(a);
+      }
+      let abGerichtet = 0;
+      for (const [, liste] of jeProjekt) {
+        for (let i = 0; i < liste.length; i++) {
+          if (liste[i].pos !== i) {
+            await api("PATCH", `/rest/v1/abschnitte?id=eq.${liste[i].id}`, { pos: i });
+            abGerichtet++;
+          }
+        }
+      }
+
       let bewegt = 0, abschnitteBetroffen = 0;
       for (let runde = 1; runde <= 4; runde++) {
         const alle = await allesHolen(
@@ -2950,9 +2980,10 @@ export default function Schreibknecht() {
         bewegt += umzuege.length;
       }
       await laden();
-      setMsg(bewegt
-        ? bewegt + " karten freigelegt in " + abschnitteBetroffen + " abschnitten"
-        : "es lag nichts verdeckt");
+      const teile = [];
+      if (abGerichtet) teile.push(abGerichtet + " abschnitte neu durchnummeriert");
+      if (bewegt) teile.push(bewegt + " karten freigelegt in " + abschnitteBetroffen + " abschnitten");
+      setMsg(teile.length ? teile.join(" · ") : "alles in ordnung — nichts zu tun");
     } catch (e) {
       setMsg("aufräumen ging nicht: " + String(e.message));
     } finally { setRaeumtAlles(false); }
