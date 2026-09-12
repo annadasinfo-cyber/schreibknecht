@@ -312,6 +312,17 @@ const istFundament = (karten, k) => {
 };
 const zaehle = (t) => (t && t.trim() ? t.trim().split(/\s+/).filter(Boolean).length : 0);
 
+// Die wortzahl einer karte wird gemerkt, solange die karte dieselbe bleibt.
+// Sonst zaehlt jeder tastendruck den text ALLER karten neu — bei
+// zweitausend karten ein ruck je buchstabe.
+const wortzahlMerk = new WeakMap();
+const zaehleKarte = (k) => {
+  if (!k || typeof k !== "object") return 0;
+  let n = wortzahlMerk.get(k);
+  if (n === undefined) { n = zaehle(k.text); wortzahlMerk.set(k, n); }
+  return n;
+};
+
 // Anmeldung merken, wo es geht. In der Vorschau gibt es keinen Speicher —
 // dann lebt sie eben nur bis zum Neuladen.
 let sitzungMerk = null;
@@ -841,6 +852,20 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     setTimeout(() => { window.print(); setTimeout(() => setNurDieser(null), 400); }, 60);
   };
 
+  // Was noch nicht gespeichert ist, steht hier — damit es vor jedem
+  // frischholen durchgedrueckt werden kann. Sonst ueberschreibt der stand
+  // aus der datenbank die letzten zwei sekunden tipperei.
+  const ausstehend = useRef({});          // karteId → { tue }
+  const spuelen = async () => {
+    const offen = Object.entries(ausstehend.current);
+    ausstehend.current = {};
+    for (const [id, eintrag] of offen) {
+      clearTimeout(uhren.current[id]);
+      clearTimeout(uhren.current["t" + id]);
+      try { await eintrag.tue(); } catch {}
+    }
+  };
+
   // sofort auf dem schirm, zwei sekunden spaeter in der datenbank
   const setText = (ai, ki, wert) => {
     const k = projekt.abschnitte[ai].karten[ki];
@@ -848,11 +873,14 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       const alt = p.abschnitte[ai].karten[ki];
       p.abschnitte[ai].karten[ki] = { ...alt, text: wert };   // neue karte, damit das memo es sieht
     });
-    clearTimeout(uhren.current[k.id]);
-    uhren.current[k.id] = setTimeout(async () => {
+    const tue = async () => {
+      delete ausstehend.current[k.id];
       if (!(await sicherDa(ai, ki))) return;      // karte war gar nicht da — jetzt schon
-      api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { text: wert }).catch((e) => sag(String(e.message)));
-    }, 2000);
+      await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { text: wert }).catch((e) => sag(String(e.message)));
+    };
+    ausstehend.current[k.id] = { tue };
+    clearTimeout(uhren.current[k.id]);
+    uhren.current[k.id] = setTimeout(tue, 2000);
   };
 
   // beschriftung auf der bildseite
@@ -862,11 +890,14 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       const alt = p.abschnitte[ai].karten[ki];
       p.abschnitte[ai].karten[ki] = { ...alt, titel: wert };   // neue karte, damit das memo es sieht
     });
-    clearTimeout(uhren.current["t" + k.id]);
-    uhren.current["t" + k.id] = setTimeout(async () => {
+    const tue = async () => {
+      delete ausstehend.current["t" + k.id];
       if (!(await sicherDa(ai, ki))) return;
-      api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { titel: wert }).catch(() => {});
-    }, 1200);
+      await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { titel: wert }).catch(() => {});
+    };
+    ausstehend.current["t" + k.id] = { tue };
+    clearTimeout(uhren.current["t" + k.id]);
+    uhren.current["t" + k.id] = setTimeout(tue, 1200);
   };
 
   // eine karte sperren oder wieder aufschliessen
@@ -964,6 +995,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // die datenbank anders gerechnet hat als die app.
   const abschnittFrisch = async (ai) => {
     const a = projekt.abschnitte[ai];
+    await spuelen();                       // erst alles speichern, DANN holen
     try {
       const ka = await allesHolen(`/rest/v1/karten?select=*&abschnitt_id=eq.${a.id}&order=id.asc`);
       aendere((p) => { p.abschnitte[ai].karten = [...ka].sort(sortiere); });
@@ -1047,7 +1079,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const a = projekt.abschnitte[ai];
     const id = hand.id;
     try {
+      // woher kam sie? dort nachher aufruecken
+      const alt = await api("GET", `/rest/v1/karten?select=abschnitt_id,pos&id=eq.${id}`).catch(() => null);
       await api("PATCH", `/rest/v1/karten?id=eq.${id}`, { abschnitt_id: a.id, pos, zeile });
+      if (alt && alt[0]) await lueckeSchliessenDb(alt[0].abschnitt_id, alt[0].pos);
       setHand(null);
       // NICHT das ganze projekt neu laden — nur wegnehmen, wo sie war,
       // und den zielabschnitt frisch holen
@@ -1062,7 +1097,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const karteWeg = (ai, ki) => {
     const k = projekt.abschnitte[ai].karten[ki];
     const name = (k.titel || k.text || "").trim().slice(0, 50);
-    const woerter = zaehle(k.text);
+    const woerter = zaehleKarte(k);
     if (woerter > 3 && !confirm(
       `„${name || "diese karte"}" verbrennen?\n\n${woerter} wörter gehen dabei weg.`)) return;
     // Der PLATZ verschwindet mit: alles dahinter rueckt nach vorn.
@@ -1094,6 +1129,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`,
         { text: k.text || "", titel: k.titel || "", bild: k.bild || null,
           gedreht: !!k.gedreht, gesperrt: !!k.gesperrt });
+      await spuelen();
       await laden();
     } catch (e) { sag(String(e.message)); }
   };
@@ -1222,6 +1258,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     try {
       await api("POST", "/rest/v1/rpc/abschnitt_einfuegen",
         { p_id: neu.id, p_projekt: projekt.id, p_pos: pos, p_titel: neu.titel });
+      await spuelen();
       await laden();
     } catch (e) { sag(String(e.message)); }
   });
@@ -1244,6 +1281,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         { p_abschnitt: abschnittHand.id, p_projekt: projekt.id,
           p_pos: pos == null ? null : pos });
       setAbschnittHand(null);
+      await spuelen();
       await laden();
       sag("");
     } catch (e) { sag(String(e.message)); }
@@ -1257,6 +1295,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         p_abschnitt: a.id, p_neue_id: neueId(), p_projekt: null,
         p_kartenids: a.karten.map(() => neueId()),
       });
+      await spuelen();
       await laden();
       sag("");
     } catch (e) { sag(String(e.message)); }
@@ -1299,6 +1338,25 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   };
 
   // Reihenfolge in der Datenbank nachziehen
+  // Nach dem wegnehmen einer karte rueckt alles hinter ihr auf —
+  // wie beim loeschen. Gesperrte plaetze bleiben liegen.
+  // Hier fuer den schirm; die datenbank macht es in luecke_schliessen.
+  const lueckeSchliessenLokal = (karten, pos) => {
+    if (karten.some((k) => k.pos === pos)) return karten;      // keine luecke
+    let frei = pos;
+    const plaetze = [...new Set(karten.filter((k) => k.pos > pos).map((k) => k.pos))].sort((a, b) => a - b);
+    const wohin = new Map();
+    for (const q of plaetze) {
+      if (platzGesperrt(karten, q)) { if (q >= frei) frei = q + 1; continue; }
+      wohin.set(q, frei);
+      frei++;
+      while (platzGesperrt(karten, frei)) frei++;
+    }
+    return karten.map((k) => (wohin.has(k.pos) ? { ...k, pos: wohin.get(k.pos) } : k));
+  };
+  const lueckeSchliessenDb = (abschnittId, pos) =>
+    api("POST", "/rest/v1/rpc/luecke_schliessen", { p_abschnitt: abschnittId, p_pos: pos }).catch(() => {});
+
   // eine Karte auf einen bestimmten Platz setzen
   const setzePos = (karteId, pos, zeile, abschnittId) =>
     api("PATCH", `/rest/v1/karten?id=eq.${karteId}`, { pos, zeile, abschnitt_id: abschnittId }).catch(() => {});
@@ -1390,6 +1448,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
 
         if (runde === 5) sag(bewegt + " karten verschoben — bitte nochmal aufräumen");
       }
+      await spuelen();
       await laden();
     } catch (e) {
       sag("aufräumen ging nicht: " + String(e.message));
@@ -1501,7 +1560,16 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       setzeViele([
         ...meine.map((k) => ({ id: k.id, pos: zielPos, zeile: k.zeile || 0, abschnitt_id: nachAb.id })),
         ...dortSpalte.map((k) => ({ id: k.id, pos: altePos, zeile: k.zeile || 0, abschnitt_id: vonAb.id })),
-      ]);
+      ]).then(() => {
+        // war das ziel leer, bleibt am alten platz eine luecke — schliessen
+        if (!dortSpalte.length) {
+          const vi = projekt.abschnitte.findIndex((x) => x.id === vonAb.id);
+          if (vi >= 0) aendere((p) => {
+            p.abschnitte[vi].karten = lueckeSchliessenLokal(p.abschnitte[vi].karten, altePos).sort(sortiere);
+          });
+          lueckeSchliessenDb(vonAb.id, altePos);
+        }
+      });
       return;
     }
 
@@ -1525,8 +1593,15 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       p.abschnitte[zielA].karten = nk.sort(sortiere);
       p.abschnitte[zug.ai].karten = vk.sort(sortiere);
     });
-    setzePos(karte.id, zielPos, zielZeile, nachAb.id);
-    if (dort) setzePos(dort.id, altePos, alteZeile, alterAb);
+    setzePos(karte.id, zielPos, zielZeile, nachAb.id).then(() => {
+      if (dort) return setzePos(dort.id, altePos, alteZeile, alterAb);
+      // einzelne karte weg, platz leer → aufruecken
+      const vi = projekt.abschnitte.findIndex((x) => x.id === alterAb);
+      if (vi >= 0) aendere((p) => {
+        p.abschnitte[vi].karten = lueckeSchliessenLokal(p.abschnitte[vi].karten, altePos).sort(sortiere);
+      });
+      lueckeSchliessenDb(alterAb, altePos);
+    });
   };
 
   // wohin gehoert eine karte in einem anderen projekt? (fuer die weite suche)
@@ -1667,7 +1742,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         p_karte: karteId, p_abschnitt: nachAb.id, p_pos: zielPos,
         p_zeile: zielZeile, p_spalte: meine.length > 1,
       });
-      // dann zur sicherheit die betroffenen abschnitte frisch holen
+      // am alten platz aufruecken, dann die betroffenen abschnitte frisch holen
+      await lueckeSchliessenDb(vonAb.id, karte.pos);
       await abschnittFrisch(zielA);
       if (vonIndex >= 0 && vonIndex !== zielA) await abschnittFrisch(vonIndex);
     } catch (e) { sag(String(e.message)); }
@@ -1828,7 +1904,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               <span className="abzahl">
                 {a.karten.length} {a.karten.length === 1 ? "karte" : "karten"}
                 {" · "}
-                {a.karten.reduce((x, k) => x + zaehle(k.text), 0).toLocaleString("de-DE")} wörter
+                {a.karten.reduce((x, k) => x + zaehleKarte(k), 0).toLocaleString("de-DE")} wörter
               </span>
               {verdeckte(a) > 0 && (
                 <button className="verdeckthinweis" onClick={() => aufraeumen(ai)}
@@ -2848,7 +2924,7 @@ export default function Schreibknecht() {
         projekte: (pr || []).length,
         abschnitte: (ab || []).length,
         karten: (ka || []).length,
-        woerter: (ka || []).reduce((x, k) => x + zaehle(k.text), 0),
+        woerter: (ka || []).reduce((x, k) => x + zaehleKarte(k), 0),
         text: buchstaben,
         bilder: bilder2.length,
         bytes
@@ -3075,7 +3151,7 @@ fortfahren?`
 
   // ---- die Kerze ----
   const gesamt = projekte.reduce((s, p) => s + p.abschnitte.reduce(
-    (x, a) => x + a.karten.reduce((y, k) => y + zaehle(k.text), 0), 0), 0);
+    (x, a) => x + a.karten.reduce((y, k) => y + zaehleKarte(k), 0), 0), 0);
   const [erloschen, setErloschen] = useState(false);      // erste kerze
   const [dunkel, setDunkel] = useState(false);           // beide kerzen
   const [spruch, setSpruch] = useState(null);
@@ -3140,7 +3216,7 @@ fortfahren?`
 
   // Wortzahl des offenen Projekts
   const projektWorte = projekt
-    ? projekt.abschnitte.reduce((x, a) => x + a.karten.reduce((y, k) => y + zaehle(k.text), 0), 0)
+    ? projekt.abschnitte.reduce((x, a) => x + a.karten.reduce((y, k) => y + zaehleKarte(k), 0), 0)
     : 0;
   const ziel = (projekt && projekt.tagesziel) || 2000;
   const heutErst = tage.find((t) => projekt && t.projekt_id === projekt.id && t.tag === heute());
