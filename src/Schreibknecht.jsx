@@ -2735,6 +2735,327 @@ export default function Schreibknecht() {
     } catch (e) { setMsg(verstaendlich(String(e.message))); }
   };
 
+  const [sichert, setSichert] = useState(false);
+  const sicherung = async () => {
+    setSichert(true);
+    setMsg("");
+    try {
+      const [pr, ab, ka, tw] = await Promise.all([
+        allesHolen("/rest/v1/projekte?select=*"),
+        allesHolen("/rest/v1/abschnitte?select=*"),
+        allesHolen("/rest/v1/karten?select=*&order=id.asc"),
+        allesHolen("/rest/v1/tagewerk?select=*")
+      ]);
+      const paket = {
+        was: "schreibknecht-sicherung",
+        fassung: 2,
+        gemacht: (new Date()).toISOString(),
+        projekte: pr || [],
+        abschnitte: ab || [],
+        karten: ka || [],
+        tagewerk: tw || [],
+        bilder: {}
+      };
+      const pfade = [...new Set((ka || []).map((k) => k.bild).filter(Boolean))];
+      for (let i = 0; i < pfade.length; i++) {
+        setMsg("bilder werden geholt \u2026 " + (i + 1) + " von " + pfade.length);
+        try {
+          const d = await api(
+            "POST",
+            `/storage/v1/object/sign/kartenbilder/${pfade[i]}`,
+            { expiresIn: 600 }
+          );
+          if (!d || !d.signedURL) continue;
+          const r = await fetch(URL_DB + "/storage/v1" + d.signedURL);
+          if (!r.ok) continue;
+          const roh = await r.blob();
+          paket.bilder[pfade[i]] = await new Promise((ja) => {
+            const l = new FileReader();
+            l.onload = () => ja(l.result);
+            l.onerror = () => ja(null);
+            l.readAsDataURL(roh);
+          });
+        } catch {
+        }
+      }
+      const zeilen = [];
+      (pr || []).forEach((p) => {
+        zeilen.push("", "=".repeat(60), p.name.toUpperCase(), "=".repeat(60), "");
+        (ab || []).filter((a2) => a2.projekt_id === p.id).sort((x, y) => x.pos - y.pos).forEach((a2) => {
+          zeilen.push("", "--- " + a2.titel + " ---", "");
+          (ka || []).filter((k) => k.abschnitt_id === a2.id).sort((x, y) => (x.zeile || 0) - (y.zeile || 0) || x.pos - y.pos).forEach((k) => {
+            if (k.titel) zeilen.push("[" + k.titel + "]");
+            if (k.text) zeilen.push(k.text);
+            zeilen.push("");
+          });
+        });
+      });
+      paket.lesbar = zeilen.join("\n");
+      const wann = (new Date()).toISOString().slice(0, 10);
+      const blob = new Blob([JSON.stringify(paket, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "schreibknecht-sicherung-" + wann + ".json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4e3);
+      const bz = Object.keys(paket.bilder).length;
+      setMsg("gesichert \xB7 " + (pr || []).length + " projekte \xB7 " + (ka || []).length + " karten \xB7 " + bz + " bilder");
+    } catch (e) {
+      setMsg("sicherung ging nicht: " + String(e.message));
+    }
+    setSichert(false);
+  };
+  const [platz, setPlatz] = useState(null);
+  const [zaehlt, setZaehlt] = useState(false);
+  const nachsehen = async () => {
+    setZaehlt(true);
+    setMsg("");
+    try {
+      const [pr, ab, ka] = await Promise.all([
+        allesHolen("/rest/v1/projekte?select=id"),
+        allesHolen("/rest/v1/abschnitte?select=id"),
+        allesHolen("/rest/v1/karten?select=id,text,titel,bild&order=id.asc")
+      ]);
+      const ordner = sitzungRef.current && sitzungRef.current.user ? sitzungRef.current.user.id : null;
+      let bilder2 = [], bytes = 0;
+      if (ordner) {
+        const liste = await api(
+          "POST",
+          "/storage/v1/object/list/kartenbilder",
+          { prefix: ordner, limit: 1e3, sortBy: { column: "name", order: "asc" } }
+        );
+        bilder2 = liste || [];
+        bytes = bilder2.reduce((x, b) => x + (b.metadata && b.metadata.size || 0), 0);
+      }
+      const buchstaben = (ka || []).reduce(
+        (x, k) => x + (k.text || "").length + (k.titel || "").length,
+        0
+      );
+      setPlatz({
+        projekte: (pr || []).length,
+        abschnitte: (ab || []).length,
+        karten: (ka || []).length,
+        woerter: (ka || []).reduce((x, k) => x + zaehle(k.text), 0),
+        text: buchstaben,
+        bilder: bilder2.length,
+        bytes
+      });
+    } catch (e) {
+      setMsg("nachsehen ging nicht: " + String(e.message));
+    }
+    setZaehlt(false);
+  };
+  const [dampft, setDampft] = useState(false);
+  const eindampfen = async () => {
+    if (!confirm(
+      "alle bilder einmal kleinrechnen?\n\nsie werden dabei auf eine vern\xFCnftige gr\xF6\xDFe gebracht \u2014 sichtbar\n\xE4ndert sich nichts, die karten sind ja nur 198 pixel breit.\n\nmach vorher eine sicherung, falls du unsicher bist."
+    )) return;
+    setDampft(true);
+    setMsg("");
+    try {
+      const ka = await allesHolen("/rest/v1/karten?select=id,bild&order=id.asc");
+      const mitBild = (ka || []).filter((k) => k.bild);
+      let vorher = 0, nachher = 0, gemacht = 0, uebersprungen = 0;
+      for (let i = 0; i < mitBild.length; i++) {
+        const k = mitBild[i];
+        setMsg("bild " + (i + 1) + " von " + mitBild.length + " \u2026");
+        try {
+          const d = await api(
+            "POST",
+            `/storage/v1/object/sign/kartenbilder/${k.bild}`,
+            { expiresIn: 600 }
+          );
+          if (!d || !d.signedURL) continue;
+          const r = await fetch(URL_DB + "/storage/v1" + d.signedURL);
+          if (!r.ok) continue;
+          const alt = await r.blob();
+          vorher += alt.size;
+          const klein = await bildKleinrechnen(
+            new File([alt], "bild", { type: alt.type || "image/jpeg" })
+          );
+          if (!klein || klein.blob.size >= alt.size * 0.92) {
+            nachher += alt.size;
+            uebersprungen++;
+            continue;
+          }
+          const neuerPfad = `${sitzungRef.current.user.id}/${k.id}.${klein.endung}`;
+          const hoch = await fetch(`${URL_DB}/storage/v1/object/kartenbilder/${neuerPfad}`, {
+            method: "POST",
+            headers: {
+              apikey: KEY_DB,
+              Authorization: "Bearer " + sitzungRef.current.access_token,
+              "x-upsert": "true",
+              "Content-Type": klein.blob.type
+            },
+            body: klein.blob
+          });
+          if (!hoch.ok) {
+            nachher += alt.size;
+            continue;
+          }
+          if (neuerPfad !== k.bild) {
+            await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { bild: neuerPfad });
+            await api("DELETE", "/storage/v1/object/kartenbilder", { prefixes: [k.bild] }).catch(() => {
+            });
+          }
+          nachher += klein.blob.size;
+          gemacht++;
+        } catch {
+        }
+      }
+      geholt.current = {};
+      setBilder({});
+      await laden();
+      const mb = (x) => (x / 1048576).toFixed(1);
+      setMsg("eingedampft \xB7 " + gemacht + " von " + mitBild.length + " bildern \xB7 " + mb(vorher) + " MB \u2192 " + mb(nachher) + " MB" + (uebersprungen ? " \xB7 " + uebersprungen + " waren schon klein" : ""));
+      setPlatz(null);
+    } catch (e) {
+      setMsg("eindampfen ging nicht: " + String(e.message));
+    }
+    setDampft(false);
+  };
+  const [raeumtAlles, setRaeumtAlles] = useState(false);
+  const allesAufraeumen = async () => {
+    if (!confirm(
+      "alle abschnitte durchgehen und verdeckte karten freilegen?\n\njede karte, die unter einer anderen liegt, bekommt den n\xE4chsten\nfreien platz in ihrer reihe. alles andere bleibt liegen.\n\nwichtig: schlie\xDF vorher alle anderen fenster der app."
+    )) return;
+    setRaeumtAlles(true);
+    setMsg("");
+    try {
+      setMsg("abschnitte \u2026");
+      const alleAb = await allesHolen(
+        "/rest/v1/abschnitte?select=id,projekt_id,pos,created_at&order=pos.asc,created_at.asc,id.asc"
+      );
+      const jeProjekt = new Map();
+      for (const a of alleAb) {
+        if (!jeProjekt.has(a.projekt_id)) jeProjekt.set(a.projekt_id, []);
+        jeProjekt.get(a.projekt_id).push(a);
+      }
+      let abGerichtet = 0;
+      for (const [, liste] of jeProjekt) {
+        for (let i = 0; i < liste.length; i++) {
+          if (liste[i].pos !== i) {
+            await api("PATCH", `/rest/v1/abschnitte?id=eq.${liste[i].id}`, { pos: i });
+            abGerichtet++;
+          }
+        }
+      }
+      let bewegt = 0, abschnitteBetroffen = 0;
+      for (let runde = 1; runde <= 4; runde++) {
+        const alle = await allesHolen(
+          "/rest/v1/karten?select=id,abschnitt_id,pos,zeile,created_at&order=id.asc"
+        );
+        const nachAbschnitt = new Map();
+        for (const k of alle) {
+          if (!nachAbschnitt.has(k.abschnitt_id)) nachAbschnitt.set(k.abschnitt_id, []);
+          nachAbschnitt.get(k.abschnitt_id).push(k);
+        }
+        const umzuege = [];
+        for (const [, karten] of nachAbschnitt) {
+          const belegt = new Set();
+          let hierBewegt = false;
+          for (const k of [...karten].sort((x, y) => (x.zeile || 0) - (y.zeile || 0) || x.pos - y.pos || String(x.created_at || "").localeCompare(String(y.created_at || "")) || String(x.id).localeCompare(String(y.id)))) {
+            const z = k.zeile || 0;
+            let pos = k.pos;
+            while (belegt.has(pos + ":" + z)) pos++;
+            belegt.add(pos + ":" + z);
+            if (pos !== k.pos) {
+              umzuege.push({ id: k.id, pos, zeile: z });
+              hierBewegt = true;
+            }
+          }
+          if (hierBewegt && runde === 1) abschnitteBetroffen++;
+        }
+        if (!umzuege.length) break;
+        for (let i = 0; i < umzuege.length; i++) {
+          setMsg("runde " + runde + " \xB7 " + (i + 1) + " von " + umzuege.length + " \u2026");
+          await api(
+            "PATCH",
+            `/rest/v1/karten?id=eq.${umzuege[i].id}`,
+            { pos: umzuege[i].pos, zeile: umzuege[i].zeile }
+          );
+        }
+        bewegt += umzuege.length;
+      }
+      await laden();
+      const teile = [];
+      if (abGerichtet) teile.push(abGerichtet + " abschnitte neu durchnummeriert");
+      if (bewegt) teile.push(bewegt + " karten freigelegt in " + abschnitteBetroffen + " abschnitten");
+      setMsg(teile.length ? teile.join(" \xB7 ") : "alles in ordnung \u2014 nichts zu tun");
+    } catch (e) {
+      setMsg("aufr\xE4umen ging nicht: " + String(e.message));
+    } finally {
+      setRaeumtAlles(false);
+    }
+  };
+  const [spieltZurueck, setSpieltZurueck] = useState(false);
+  const dateiFeld = useRef(null);
+  const zurueckspielen = async (datei) => {
+    if (!datei) return;
+    setSpieltZurueck(true);
+    setMsg("");
+    try {
+      const paket = JSON.parse(await datei.text());
+      if (paket.was !== "schreibknecht-sicherung")
+        throw new Error("das ist keine sicherung vom schreibknecht");
+      const nP = (paket.projekte || []).length;
+      const nK = (paket.karten || []).length;
+      const nB = Object.keys(paket.bilder || {}).length;
+      const wann = paket.gemacht ? new Date(paket.gemacht).toLocaleString("de-DE") : "unbekannt";
+      if (!confirm(
+        `sicherung vom ${wann}
+
+${nP} projekte \xB7 ${nK} karten \xB7 ${nB} bilder
+
+alles davon wird zur\xFCckgespielt. was heute schon da ist und dieselbe
+kennung hat, wird \xFCberschrieben. neuere karten bleiben stehen.
+
+fortfahren?`
+      )) {
+        setSpieltZurueck(false);
+        return;
+      }
+      const rein = (tabelle, zeilen) => zeilen.length ? api("POST", "/rest/v1/" + tabelle, zeilen, { Prefer: "resolution=merge-duplicates" }) : Promise.resolve();
+      setMsg("projekte \u2026");
+      await rein("projekte", paket.projekte || []);
+      setMsg("abschnitte \u2026");
+      await rein("abschnitte", paket.abschnitte || []);
+      setMsg("karten \u2026");
+      await rein("karten", paket.karten || []);
+      if ((paket.tagewerk || []).length) {
+        setMsg("tagewerk \u2026");
+        await rein("tagewerk", paket.tagewerk).catch(() => {
+        });
+      }
+      const pfade = Object.keys(paket.bilder || {});
+      for (let i = 0; i < pfade.length; i++) {
+        setMsg("bilder \u2026 " + (i + 1) + " von " + pfade.length);
+        try {
+          const antwort = await fetch(paket.bilder[pfade[i]]);
+          const roh = await antwort.blob();
+          await fetch(`${URL_DB}/storage/v1/object/kartenbilder/${pfade[i]}`, {
+            method: "POST",
+            headers: {
+              apikey: KEY_DB,
+              Authorization: "Bearer " + (sitzungRef.current && sitzungRef.current.access_token),
+              "x-upsert": "true",
+              "Content-Type": roh.type || "image/png"
+            },
+            body: roh
+          });
+        } catch {
+        }
+      }
+      await laden();
+      setMsg("zur\xFCckgespielt \xB7 " + nP + " projekte \xB7 " + nK + " karten \xB7 " + nB + " bilder");
+    } catch (e) {
+      setMsg("zur\xFCckspielen ging nicht: " + String(e.message));
+    }
+    setSpieltZurueck(false);
+  };
+
   const projektWeg = (p) => {
     if (!confirm(`„${p.name}" mit allem drin entfernen?`)) return;
     setProjekte((l) => l.filter((x) => x.id !== p.id));
