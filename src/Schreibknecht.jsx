@@ -1619,7 +1619,18 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       const t = a.karten.find((k) => k.id === karteId);
       if (t) { vonAb = a; karte = t; break; }
     }
-    if (!karte) { setHand(null); return; }
+
+    // Kommt die karte aus einem ANDEREN projekt (in der hand mitgebracht),
+    // kennt dieses projekt sie nicht. Dann holen wir sie kurz aus der
+    // datenbank — vorher brach es hier ab und leerte die hand.
+    if (!karte) {
+      try {
+        const d = await api("GET", `/rest/v1/karten?select=*&id=eq.${karteId}`);
+        karte = d && d[0];
+      } catch {}
+      if (!karte) { setHand(null); sag("die karte war nicht mehr zu finden"); return; }
+      vonAb = { id: karte.abschnitt_id, karten: [karte] };   // eine fremde, allein
+    }
 
     const meine = istFundament(vonAb.karten, karte)
       ? spalteVon(vonAb.karten, karte.pos)
