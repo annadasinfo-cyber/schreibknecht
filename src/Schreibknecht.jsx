@@ -1045,10 +1045,16 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // und woanders wieder hinlegen
   const ablegenAusHand = async (ai, pos, zeile) => {
     const a = projekt.abschnitte[ai];
+    const id = hand.id;
     try {
-      await api("PATCH", `/rest/v1/karten?id=eq.${hand.id}`, { abschnitt_id: a.id, pos, zeile });
+      await api("PATCH", `/rest/v1/karten?id=eq.${id}`, { abschnitt_id: a.id, pos, zeile });
       setHand(null);
-      await laden();
+      // NICHT das ganze projekt neu laden — nur wegnehmen, wo sie war,
+      // und den zielabschnitt frisch holen
+      aendere((p) => {
+        p.abschnitte.forEach((x) => { x.karten = x.karten.filter((k) => k.id !== id); });
+      });
+      await abschnittFrisch(ai);
     } catch (e) { sag(String(e.message)); }
   };
 
@@ -1629,7 +1635,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         p_karte: karteId, p_abschnitt: nachAb.id, p_pos: zielPos,
         p_zeile: zielZeile, p_spalte: meine.length > 1,
       });
-      await laden();
+      // nur die betroffenen abschnitte frisch holen, nicht das ganze projekt
+      const vonIndex = projekt.abschnitte.findIndex((x) => x.id === vonAb.id);
+      await abschnittFrisch(zielA);
+      if (vonIndex >= 0 && vonIndex !== zielA) await abschnittFrisch(vonIndex);
     } catch (e) { sag(String(e.message)); }
     setHand(null);
   });
@@ -2694,363 +2703,17 @@ export default function Schreibknecht() {
   };
 
   // ein Projekt mit allem drin kopieren — neue Kennungen, gleicher Inhalt
+  // ein ganzes Projekt kopieren — die datenbank uebernimmt alles eins zu
+  // eins: plaetze, reihen, schloesser, gedreht, bilder. vorher hatte die
+  // app reihe und schloss vergessen und die plaetze verwuerfelt.
   const projektKopieren = async (p) => {
     try {
       setMsg("wird kopiert …");
-      // die karten sind womoeglich noch nicht geladen — erst holen
-      let quelle = p;
-      if (!p.kartenGeladen) {
-        const ka = await kartenHolen(p.id, p.abschnitte.map((a) => a.id));
-        quelle = { ...p, abschnitte: p.abschnitte.map((a) =>
-          ({ ...a, karten: ka.filter((k) => k.abschnitt_id === a.id) })) };
-      }
-      const neuP = { id: neueId(), name: p.name + " (kopie)",
-        zuletzt: new Date().toISOString(), created_at: new Date().toISOString() };
-      await api("POST", "/rest/v1/projekte", neuP);
-      for (let i = 0; i < quelle.abschnitte.length; i++) {
-        const a = quelle.abschnitte[i];
-        const neuA = { id: neueId(), projekt_id: neuP.id, titel: a.titel, pos: i };
-        await api("POST", "/rest/v1/abschnitte", neuA);
-        const karten = a.karten.map((k, n) => ({
-          id: neueId(), abschnitt_id: neuA.id, text: k.text, bild: k.bild, gedreht: false, pos: n,
-        }));
-        if (karten.length) await api("POST", "/rest/v1/karten", karten);
-      }
+      const neuId = neueId();
+      await api("POST", "/rest/v1/rpc/projekt_kopieren", { p_projekt: p.id, p_neue_id: neuId });
       await laden();
       setMsg("");
-    } catch (e) { setMsg(String(e.message)); }
-  };
-
-  // ---- SICHERUNG ----
-  // Alles, was in der datenbank steht, in eine datei auf deinen rechner.
-  // Zusaetzlich eine lesbare fassung, falls die datei mal jemand oeffnen
-  // muss, der nichts von tabellen versteht.
-  const [sichert, setSichert] = useState(false);
-  const sicherung = async () => {
-    setSichert(true); setMsg("");
-    try {
-      const [pr, ab, ka, tw] = await Promise.all([
-        allesHolen("/rest/v1/projekte?select=*"),
-        allesHolen("/rest/v1/abschnitte?select=*"),
-        allesHolen("/rest/v1/karten?select=*&order=id.asc"),
-        allesHolen("/rest/v1/tagewerk?select=*"),
-      ]);
-
-      const paket = {
-        was: "schreibknecht-sicherung",
-        fassung: 2,
-        gemacht: new Date().toISOString(),
-        projekte: pr || [], abschnitte: ab || [], karten: ka || [], tagewerk: tw || [],
-        bilder: {},
-      };
-
-      // die bilder aus dem ablagefach kommen mit — sonst waere die
-      // sicherung nur die haelfte wert
-      const pfade = [...new Set((ka || []).map((k) => k.bild).filter(Boolean))];
-      for (let i = 0; i < pfade.length; i++) {
-        setMsg("bilder werden geholt … " + (i + 1) + " von " + pfade.length);
-        try {
-          const d = await api("POST", `/storage/v1/object/sign/kartenbilder/${pfade[i]}`,
-            { expiresIn: 600 });
-          if (!d || !d.signedURL) continue;
-          const r = await fetch(URL_DB + "/storage/v1" + d.signedURL);
-          if (!r.ok) continue;
-          const roh = await r.blob();
-          paket.bilder[pfade[i]] = await new Promise((ja) => {
-            const l = new FileReader();
-            l.onload = () => ja(l.result);
-            l.onerror = () => ja(null);
-            l.readAsDataURL(roh);
-          });
-        } catch {}
-      }
-
-      // die lesbare fassung
-      const zeilen = [];
-      (pr || []).forEach((p) => {
-        zeilen.push("", "=".repeat(60), p.name.toUpperCase(), "=".repeat(60), "");
-        (ab || []).filter((a) => a.projekt_id === p.id)
-          .sort((x, y) => x.pos - y.pos).forEach((a) => {
-            zeilen.push("", "--- " + a.titel + " ---", "");
-            (ka || []).filter((k) => k.abschnitt_id === a.id)
-              .sort((x, y) => ((x.zeile || 0) - (y.zeile || 0)) || (x.pos - y.pos))
-              .forEach((k) => {
-                if (k.titel) zeilen.push("[" + k.titel + "]");
-                if (k.text) zeilen.push(k.text);
-                zeilen.push("");
-              });
-          });
-      });
-      paket.lesbar = zeilen.join("\n");
-
-      const wann = new Date().toISOString().slice(0, 10);
-      const blob = new Blob([JSON.stringify(paket, null, 2)], { type: "application/json" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = "schreibknecht-sicherung-" + wann + ".json";
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-
-      const bz = Object.keys(paket.bilder).length;
-      setMsg("gesichert · " + (pr || []).length + " projekte · " + (ka || []).length
-        + " karten · " + bz + " bilder");
-    } catch (e) { setMsg("sicherung ging nicht: " + String(e.message)); }
-    setSichert(false);
-  };
-
-  // ---- WIE VOLL IST ES? ----
-  // Der freitarif gibt 500 MB datenbank, 1 GB ablagefach und 5 GB
-  // egress im monat. Der text ist praktisch nichts — die bilder sind alles.
-  const [platz, setPlatz] = useState(null);
-  const [zaehlt, setZaehlt] = useState(false);
-  const nachsehen = async () => {
-    setZaehlt(true); setMsg("");
-    try {
-      const [pr, ab, ka] = await Promise.all([
-        allesHolen("/rest/v1/projekte?select=id"),
-        allesHolen("/rest/v1/abschnitte?select=id"),
-        allesHolen("/rest/v1/karten?select=id,text,titel,bild&order=id.asc"),
-      ]);
-      // die bilder im ablagefach nachmessen
-      const ordner = sitzungRef.current && sitzungRef.current.user
-        ? sitzungRef.current.user.id : null;
-      let bilder = [], bytes = 0;
-      if (ordner) {
-        const liste = await api("POST", "/storage/v1/object/list/kartenbilder",
-          { prefix: ordner, limit: 1000, sortBy: { column: "name", order: "asc" } });
-        bilder = liste || [];
-        bytes = bilder.reduce((x, b) => x + ((b.metadata && b.metadata.size) || 0), 0);
-      }
-      const buchstaben = (ka || []).reduce(
-        (x, k) => x + (k.text || "").length + (k.titel || "").length, 0);
-
-      setPlatz({
-        projekte: (pr || []).length, abschnitte: (ab || []).length, karten: (ka || []).length,
-        woerter: (ka || []).reduce((x, k) => x + zaehle(k.text), 0),
-        text: buchstaben, bilder: bilder.length, bytes,
-      });
-    } catch (e) { setMsg("nachsehen ging nicht: " + String(e.message)); }
-    setZaehlt(false);
-  };
-
-  // ---- ALTE BILDER EINDAMPFEN ----
-  // Alles, was frueher in voller groesse hochgeladen wurde, einmal
-  // durch dieselbe rechnung schicken. Das holt platz und tempo zurueck,
-  // ohne dass du ein einziges bild neu einbauen musst.
-  const [dampft, setDampft] = useState(false);
-  const eindampfen = async () => {
-    if (!confirm(
-      "alle bilder einmal kleinrechnen?\n\n"
-      + "sie werden dabei auf eine vernünftige größe gebracht — sichtbar\n"
-      + "ändert sich nichts, die karten sind ja nur 198 pixel breit.\n\n"
-      + "mach vorher eine sicherung, falls du unsicher bist.")) return;
-
-    setDampft(true); setMsg("");
-    try {
-      const ka = await allesHolen("/rest/v1/karten?select=id,bild&order=id.asc");
-      const mitBild = (ka || []).filter((k) => k.bild);
-      let vorher = 0, nachher = 0, gemacht = 0, uebersprungen = 0;
-
-      for (let i = 0; i < mitBild.length; i++) {
-        const k = mitBild[i];
-        setMsg("bild " + (i + 1) + " von " + mitBild.length + " …");
-        try {
-          const d = await api("POST", `/storage/v1/object/sign/kartenbilder/${k.bild}`,
-            { expiresIn: 600 });
-          if (!d || !d.signedURL) continue;
-          const r = await fetch(URL_DB + "/storage/v1" + d.signedURL);
-          if (!r.ok) continue;
-          const alt = await r.blob();
-          vorher += alt.size;
-
-          const klein = await bildKleinrechnen(
-            new File([alt], "bild", { type: alt.type || "image/jpeg" }));
-          if (!klein || klein.blob.size >= alt.size * 0.92) {
-            nachher += alt.size; uebersprungen++; continue;   // lohnt nicht
-          }
-
-          const neuerPfad = `${sitzungRef.current.user.id}/${k.id}.${klein.endung}`;
-          const hoch = await fetch(`${URL_DB}/storage/v1/object/kartenbilder/${neuerPfad}`, {
-            method: "POST",
-            headers: {
-              apikey: KEY_DB,
-              Authorization: "Bearer " + sitzungRef.current.access_token,
-              "x-upsert": "true",
-              "Content-Type": klein.blob.type,
-            },
-            body: klein.blob,
-          });
-          if (!hoch.ok) { nachher += alt.size; continue; }
-
-          if (neuerPfad !== k.bild) {
-            await api("PATCH", `/rest/v1/karten?id=eq.${k.id}`, { bild: neuerPfad });
-            // das alte wegraeumen, sonst liegt es weiter im ablagefach
-            await api("DELETE", "/storage/v1/object/kartenbilder", { prefixes: [k.bild] })
-              .catch(() => {});
-          }
-          nachher += klein.blob.size; gemacht++;
-        } catch {}
-      }
-
-      geholt.current = {}; setBilder({});
-      await laden();
-      const mb = (x) => (x / 1048576).toFixed(1);
-      setMsg("eingedampft · " + gemacht + " von " + mitBild.length + " bildern · "
-        + mb(vorher) + " MB → " + mb(nachher) + " MB"
-        + (uebersprungen ? " · " + uebersprungen + " waren schon klein" : ""));
-      setPlatz(null);
-    } catch (e) { setMsg("eindampfen ging nicht: " + String(e.message)); }
-    setDampft(false);
-  };
-
-  // ---- ALLE ABSCHNITTE AUFRAEUMEN ----
-  // Nach genau derselben rechnung, die auch die anzeige benutzt: eine
-  // fehlende reihe zaehlt als reihe null. Genau daran ist die reparatur
-  // per hand vorbeigelaufen — sql sieht "leer" und "null" als zwei
-  // verschiedene faecher, die app sieht eines.
-  const [raeumtAlles, setRaeumtAlles] = useState(false);
-  const allesAufraeumen = async () => {
-    if (!confirm(
-      "alle abschnitte durchgehen und verdeckte karten freilegen?\n\n"
-      + "jede karte, die unter einer anderen liegt, bekommt den nächsten\n"
-      + "freien platz in ihrer reihe. alles andere bleibt liegen.\n\n"
-      + "wichtig: schließ vorher alle anderen fenster der app.")) return;
-
-    setRaeumtAlles(true); setMsg("");
-    try {
-      // ---- erst die abschnitte: je projekt dicht und eindeutig durchnummerieren ----
-      // zwei abschnitte mit derselben zahl wandern beim laden scheinbar von
-      // selbst — hier bekommt jeder seine eigene, in der reihenfolge, die
-      // gerade zu sehen ist
-      setMsg("abschnitte …");
-      const alleAb = await allesHolen(
-        "/rest/v1/abschnitte?select=id,projekt_id,pos,created_at&order=pos.asc,created_at.asc,id.asc");
-      const jeProjekt = new Map();
-      for (const a of alleAb) {
-        if (!jeProjekt.has(a.projekt_id)) jeProjekt.set(a.projekt_id, []);
-        jeProjekt.get(a.projekt_id).push(a);
-      }
-      let abGerichtet = 0;
-      for (const [, liste] of jeProjekt) {
-        for (let i = 0; i < liste.length; i++) {
-          if (liste[i].pos !== i) {
-            await api("PATCH", `/rest/v1/abschnitte?id=eq.${liste[i].id}`, { pos: i });
-            abGerichtet++;
-          }
-        }
-      }
-
-      let bewegt = 0, abschnitteBetroffen = 0;
-      for (let runde = 1; runde <= 4; runde++) {
-        const alle = await allesHolen(
-          "/rest/v1/karten?select=id,abschnitt_id,pos,zeile,created_at&order=id.asc");
-
-        // nach abschnitt buendeln
-        const nachAbschnitt = new Map();
-        for (const k of alle) {
-          if (!nachAbschnitt.has(k.abschnitt_id)) nachAbschnitt.set(k.abschnitt_id, []);
-          nachAbschnitt.get(k.abschnitt_id).push(k);
-        }
-
-        const umzuege = [];
-        for (const [, karten] of nachAbschnitt) {
-          const belegt = new Set();
-          let hierBewegt = false;
-          for (const k of [...karten].sort((x, y) =>
-            ((x.zeile || 0) - (y.zeile || 0)) || (x.pos - y.pos)
-            || String(x.created_at || "").localeCompare(String(y.created_at || ""))
-            || String(x.id).localeCompare(String(y.id)))) {
-            const z = k.zeile || 0;                  // fehlende reihe = reihe null
-            let pos = k.pos;
-            while (belegt.has(pos + ":" + z)) pos++;
-            belegt.add(pos + ":" + z);
-            if (pos !== k.pos) { umzuege.push({ id: k.id, pos, zeile: z }); hierBewegt = true; }
-          }
-          if (hierBewegt && runde === 1) abschnitteBetroffen++;
-        }
-
-        if (!umzuege.length) break;
-
-        for (let i = 0; i < umzuege.length; i++) {
-          setMsg("runde " + runde + " · " + (i + 1) + " von " + umzuege.length + " …");
-          // die reihe wird mitgeschrieben, damit "leer" endgueltig zu null wird
-          await api("PATCH", `/rest/v1/karten?id=eq.${umzuege[i].id}`,
-            { pos: umzuege[i].pos, zeile: umzuege[i].zeile });
-        }
-        bewegt += umzuege.length;
-      }
-      await laden();
-      const teile = [];
-      if (abGerichtet) teile.push(abGerichtet + " abschnitte neu durchnummeriert");
-      if (bewegt) teile.push(bewegt + " karten freigelegt in " + abschnitteBetroffen + " abschnitten");
-      setMsg(teile.length ? teile.join(" · ") : "alles in ordnung — nichts zu tun");
-    } catch (e) {
-      setMsg("aufräumen ging nicht: " + String(e.message));
-    } finally { setRaeumtAlles(false); }
-  };
-
-  // ---- ZURUECKSPIELEN ----
-  // Die sicherung wieder einlesen. Alles behaelt seine alten kennungen,
-  // darum wird nichts doppelt: was schon da ist, wird aufgefrischt,
-  // was fehlt, kommt neu dazu.
-  const [spieltZurueck, setSpieltZurueck] = useState(false);
-  const dateiFeld = useRef(null);
-
-  const zurueckspielen = async (datei) => {
-    if (!datei) return;
-    setSpieltZurueck(true); setMsg("");
-    try {
-      const paket = JSON.parse(await datei.text());
-      if (paket.was !== "schreibknecht-sicherung")
-        throw new Error("das ist keine sicherung vom schreibknecht");
-
-      const nP = (paket.projekte || []).length;
-      const nK = (paket.karten || []).length;
-      const nB = Object.keys(paket.bilder || {}).length;
-      const wann = paket.gemacht ? new Date(paket.gemacht).toLocaleString("de-DE") : "unbekannt";
-      if (!confirm(
-        `sicherung vom ${wann}\n\n${nP} projekte · ${nK} karten · ${nB} bilder\n\n`
-        + "alles davon wird zurückgespielt. was heute schon da ist und dieselbe\n"
-        + "kennung hat, wird überschrieben. neuere karten bleiben stehen.\n\nfortfahren?")) {
-        setSpieltZurueck(false); return;
-      }
-
-      // aufwecken: alles mit seiner alten kennung wieder hineinlegen
-      const rein = (tabelle, zeilen) => zeilen.length
-        ? api("POST", "/rest/v1/" + tabelle, zeilen, { Prefer: "resolution=merge-duplicates" })
-        : Promise.resolve();
-
-      setMsg("projekte …");    await rein("projekte", paket.projekte || []);
-      setMsg("abschnitte …");  await rein("abschnitte", paket.abschnitte || []);
-      setMsg("karten …");      await rein("karten", paket.karten || []);
-      if ((paket.tagewerk || []).length) {
-        setMsg("tagewerk …");  await rein("tagewerk", paket.tagewerk).catch(() => {});
-      }
-
-      // die bilder zurueck ins ablagefach
-      const pfade = Object.keys(paket.bilder || {});
-      for (let i = 0; i < pfade.length; i++) {
-        setMsg("bilder … " + (i + 1) + " von " + pfade.length);
-        try {
-          const antwort = await fetch(paket.bilder[pfade[i]]);
-          const roh = await antwort.blob();
-          await fetch(`${URL_DB}/storage/v1/object/kartenbilder/${pfade[i]}`, {
-            method: "POST",
-            headers: {
-              apikey: KEY_DB,
-              Authorization: "Bearer " + (sitzungRef.current && sitzungRef.current.access_token),
-              "x-upsert": "true",
-              "Content-Type": roh.type || "image/png",
-            },
-            body: roh,
-          });
-        } catch {}
-      }
-
-      await laden();
-      setMsg("zurückgespielt · " + nP + " projekte · " + nK + " karten · " + nB + " bilder");
-    } catch (e) { setMsg("zurückspielen ging nicht: " + String(e.message)); }
-    setSpieltZurueck(false);
+    } catch (e) { setMsg(verstaendlich(String(e.message))); }
   };
 
   const projektWeg = (p) => {
