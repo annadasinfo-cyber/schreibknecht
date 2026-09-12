@@ -1629,18 +1629,37 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     // alles ab der stelle rueckt einen weiter — ganze spalten
     const ruecken = nachAb.karten.filter((k) => k.pos >= zielPos && !meineIds.has(k.id));
 
+    // SOFORT auf dem schirm — mit derselben rechnung wie in der datenbank.
+    // Vorher aenderte sich das bild erst nach der antwort, die karte sprang
+    // zurueck und tauchte spaeter wieder auf. Das sah aus wie ein fehler.
+    const vonIndex = projekt.abschnitte.findIndex((x) => x.id === vonAb.id);
+    aendere((p) => {
+      // aus dem alten abschnitt herausnehmen
+      if (vonIndex >= 0) {
+        p.abschnitte[vonIndex].karten = p.abschnitte[vonIndex].karten.filter((k) => !meineIds.has(k.id));
+      }
+      // im ziel platz machen — gesperrte plaetze bleiben liegen
+      const rest = p.abschnitte[zielA].karten.filter((k) => !meineIds.has(k.id));
+      const plan = einfuegePlan(rest, zielPos);
+      const gerueckt = rest.map((k) => (plan.wohin.has(k.pos) ? { ...k, pos: plan.wohin.get(k.pos) } : k));
+      const angekommen = meine.map((k) => ({
+        ...k, abschnitt_id: nachAb.id, pos: plan.ziel,
+        zeile: meine.length > 1 ? (k.zeile || 0) : zielZeile,
+      }));
+      p.abschnitte[zielA].karten = [...gerueckt, ...angekommen].sort(sortiere);
+    });
+    setHand(null);
+
     try {
       // EIN auftrag: platz machen und verschieben passiert in der datenbank
       await api("POST", "/rest/v1/rpc/karte_dazwischen", {
         p_karte: karteId, p_abschnitt: nachAb.id, p_pos: zielPos,
         p_zeile: zielZeile, p_spalte: meine.length > 1,
       });
-      // nur die betroffenen abschnitte frisch holen, nicht das ganze projekt
-      const vonIndex = projekt.abschnitte.findIndex((x) => x.id === vonAb.id);
+      // dann zur sicherheit die betroffenen abschnitte frisch holen
       await abschnittFrisch(zielA);
       if (vonIndex >= 0 && vonIndex !== zielA) await abschnittFrisch(vonIndex);
     } catch (e) { sag(String(e.message)); }
-    setHand(null);
   });
 
   return (
