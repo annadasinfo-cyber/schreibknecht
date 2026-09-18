@@ -250,6 +250,41 @@ function Spinne() {
 // erst nach reihe, dann nach platz — wie man eine auslage liest
 const sortiere = (a, b) => ((a.zeile || 0) - (b.zeile || 0)) || (a.pos - b.pos);
 
+// ---- TEXTMARKER ----
+// Eine markierte stelle steht im text als ==so==. Das bleibt beim
+// speichern erhalten und ist auf jedem geraet da. Im pult wird daraus
+// ein warmer streifen, die zeichen selbst bleiben blass sichtbar.
+const htmlSicher = (t) => String(t || "")
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const markiertAlsHtml = (text) => {
+  const t = htmlSicher(text);
+  return t.replace(/==([^=\n][^\n]*?)==/g, '<mark><i>==</i>$1<i>==</i></mark>') + "\n";
+};
+
+// die auswahl im feld mit == umschliessen — oder wieder freilegen,
+// wenn sie schon markiert ist
+const markerSetzen = (feld) => {
+  if (!feld) return null;
+  const von = feld.selectionStart, bis = feld.selectionEnd;
+  if (von === bis) return null;
+  const t = feld.value;
+  const stueck = t.slice(von, bis);
+  let neu, cursorVon, cursorBis;
+  const drin = /^==[\s\S]*==$/.test(stueck);
+  const drumherum = t.slice(Math.max(0, von - 2), von) === "==" && t.slice(bis, bis + 2) === "==";
+  if (drin) {
+    neu = t.slice(0, von) + stueck.slice(2, -2) + t.slice(bis);
+    cursorVon = von; cursorBis = bis - 4;
+  } else if (drumherum) {
+    neu = t.slice(0, von - 2) + stueck + t.slice(bis + 2);
+    cursorVon = von - 2; cursorBis = bis - 2;
+  } else {
+    neu = t.slice(0, von) + "==" + stueck + "==" + t.slice(bis);
+    cursorVon = von; cursorBis = bis + 4;
+  }
+  return { neu, cursorVon, cursorBis };
+};
+
 // ---- SUCHE ----
 // Trifft der suchtext diese karte? Gross/klein egal, umlaute egal,
 // mehrere woerter muessen alle vorkommen (in beliebiger reihenfolge).
@@ -751,6 +786,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const [nurDieser, setNurDieser] = useState(null);
   const [unsicher, setUnsicher] = useState(0);   // karten, die nur auf dem schirm stehen
   const [bildAus, setBildAus] = useState({});    // bild im bogen weggeklappt?
+  const feldRefs = useRef({});                   // die schreibfelder im pult, je karte
+  const hinterRefs = useRef({});                 // die hinterlegten ansichten dazu
   const [gross, setGross] = useState(null);      // bild im bogen gross angesehen
   const [pult, setPult] = useState([]);   // bis zu zwei karten-ids, gross aufgeschlagen
   const [abSuche, setAbSuche] = useState({});   // suchtext je abschnitt (id → text)
@@ -852,6 +889,107 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     setTimeout(() => { window.print(); setTimeout(() => setNurDieser(null), 400); }, 60);
   };
 
+  // ---- RUECKGAENGIG ----
+  // Vor jedem eingriff in die anordnung wird gemerkt, wie die betroffenen
+  // abschnitte aussahen. Zuruecknehmen heisst: diesen stand wiederherstellen —
+  // plaetze zuruecksetzen, neue karten entfernen, verbrannte wieder anlegen.
+  const rueckStapel = useRef([]);
+  const [kannZurueck, setKannZurueck] = useState(null);   // was der ↶ rueckgaengig machen wuerde
+
+  const merken = (label, abschnittIds, fremde = []) => {
+    const stand = {};
+    projekt.abschnitte.forEach((a) => {
+      if (abschnittIds.includes(a.id)) stand[a.id] = a.karten.map((k) => ({ ...k }));
+    });
+    rueckStapel.current.push({ label, stand, fremde });
+    if (rueckStapel.current.length > 15) rueckStapel.current.shift();
+    setKannZurueck(label);
+  };
+
+  const rueckgaengig = () => nacheinander(async () => {
+    const letzter = rueckStapel.current.pop();
+    setKannZurueck(rueckStapel.current.length
+      ? rueckStapel.current[rueckStapel.current.length - 1].label : null);
+    if (!letzter) return;
+    sag("wird zurückgenommen …");
+    await spuelen();
+    try {
+      const sollIds = new Set();
+      Object.values(letzter.stand).forEach((l) => l.forEach((k) => sollIds.add(k.id)));
+      const fremdIds = new Set(letzter.fremde.map((f) => f.id));
+
+      for (const [abId, soll] of Object.entries(letzter.stand)) {
+        const ai = projekt.abschnitte.findIndex((a) => a.id === abId);
+        if (ai < 0) continue;
+        // was JETZT wirklich da ist
+        const jetzt = await allesHolen(`/rest/v1/karten?select=id&abschnitt_id=eq.${abId}`);
+        const jetztIds = new Set(jetzt.map((k) => k.id));
+
+        // neue karten, die es vorher nicht gab (und nicht von woanders kamen): weg
+        for (const k of jetzt) {
+          if (!sollIds.has(k.id) && !fremdIds.has(k.id)) {
+            await api("DELETE", `/rest/v1/karten?id=eq.${k.id}`);
+          }
+        }
+        // karten, die es vorher gab und jetzt fehlen (verbrannt): wieder anlegen
+        for (const k of soll) {
+          if (!jetztIds.has(k.id)) {
+            await api("POST", "/rest/v1/karten", {
+              id: k.id, abschnitt_id: abId, text: k.text || "", titel: k.titel || "",
+              bild: k.bild || null, gedreht: !!k.gedreht, pos: k.pos, zeile: k.zeile || 0,
+              gesperrt: !!k.gesperrt,
+            }, { Prefer: "resolution=merge-duplicates" });
+          }
+        }
+      }
+      // alle plaetze auf den gemerkten stand — in einem auftrag
+      const liste = [];
+      Object.entries(letzter.stand).forEach(([abId, soll]) =>
+        soll.forEach((k) => liste.push({ id: k.id, pos: k.pos, zeile: k.zeile || 0, abschnitt_id: abId })));
+      letzter.fremde.forEach((f) => liste.push(f));
+      if (liste.length) await api("POST", "/rest/v1/rpc/karten_setzen", { p_karten: liste });
+
+      // und den schirm nachziehen
+      for (const abId of Object.keys(letzter.stand)) {
+        const ai = projekt.abschnitte.findIndex((a) => a.id === abId);
+        if (ai >= 0) await abschnittFrisch(ai);
+      }
+      sag("zurückgenommen: " + letzter.label);
+    } catch (e) { sag("zurücknehmen ging nicht: " + String(e.message)); }
+  });
+
+  // ⌘⇧M im pult: die auswahl markieren
+  useEffect(() => {
+    const t = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.key.toLowerCase() !== "m") return;
+      const feld = e.target;
+      if (!feld || !feld.classList || !feld.classList.contains("bogenfeld")) return;
+      const id = Object.keys(feldRefs.current).find((k) => feldRefs.current[k] === feld);
+      const f = id && findeKarte(id);
+      if (!f || f.karte.gesperrt) return;
+      const r = markerSetzen(feld);
+      if (!r) return;
+      e.preventDefault();
+      setText(f.ai, f.ki, r.neu);
+      requestAnimationFrame(() => { feld.focus(); feld.setSelectionRange(r.cursorVon, r.cursorBis); });
+    };
+    window.addEventListener("keydown", t);
+    return () => window.removeEventListener("keydown", t);
+  });
+
+  // ⌘Z / strg+Z, wenn man nicht gerade in einem textfeld steht
+  useEffect(() => {
+    const t = (e) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== "z" || e.shiftKey) return;
+      const tag = (e.target && e.target.tagName || "").toLowerCase();
+      if (tag === "textarea" || tag === "input") return;
+      e.preventDefault();
+      rueckgaengig();
+    };
+    window.addEventListener("keydown", t);
+    return () => window.removeEventListener("keydown", t);
+  });
+
   // Was noch nicht gespeichert ist, steht hier — damit es vor jedem
   // frischholen durchgedrueckt werden kann. Sonst ueberschreibt der stand
   // aus der datenbank die letzten zwei sekunden tipperei.
@@ -942,6 +1080,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const karteMitTitel = (ai, titel) => nacheinander(async () => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt || !titel) return;
+    merken("neue karte", [a.id]);
     const zeile = a.karten.length ? Math.min(...a.karten.map((k) => k.zeile || 0)) : 0;
     const plan = einfuegePlan(a.karten, 0);
     const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel, bild: null,
@@ -967,6 +1106,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const karteVorn = (ai) => nacheinander(async () => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt) return;
+    merken("neue karte", [a.id]);
     const zeile = a.karten.length ? Math.min(...a.karten.map((k) => k.zeile || 0)) : 0;
     const ersteReihe = a.karten.filter((k) => (k.zeile || 0) === zeile);
     const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
@@ -1006,6 +1146,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const karteDazwischen = (ai, pos, zeile) => nacheinander(async () => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt) return;
+    merken("neue karte", [a.id]);
     const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
       gedreht: false, pos, zeile: zeile || 0 };
     try {
@@ -1044,6 +1185,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const karteDoppeln = (ai, k) => nacheinander(async () => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt) return;
+    merken("doppeln", [a.id]);
     const z = k.zeile || 0;
     const stelle = k.pos + 1;
     const plan = einfuegePlan(a.karten, stelle);
@@ -1080,7 +1222,9 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const id = hand.id;
     try {
       // woher kam sie? dort nachher aufruecken
-      const alt = await api("GET", `/rest/v1/karten?select=abschnitt_id,pos&id=eq.${id}`).catch(() => null);
+      const alt = await api("GET", `/rest/v1/karten?select=abschnitt_id,pos,zeile&id=eq.${id}`).catch(() => null);
+      merken("ablegen", [a.id],
+        alt && alt[0] ? [{ id, abschnitt_id: alt[0].abschnitt_id, pos: alt[0].pos, zeile: alt[0].zeile || 0 }] : []);
       await api("PATCH", `/rest/v1/karten?id=eq.${id}`, { abschnitt_id: a.id, pos, zeile });
       if (alt && alt[0]) await lueckeSchliessenDb(alt[0].abschnitt_id, alt[0].pos);
       setHand(null);
@@ -1103,6 +1247,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     // Der PLATZ verschwindet mit: alles dahinter rueckt nach vorn.
     // Nur wenn auf dem platz noch etwas anderes liegt (eine spalte),
     // bleibt er bestehen — dort fehlt ja nur eine der karten.
+    merken("verbrennen", [projekt.abschnitte[ai].id]);
     const spalte = spalteVon(projekt.abschnitte[ai].karten, k.pos);
     const platzWirdFrei = spalte.length === 1;
     aendere((p) => {
@@ -1480,6 +1625,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const mischen = (ai) => {
     const a = projekt.abschnitte[ai];
     if (a.gesperrt) return;                 // zu ist zu
+    merken("mischen", [a.id]);
     setMischt(a.id);
     setTimeout(() => {
       let neu = [];
@@ -1498,6 +1644,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   // Alle abschnitte auf einmal — jeder fuer sich, nach derselben regel.
   // Zugesperrte abschnitte und karten mit schloss bleiben, wo sie sind.
   const allesMischen = () => {
+    merken("alles mischen", projekt.abschnitte.map((a) => a.id));
     setMischt("alle");
     setTimeout(() => {
       const neu = [];
@@ -1525,6 +1672,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const nachAb = projekt.abschnitte[zielA];
     const karte = vonAb.karten.find((k) => k.id === zug.id);
     if (!karte) return;
+    merken("verschieben", [...new Set([vonAb.id, nachAb.id])]);
 
     // ---- eine GANZE SPALTE wandert ----
     // dabei zaehlt nur der platz, nicht die reihe: die spalte behaelt
@@ -1620,6 +1768,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const quelle = findeKarte(pult[pult.length - 1]);
     if (!quelle) return;
     const a = projekt.abschnitte[quelle.ai];
+    merken("neue karte", [a.id]);
     const zeile = quelle.karte.zeile || 0;
     const stelle = quelle.karte.pos + 1;
     const neu = { id: neueId(), abschnitt_id: a.id, text: "", titel: "", bild: null,
@@ -1661,6 +1810,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     const dortSpalte = spalteVon(nachAb.karten, zielPos).filter((k) => !meineIds.has(k.id));
     if (!dortSpalte.length) return;                       // da liegt nichts, worauf man legen koennte
     if (zielA === zug.ai && zielPos === karte.pos) return; // liegt schon dort
+    merken("drauflegen", [...new Set([vonAb.id, nachAb.id])]);
 
     // die unterste meiner karten kommt genau ueber die oberste von dort
     const obenDort = Math.min(...dortSpalte.map((k) => k.zeile || 0));
@@ -1711,6 +1861,12 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       ? spalteVon(vonAb.karten, karte.pos)
       : [karte];
     const meineIds = new Set(meine.map((k) => k.id));
+    {
+      const hier = projekt.abschnitte.some((x) => x.id === vonAb.id);
+      merken("dazwischen schieben",
+        hier ? [...new Set([vonAb.id, nachAb.id])] : [nachAb.id],
+        hier ? [] : meine.map((k) => ({ id: k.id, pos: k.pos, zeile: k.zeile || 0, abschnitt_id: vonAb.id })));
+    }
 
     // alles ab der stelle rueckt einen weiter — ganze spalten
     const ruecken = nachAb.karten.filter((k) => k.pos >= zielPos && !meineIds.has(k.id));
@@ -1775,6 +1931,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         </span>
         <Suchfeld suche={suche} setSuche={setSuche} imProjekt />
         <span className="fuellung" />
+        <button className="btn zurueck" onClick={rueckgaengig} disabled={!kannZurueck}
+          title={kannZurueck ? "rückgängig: " + kannZurueck + " · ⌘Z" : "nichts zurückzunehmen"}>↶</button>
         <button className="wuerfel gross" onClick={allesMischen}
           title="alle abschnitte mischen — jeder für sich, schlösser bleiben liegen">⚄</button>
         {glocke}
@@ -2146,6 +2304,18 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
               return (
                 <div className={"bogen" + (gross === id ? " grossesbild" : "")} key={id}>
                   <div className="bogenkopf">
+                    <button className="klein marker" title="markierten text hervorheben · ⌘⇧M"
+                      disabled={!!f.karte.gesperrt}
+                      onMouseDown={(e) => e.preventDefault()}   /* die auswahl im feld nicht verlieren */
+                      onClick={() => {
+                        const feld = feldRefs.current[id];
+                        const r = markerSetzen(feld);
+                        if (!r) return;
+                        setText(f.ai, f.ki, r.neu);
+                        requestAnimationFrame(() => {
+                          feld.focus(); feld.setSelectionRange(r.cursorVon, r.cursorBis);
+                        });
+                      }}>🖍</button>
                     <button className={"klein schloss" + (f.karte.gesperrt ? " zu" : "")}
                       onClick={() => schloss(f.ai, f.ki)}
                       title={f.karte.gesperrt ? "aufschließen" : "sperren"}>
@@ -2174,12 +2344,25 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                           title={gross === id ? "wieder klein" : "größer ansehen"} />
                       </div>
                     )}
-                    <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
-                      readOnly={!!f.karte.gesperrt}
-                      placeholder="…" onChange={(e) => setText(f.ai, f.ki, e.target.value)} />
+                    <div className="bogenschreib">
+                      {/* die hinterlegte ansicht traegt die farbe, das feld darueber
+                          ist durchsichtig — so bleibt tippen ganz normal */}
+                      <div className="bogenhinter" aria-hidden="true"
+                        ref={(el) => { if (el) hinterRefs.current[id] = el; }}
+                        dangerouslySetInnerHTML={{ __html: markiertAlsHtml(f.karte.text) }} />
+                      <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
+                        readOnly={!!f.karte.gesperrt}
+                        ref={(el) => { if (el) feldRefs.current[id] = el; }}
+                        onScroll={(e) => {
+                          const h = hinterRefs.current[id];
+                          if (h) { h.scrollTop = e.target.scrollTop; h.scrollLeft = e.target.scrollLeft; }
+                        }}
+                        placeholder="…" onChange={(e) => setText(f.ai, f.ki, e.target.value)} />
+                    </div>
                   </div>
                   <div className="druckkopie" aria-hidden="true">
-                    {f.karte.titel ? <b>{f.karte.titel}</b> : null}{f.karte.text}
+                    {f.karte.titel ? <b>{f.karte.titel}</b> : null}
+                    <span dangerouslySetInnerHTML={{ __html: markiertAlsHtml(f.karte.text) }} />
                   </div>
                   {(() => {
                     const links = linkeFinden(f.karte.text);
@@ -3834,6 +4017,8 @@ function Stil() {
 }
 .wuerfel:hover{background:rgba(242,179,87,.12); box-shadow:0 0 14px rgba(242,179,87,.25); transform:rotate(-12deg)}
 .wuerfel.gross{font-size:22px; padding:5px 11px; margin-right:6px}
+.btn.zurueck{font-size:17px; padding:4px 11px; line-height:1}
+.btn.zurueck:disabled{opacity:.25}
 .klein{
   font-family:inherit; font-size:12px; line-height:1; padding:5px 8px; cursor:pointer;
   color:var(--nebel); background:transparent; border:1px solid rgba(168,135,79,.22);
@@ -4196,13 +4381,35 @@ function Stil() {
   .bogenbildkasten{width:100%; height:110px; border-right:0;
     border-bottom:1px solid rgba(42,33,24,.18)}
 }
-.bogenfeld{
-  flex:1; width:100%; resize:none; border:0; background:transparent;
-  /* auf sehr breiten schirmen wuerden die zeilen sonst unlesbar lang —
-     der text bleibt darum in einer angenehmen spalte */
+/* Das schreibfeld und seine hinterlegte ansicht liegen genau uebereinander:
+   gleiche schrift, gleiche raender, gleiche umbrueche. Das feld ist
+   durchsichtig — man tippt hinein, sieht aber die ansicht darunter, die
+   die markierungen traegt. */
+.bogenschreib{position:relative; flex:1; min-height:0; display:flex}
+.bogenschreib .bogenfeld, .bogenhinter{
+  flex:1; width:100%; margin:0; border:0;
   padding:20px max(24px, calc((100% - 82ch) / 2));
-  font-family:'Courier Prime', monospace; font-size:14.5px; line-height:1.85; color:var(--tinte);
+  font-family:'Courier Prime', monospace; font-size:14.5px; line-height:1.85;
+  white-space:pre-wrap; word-wrap:break-word; overflow-wrap:break-word;
+  tab-size:4;
 }
+.bogenhinter{
+  position:absolute; inset:0; overflow:hidden; pointer-events:none;
+  color:var(--tinte); z-index:0;
+}
+.bogenhinter mark{
+  background:linear-gradient(rgba(255,196,80,.62), rgba(255,170,60,.55));
+  color:inherit; border-radius:2px; padding:1px 0;
+  box-decoration-break:clone; -webkit-box-decoration-break:clone;
+}
+.bogenhinter mark i{font-style:normal; color:rgba(42,33,24,.28); letter-spacing:-.05em}
+.bogenfeld{
+  position:relative; z-index:1; resize:none; background:transparent;
+  color:transparent; caret-color:var(--tinte);
+}
+.bogenfeld::selection{background:rgba(42,33,24,.22)}
+.bogenfeld::placeholder{color:rgba(42,33,24,.28)}
+.klein.marker{font-size:12px; padding:4px 7px}
 .bogenfeld:focus{outline:none}
 .bogenfeld::placeholder{color:rgba(42,33,24,.28)}
 /* die links aus dem text — im schreibfeld selbst kann nichts klickbar sein */
@@ -4345,11 +4552,129 @@ function Stil() {
 .druckkopie{display:none}
 
 /* am handy: karten schmaler, ziehen geht dort ohnehin nicht — dafuer ✂ und ✋ */
-@media(max-width:560px){
-  .kartenplatz, .kartenplatz.leer{width:100%; max-width:340px}
-  .spalt{width:100%; height:20px; margin:-7px 0}
-  .spalt i{width:70%; height:3px}
+/* ============================================================
+   HANDY UND KLEINE BILDSCHIRME
+   ============================================================ */
+
+/* auf touch-geraeten gibt es kein drueberfahren — alles, was sich
+   sonst erst beim hover zeigt, ist hier immer da */
+@media(hover:none){
+  .griff, .verbrennen, .kachelweg, .kachelkopie{opacity:1}
+  .griff i{background:rgba(42,33,24,.55)}
+  .spaltplus{opacity:.85}
+  .abschnittzwischen{color:var(--messing); background:rgba(224,139,60,.06)}
+  .kartenplatz.leer .siegelzeichen{opacity:1}
+  .glockenschild{display:none}
+}
+
+@media(max-width:700px){
+  /* kopf: kerzen kleiner, titel kleiner, weniger luft */
+  .kopf{padding:22px 12px 16px; gap:14px}
+  .kopf h1{font-size:28px; letter-spacing:.04em}
+  .motto{font-size:11px; margin-top:6px}
+  .kerze{width:16px}
+  .kerze .wachs{height:48px}
+  .flamme{height:22px}
+  .tisch{padding:14px 10px}
+
+  /* die funken sind auf dem handy zu viel — die haelfte reicht */
+  .funke:nth-child(even){display:none}
+
+  /* leiste: umbrechen, projektname darf die volle breite haben */
+  .leiste{gap:8px; margin-bottom:14px}
+  .namenkasten{order:-1; flex:1 1 100%; min-width:0}
+  .projektname{font-size:18px}
+  .suche{flex:1 1 100%; order:5}
+  .suchfeld{width:100%}
+  .schalter{display:none}
+  .leiste .btn{padding:6px 10px; font-size:11px}
+  .wuerfel.gross{font-size:19px; padding:4px 9px; margin:0}
+
+  /* trennstrich: zwei zeilen — titel + zahlen, dann die knoepfe */
+  .trennstrich{gap:6px; row-gap:8px}
+  .strichkasten{flex:1 1 60%}
+  .strichtitel{font-size:12px; letter-spacing:.1em}
+  .abzahl{font-size:9px}
+  .linie{display:none}
+  .absuche{flex:1 1 100%; order:9}
+  .absuchfeld, .absuche.offen .absuchfeld, .absuchfeld:focus{width:100%}
+  .trennstrich .klein{padding:6px 9px; font-size:13px}
+  .wuerfel{font-size:16px; padding:5px 9px}
+
+  /* karten: zwei passen nebeneinander, dann wischt man */
+  .kartenplatz, .kartenplatz.leer{width:164px; height:222px}
+  .kartenplatz{contain-intrinsic-size:164px 222px}
   .reihe{gap:10px}
+  .seite.text textarea{font-size:12px; line-height:1.5; padding:11px 10px 4px}
+  .fuss{padding:5px 6px; gap:3px}
+  .fuss .klein{padding:5px 6px; font-size:11px}
+  .woerter{font-size:9px}
+  .spalt i{height:222px}
+  .amfinger{width:164px; height:222px; font-size:12px}
+  .draufleiste{height:14px}
+
+  /* der ablegepunkt und die griffleiste brauchen fingerbreite */
+  .griff{height:28px}
+  .verbrennen{width:26px; height:26px; font-size:12px}
+
+  /* pult: volle hoehe fast, boegen untereinander, text lesbar */
+  .pult{max-height:78vh; padding:8px 10px 10px}
+  .pultplatz{height:78vh}
+  .pultblatt.zwei{grid-template-columns:1fr}
+  .bogen{min-height:min(60vh, 380px)}
+  .bogenschreib .bogenfeld, .bogenhinter{font-size:14px; line-height:1.7; padding:14px}
+  .bogenkopf{padding:8px 10px; gap:6px}
+  .bogentitel{font-size:13px}
+  .bogenort{display:none}
+  .bogenbildkasten{height:90px}
+  .pultkopf{gap:8px; margin-bottom:8px}
+  .pulthinweis{display:none}
+
+  /* deckblatt: kacheln volle breite, stapelkarten kleiner */
+  .kachelhuelle{width:100% !important; margin-top:0 !important}
+  .kachel{min-height:74px; padding:12px 14px; transform:none !important}
+  .kachelname{font-size:16px}
+  .knechtkarte{width:110px}
+  .kachel.neu{width:74px; min-height:74px}
+
+  /* leisten unten: schmaler, uebereinander statt nebeneinander */
+  .handleiste, .ascheleiste, .abschnitthandleiste{
+    left:8px; right:8px; transform:none; max-width:none; bottom:8px;
+    flex-wrap:wrap; gap:6px; padding:8px 10px; font-size:11px;
+  }
+  .handhinweis{display:none}
+  .warteleiste{left:8px; bottom:54px; font-size:10px; padding:6px 9px}
+  .raus{right:8px; bottom:8px; width:30px; height:30px}
+  .nachoben{right:8px; bottom:46px; width:30px; height:30px}
+
+  /* trefferliste und truhe */
+  .trefferliste{max-height:50vh}
+  .treffer{padding:8px 10px; gap:4px}
+  .truhe, .platzleiste{gap:8px}
+  .truhentext{display:none}
+  .platzriegel i{width:100px}
+
+  /* der spruch des knechts */
+  .knechtblase{padding:24px 18px 18px}
+  .knechtblase p{font-size:19px}
+}
+
+/* iphones zoomen in jedes feld hinein, dessen schrift unter 16 px liegt —
+   das reisst beim tippen die seite weg. also 16 px, dann bleibt alles stehen. */
+@media(hover:none) and (max-width:700px){
+  .seite.text textarea, .bogenfeld, .bogenhinter, .ti, .kartentitel, .bogentitel,
+  .strichtitel, .projektname{font-size:16px}
+  .seite.text textarea{line-height:1.45; padding:10px 9px 4px}
+  .kartentitel{font-size:14px}
+}
+
+/* ganz schmale telefone */
+@media(max-width:400px){
+  .kartenplatz, .kartenplatz.leer{width:150px; height:204px}
+  .kartenplatz{contain-intrinsic-size:150px 204px}
+  .spalt i{height:204px}
+  .amfinger{width:150px; height:204px}
+  .kopf h1{font-size:24px}
 }
 
 /* ---- Druck ---- */
@@ -4374,6 +4699,8 @@ function Stil() {
     font-family:'Courier Prime', monospace; font-size:11pt; line-height:1.5;
   }
   .druckkopie b{display:block; font-weight:700; margin-bottom:5px}
+  .druckkopie mark{background:#ffe08a; color:#111}
+  .druckkopie mark i{display:none}
   .druckkopie img{display:block; max-width:70mm; margin:0 0 8px; border:1px solid #ccc}
   .blatt.ohnebild .druckkopie img{display:none}
   .draufleiste{display:none !important}
