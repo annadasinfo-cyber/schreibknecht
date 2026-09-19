@@ -3546,6 +3546,12 @@ function Stil() {
     <style>{`
 @import url('https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap');
 
+/* nichts darf die seite breiter machen als das fenster — sonst laesst
+   ios seitlich schieben, und alles wabert beim tippen */
+.huette{overflow-x:hidden; max-width:100vw}
+.tisch, .leiste, .trennstrich, .auslage, .blatt, .deckblatt{max-width:100%; min-width:0}
+.wachsend{overflow:hidden}
+
 .huette{
   /* die farben sind an ihrem foto aus dem spiel gemessen:
      licht #da7b36 · mittelton #75411a · dunkel #100902 */
@@ -4592,7 +4598,9 @@ function Stil() {
 
   /* trennstrich: zwei zeilen — titel + zahlen, dann die knoepfe */
   .trennstrich{gap:6px; row-gap:8px}
-  .strichkasten{flex:1 1 60%}
+  .strichkasten{flex:1 1 100%; max-width:100%}
+  .strichkasten::after{white-space:nowrap}
+  .strichtitel{text-overflow:ellipsis}
   .strichtitel{font-size:12px; letter-spacing:.1em}
   .abzahl{font-size:9px}
   .linie{display:none}
@@ -4606,8 +4614,11 @@ function Stil() {
   .kartenplatz{contain-intrinsic-size:164px 222px}
   .reihe{gap:10px}
   .seite.text textarea{font-size:12px; line-height:1.5; padding:11px 10px 4px}
-  .fuss{padding:5px 6px; gap:3px}
-  .fuss .klein{padding:5px 6px; font-size:11px}
+  /* knoepfe fingerbreit — kleiner trifft man nicht */
+  .fuss{padding:5px 5px; gap:3px}
+  .fuss .klein{min-width:32px; min-height:30px; padding:5px 6px; font-size:13px}
+  .fuss .klein.schloss{font-size:12px}
+  .trennstrich .klein, .trennstrich .wuerfel{min-width:36px; min-height:34px}
   .woerter{font-size:9px}
   .spalt i{height:222px}
   .amfinger{width:164px; height:222px; font-size:12px}
