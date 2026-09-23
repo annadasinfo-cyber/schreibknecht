@@ -263,9 +263,14 @@ const markiertAlsHtml = (text) => {
 
 // die auswahl im feld mit == umschliessen — oder wieder freilegen,
 // wenn sie schon markiert ist
-const markerSetzen = (feld) => {
+const markerSetzen = (feld, gemerkt) => {
   if (!feld) return null;
-  const von = feld.selectionStart, bis = feld.selectionEnd;
+  // auf dem handy verliert das feld die auswahl, sobald man den knopf
+  // antippt — darum nehmen wir die zuletzt gemerkte
+  let von = feld.selectionStart, bis = feld.selectionEnd;
+  if (von === bis && gemerkt && gemerkt.bis > gemerkt.von) {
+    von = gemerkt.von; bis = gemerkt.bis;
+  }
   if (von === bis) return null;
   const t = feld.value;
   const stueck = t.slice(von, bis);
@@ -788,6 +793,27 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
   const [bildAus, setBildAus] = useState({});    // bild im bogen weggeklappt?
   const feldRefs = useRef({});                   // die schreibfelder im pult, je karte
   const hinterRefs = useRef({});                 // die hinterlegten ansichten dazu
+  const auswahlRefs = useRef({});                // zuletzt markierter bereich, je karte
+
+  const auswahlMerken = (id) => {
+    const feld = feldRefs.current[id];
+    if (!feld) return;
+    auswahlRefs.current[id] = { von: feld.selectionStart, bis: feld.selectionEnd };
+  };
+
+  // den marker setzen oder wieder wegnehmen
+  const markerUmschalten = (id, ai, ki) => {
+    const feld = feldRefs.current[id];
+    const r = markerSetzen(feld, auswahlRefs.current[id]);
+    if (!r) { sag("erst ein stück text markieren, dann den stift"); return; }
+    setText(ai, ki, r.neu);
+    auswahlRefs.current[id] = { von: r.cursorVon, bis: r.cursorBis };
+    requestAnimationFrame(() => {
+      if (!feld) return;
+      feld.focus();
+      try { feld.setSelectionRange(r.cursorVon, r.cursorBis); } catch {}
+    });
+  };
   const [gross, setGross] = useState(null);      // bild im bogen gross angesehen
   const [pult, setPult] = useState([]);   // bis zu zwei karten-ids, gross aufgeschlagen
   const [abSuche, setAbSuche] = useState({});   // suchtext je abschnitt (id → text)
@@ -967,11 +993,9 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       const id = Object.keys(feldRefs.current).find((k) => feldRefs.current[k] === feld);
       const f = id && findeKarte(id);
       if (!f || f.karte.gesperrt) return;
-      const r = markerSetzen(feld);
-      if (!r) return;
       e.preventDefault();
-      setText(f.ai, f.ki, r.neu);
-      requestAnimationFrame(() => { feld.focus(); feld.setSelectionRange(r.cursorVon, r.cursorBis); });
+      auswahlMerken(id);
+      markerUmschalten(id, f.ai, f.ki);
     };
     window.addEventListener("keydown", t);
     return () => window.removeEventListener("keydown", t);
@@ -2306,16 +2330,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                   <div className="bogenkopf">
                     <button className="klein marker" title="markierten text hervorheben · ⌘⇧M"
                       disabled={!!f.karte.gesperrt}
-                      onMouseDown={(e) => e.preventDefault()}   /* die auswahl im feld nicht verlieren */
-                      onClick={() => {
-                        const feld = feldRefs.current[id];
-                        const r = markerSetzen(feld);
-                        if (!r) return;
-                        setText(f.ai, f.ki, r.neu);
-                        requestAnimationFrame(() => {
-                          feld.focus(); feld.setSelectionRange(r.cursorVon, r.cursorBis);
-                        });
-                      }}>🖍</button>
+                      onPointerDown={(e) => e.preventDefault()}
+                      onClick={() => markerUmschalten(id, f.ai, f.ki)}>🖍 marker</button>
                     <button className={"klein schloss" + (f.karte.gesperrt ? " zu" : "")}
                       onClick={() => schloss(f.ai, f.ki)}
                       title={f.karte.gesperrt ? "aufschließen" : "sperren"}>
@@ -2353,6 +2369,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                       <textarea className="bogenfeld" value={f.karte.text} spellCheck={false}
                         readOnly={!!f.karte.gesperrt}
                         ref={(el) => { if (el) feldRefs.current[id] = el; }}
+                        onSelect={() => auswahlMerken(id)}
+                        onKeyUp={() => auswahlMerken(id)}
+                        onMouseUp={() => auswahlMerken(id)}
+                        onTouchEnd={() => setTimeout(() => auswahlMerken(id), 0)}
                         onScroll={(e) => {
                           const h = hinterRefs.current[id];
                           if (h) { h.scrollTop = e.target.scrollTop; h.scrollLeft = e.target.scrollLeft; }
@@ -4415,7 +4435,13 @@ function Stil() {
 }
 .bogenfeld::selection{background:rgba(42,33,24,.22)}
 .bogenfeld::placeholder{color:rgba(42,33,24,.28)}
-.klein.marker{font-size:12px; padding:4px 7px}
+.klein.marker{
+  font-size:11px; padding:5px 10px; letter-spacing:.06em; white-space:nowrap;
+  border-color:rgba(42,33,24,.35); color:rgba(42,33,24,.75);
+}
+.klein.marker:hover:not(:disabled){
+  background:rgba(255,196,80,.45); border-color:rgba(42,33,24,.6); color:var(--tinte);
+}
 .bogenfeld:focus{outline:none}
 .bogenfeld::placeholder{color:rgba(42,33,24,.28)}
 /* die links aus dem text — im schreibfeld selbst kann nichts klickbar sein */
@@ -4628,13 +4654,27 @@ function Stil() {
   .griff{height:28px}
   .verbrennen{width:26px; height:26px; font-size:12px}
 
-  /* pult: volle hoehe fast, boegen untereinander, text lesbar */
-  .pult{max-height:78vh; padding:8px 10px 10px}
-  .pultplatz{height:78vh}
+  /* pult: auf dem handy der GANZE schirm — die karten dahinter braucht
+     man beim schreiben nicht, man braucht platz */
+  .pult{
+    top:0; left:0; right:0; bottom:0; max-height:none; height:100dvh;
+    padding:calc(8px + env(safe-area-inset-top, 0px)) 10px
+            calc(10px + env(safe-area-inset-bottom, 0px));
+    border-top:0; border-radius:0;
+    background:linear-gradient(rgba(14,9,4,.995), rgba(8,5,2,1));
+  }
+  .pult.klein{
+    top:auto; height:auto; max-height:52px; border-top:1px solid rgba(224,139,60,.4);
+  }
+  .pultplatz{height:0}
   .pultblatt.zwei{grid-template-columns:1fr}
-  .bogen{min-height:min(60vh, 380px)}
+  .bogen{min-height:0; flex:1}
+  .pultblatt{gap:10px}
+  /* solange das pult offen ist, laeuft nichts mehr im hintergrund */
+  .pult ~ .funkenfeld, .pult ~ .spinne{display:none}
   .bogenschreib .bogenfeld, .bogenhinter{font-size:14px; line-height:1.7; padding:14px}
-  .bogenkopf{padding:8px 10px; gap:6px}
+  .pultblatt.zwei .bogen{min-height:0}
+  .bogenkopf{padding:8px 10px; gap:6px; flex-wrap:wrap}
   .bogentitel{font-size:13px}
   .bogenort{display:none}
   .bogenbildkasten{height:90px}
