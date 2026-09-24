@@ -562,7 +562,7 @@ function zoomloopStarten(root, film, hilfe) {
       c.globalAlpha = A; c.setTransform(1, 0, 0, 1, 0, 0); c.drawImage(tmpC, 0, 0);
     });
     c.globalAlpha = 1;
-    texteZeichnen(c, W, H, uu);
+    texteZeichnen(c, W, H, uu, noFade);
     if (overlay && childV) {
       var s = Math.hypot(childV.m[0], childV.m[1]);
       c.setTransform(childV.m[0], childV.m[1], -childV.m[1], childV.m[0], childV.t[0] + W / 2, childV.t[1] + H / 2);
@@ -575,10 +575,13 @@ function zoomloopStarten(root, film, hilfe) {
      Der Text eines Bildes erscheint kurz bevor das Bild ganz da ist,
      bleibt stehen und verblasst, waehrend schon ins naechste gezoomt wird. */
   var SCHRIFT = '"Grenze Gotisch", "IM Fell English SC", Georgia, serif';
+  // in Vierteln der Bildzeit: 1. Viertel weich einblenden, 2. und 3. stehen,
+  // 4. weich ausblenden
+  function weich(t) { t = Math.max(0, Math.min(1, t)); return t * t * (3 - 2 * t); }
   function textSicht(d) {
-    if (d < -0.22 || d > 0.78) return 0;
-    if (d < -0.05) return (d + 0.22) / 0.17;
-    if (d > 0.6) return (0.78 - d) / 0.18;
+    if (d < 0 || d >= 1) return 0;
+    if (d < 0.25) return weich(d / 0.25);
+    if (d > 0.75) return weich((1 - d) / 0.25);
     return 1;
   }
   function zeilen(c, text, breit) {
@@ -593,22 +596,31 @@ function zoomloopStarten(root, film, hilfe) {
     });
     return raus;
   }
-  function texteZeichnen(c, W, H, uu) {
+  function texteZeichnen(c, W, H, uu, vorschau) {
     var n = items.length; if (!n) return;
     for (var i = 0; i < n; i++) {
       var p = items[i].p; if (!p.text || !p.text.trim()) continue;
       var d = uu - i;
-      if (G.loop && n > 1) { d = ((d % n) + n) % n; if (d > n / 2) d -= n; }
-      if (!G.loop && i === n - 1 && d >= 0) d = 0;       // letztes bild: text bleibt stehen
-      var a = textSicht(d); if (a <= 0) continue;
+      if (G.loop && n > 1) d = ((d % n) + n) % n;
+      var a = textSicht(d);
+      if (!G.loop && i === n - 1 && d >= 0 && d < 1e-6) a = 1;   // letztes Bild ohne Endlos: Text bleibt stehen
+      if (vorschau && Math.abs(d) < 1e-6) a = 1;                  // beim Einstellen immer ganz zeigen
+      if (a <= 0) continue;
       var fs = Math.round(H * (p.tgr || 6) / 100);
       c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
       c.globalAlpha = a;
       c.font = "700 " + fs + "px " + SCHRIFT;
       c.textAlign = "center"; c.textBaseline = "middle"; c.lineJoin = "round";
       var z = zeilen(c, p.text.trim(), W * 0.84), lh = fs * 1.12, hoch = z.length * lh;
-      // oben/unten mit Abstand, damit Instagram nichts verdeckt
-      var mitte = p.tpos === "oben" ? H * 0.17 + hoch / 2 : p.tpos === "mitte" ? H / 2 : H * 0.74 - hoch / 2;
+      // oben/unten: im Querformat nah am Rand, hochkant mit Abstand, damit Instagram nichts verdeckt
+      var hochkant = H > W;
+      var obenRand = H * (hochkant ? 0.14 : 0.07), untenRand = H * (hochkant ? 0.78 : 0.93);
+      var mitte = p.tpos === "oben" ? obenRand + hoch / 2 : p.tpos === "mitte" ? H / 2 : untenRand - hoch / 2;
+      // beim Ein- und Ausblenden ein kleines Stueck nach oben gleiten
+      var gleit = fs * 0.22;
+      if (!(vorschau && Math.abs(d) < 1e-6)) {
+        if (d < 0.25) mitte += (1 - a) * gleit; else if (d > 0.75) mitte -= (1 - a) * gleit;
+      }
       var y0 = mitte - hoch / 2 + lh / 2;
       var verlauf = c.createLinearGradient(0, y0 - fs / 2, 0, y0 + hoch - lh + fs / 2);
       verlauf.addColorStop(0, "#fffaf0"); verlauf.addColorStop(0.55, "#f1dfc4"); verlauf.addColorStop(1, "#c9a883");
