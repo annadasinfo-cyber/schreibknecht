@@ -112,6 +112,37 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
     catch (e) { setFehler(String(e.message || e)); }
   };
 
+  // einen Film verdoppeln — die Bilder werden mitkopiert, damit beide Filme
+  // unabhaengig bleiben (loescht man in einem ein Bild, fehlt es im anderen nicht)
+  const [arbeitet, setArbeitet] = useState("");
+  const verdoppeln = async (f) => {
+    const name = prompt("Name f\u00fcr die Kopie:", f.name + " (Kopie)");
+    if (name === null) return;
+    try {
+      const alt = (f.daten && f.daten.items) || [];
+      setArbeitet("wird verdoppelt \u2026");
+      const r = await api("POST", "/rest/v1/studio_filme",
+        { name: name.trim() || f.name + " (Kopie)", daten: {} }, { Prefer: "return=representation" });
+      const neu = r && r[0]; if (!neu) throw new Error("anlegen ging nicht");
+      const s = await frisch();
+      const items = [];
+      for (let i = 0; i < alt.length; i++) {
+        const it = alt[i];
+        setArbeitet(`bilder werden kopiert: ${i + 1} von ${alt.length} \u2026`);
+        const ziel = `${s.user.id}/${neu.id}/${it.id}.jpg`;
+        const k = await fetch(`${URL_DB}/storage/v1/object/copy`, {
+          method: "POST", headers: kopf(s, "application/json"),
+          body: JSON.stringify({ bucketId: EIMER, sourceKey: it.pfad, destinationKey: ziel }),
+        });
+        items.push({ ...it, p: { ...(it.p || {}) }, pfad: k.ok ? ziel : it.pfad });
+      }
+      const daten = { G: { ...((f.daten && f.daten.G) || {}) }, items };
+      await api("PATCH", `/rest/v1/studio_filme?id=eq.${neu.id}`, { daten });
+      setFilme((l) => [{ ...neu, daten }, ...l]);
+      setArbeitet("");
+    } catch (e) { setArbeitet(""); setFehler(String(e.message || e)); }
+  };
+
   const filmWeg = async (f) => {
     const n = ((f.daten && f.daten.items) || []).length;
     if (!confirm(`„${f.name}" mit ${n} ${n === 1 ? "bild" : "bildern"} wirklich wegwerfen?`)) return;
@@ -235,6 +266,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
         {ansicht === "liste" && (
           <FilmListe filme={filme} laedt={laedt} fehler={fehler} setFehler={setFehler}
             neuerFilm={neuerFilm} umbenennen={umbenennen} filmWeg={filmWeg}
+            verdoppeln={verdoppeln} arbeitet={arbeitet}
             oeffnen={(id) => { setFilmId(id); setAnsicht("film"); }} />
         )}
 
@@ -262,7 +294,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
 // ============================================================
 // FILMLISTE — kacheln wie auf dem deckblatt, dazwischen drei bilder
 // ============================================================
-function FilmListe({ filme, laedt, fehler, setFehler, neuerFilm, umbenennen, filmWeg, oeffnen }) {
+function FilmListe({ filme, laedt, fehler, setFehler, neuerFilm, umbenennen, filmWeg, oeffnen, verdoppeln, arbeitet }) {
   // bei jedem oeffnen drei neue bilder ziehen
   const [gezogen] = useState(() => {
     const stapel = [...STUDIO_STAPEL];
@@ -292,6 +324,7 @@ function FilmListe({ filme, laedt, fehler, setFehler, neuerFilm, umbenennen, fil
   return (
     <div className="st-liste">
       {fehler && <p className="st-fehler" onClick={() => setFehler("")}>{fehler}</p>}
+      {arbeitet && <p className="st-leer">{arbeitet}</p>}
       {laedt ? <p className="st-leer">wird geholt …</p> : (
         <div className="st-kacheln">
           <button className="st-kachel neu" onClick={neuerFilm} title="neuer film">+</button>
@@ -311,6 +344,7 @@ function FilmListe({ filme, laedt, fehler, setFehler, neuerFilm, umbenennen, fil
                         { day: "2-digit", month: "2-digit", year: "numeric" }) : ""}</span>
                     </span>
                   </button>
+                  <button className="st-klein ganzlinks" title="verdoppeln" onClick={() => verdoppeln(f)}>⧉</button>
                   <button className="st-klein links" title="umbenennen" onClick={() => umbenennen(f)}>✎</button>
                   <button className="st-klein" title="wegwerfen" onClick={() => filmWeg(f)}>✕</button>
                 </div>
@@ -918,13 +952,26 @@ function zoomloopStarten(root, film, hilfe) {
     G.W = nW; G.H = nH;
     fitCanvas(); smallCache.clear(); bigCache.clear(); thumbs(); syncPanel(); draw(); save();
   };
+  /* Beim Formatwechsel springt der Ausschnitt jedes Bildes so, dass das
+     eingesetzte naechste Bild (der Uebergang) moeglichst mittig liegt;
+     geht das nicht, bleibt er am Bildrand stehen. */
   function reframe(arA, arB) {
     if (!items.length || Math.abs(arA - arB) < 1e-6) return;
     var n = items.length;
-    items.forEach(function (it, i) {
-      if (!G.loop && i === 0) return;
-      var host = items[(i - 1 + n) % n], pan = host.p.pan || 0;
-      keepOnMotif(host, it, arA, pan, arB, pan);
+    items.forEach(function (host, i) {
+      var hatKind = G.loop ? n > 1 : i < n - 1;
+      var altPan = host.p.pan || 0, neuPan = altPan;
+      if (hatKind) {
+        var kind = items[(i + 1) % n], el = host.el, sw = el.naturalWidth, sh = el.naturalHeight;
+        var A = cropRect(el, arA, altPan);
+        var x = A[0] + (0.5 + kind.p.cx) * A[2], y = A[1] + (0.5 + kind.p.cy) * A[3];
+        var B0 = cropRect(el, arB, 0), freiX = sw - B0[2], freiY = sh - B0[3];
+        if (freiX >= 1) neuPan = Math.max(-1, Math.min(1, (x - sw / 2) / (freiX / 2)));
+        else if (freiY >= 1) neuPan = Math.max(-1, Math.min(1, (y - sh / 2) / (freiY / 2)));
+        else neuPan = 0;
+        keepOnMotif(host, kind, arA, altPan, arB, neuPan);
+      }
+      host.p.pan = neuPan;
     });
   }
   function fitCanvas() { var k = 1280 / Math.max(G.W, G.H); cv.width = Math.round(G.W * k); cv.height = Math.round(G.H * k); }
@@ -2603,6 +2650,7 @@ function StudioStil() {
 .st-klein{position:absolute; top:-7px; right:-7px; width:22px; height:22px; border-radius:50%;
   border:1px solid rgba(168,135,79,.35); background:#14110c; color:var(--st-dim); font-size:10px; cursor:pointer; opacity:0; transition:.15s}
 .st-klein.links{right:20px}
+.st-klein.ganzlinks{right:47px}
 .st-kachelhuelle:hover .st-klein{opacity:1}
 @media (hover:none){ .st-klein{opacity:1} }
 .st-leer{color:var(--st-dim); font-style:italic; margin-top:18px}
