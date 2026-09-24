@@ -596,22 +596,30 @@ function zoomloopStarten(root, film, hilfe) {
     });
     return raus;
   }
+  var txtC = document.createElement("canvas"), txtX = txtC.getContext("2d");
   function texteZeichnen(c, W, H, uu, vorschau) {
     var n = items.length; if (!n) return;
     for (var i = 0; i < n; i++) {
       var p = items[i].p; if (!p.text || !p.text.trim()) continue;
       var d = uu - i;
       if (G.loop && n > 1) d = ((d % n) + n) % n;
-      var a = textSicht(d);
+      // der Text beginnt erst 5 Sekunden nach dem Bild (bei sehr kurzen Bildern entsprechend frueher)
+      // und endet mit dem Bild; diese Spanne wird geviertelt
+      var start = Math.min(5, G.sec * 0.4) / G.sec;
+      var q = d < start ? -1 : (d - start) / (1 - start);
+      var a = textSicht(q);
       if (!G.loop && i === n - 1 && d >= 0 && d < 1e-6) a = 1;   // letztes Bild ohne Endlos: Text bleibt stehen
       if (vorschau && Math.abs(d) < 1e-6) a = 1;                  // beim Einstellen immer ganz zeigen
       if (a <= 0) continue;
       var fs = Math.round(H * (p.tgr || 6) / 100);
-      c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
-      c.globalAlpha = a;
-      c.font = "700 " + fs + "px " + SCHRIFT;
-      c.textAlign = "center"; c.textBaseline = "middle"; c.lineJoin = "round";
-      var z = zeilen(c, p.text.trim(), W * 0.84), lh = fs * 1.12, hoch = z.length * lh;
+      // erst ganz deckend auf eine eigene Flaeche malen, dann als Ganzes
+      // durchscheinend auflegen — so ueberlagern sich Glut und Schrift nicht falsch
+      if (txtC.width !== W || txtC.height !== H) { txtC.width = W; txtC.height = H; }
+      var t = txtX;
+      t.setTransform(1, 0, 0, 1, 0, 0); t.globalAlpha = 1; t.clearRect(0, 0, W, H);
+      t.font = "700 " + fs + "px " + SCHRIFT;
+      t.textAlign = "center"; t.textBaseline = "middle"; t.lineJoin = "round";
+      var z = zeilen(t, p.text.trim(), W * 0.84), lh = fs * 1.12, hoch = z.length * lh;
       // oben/unten: im Querformat nah am Rand, hochkant mit Abstand, damit Instagram nichts verdeckt
       var hochkant = H > W;
       var obenRand = H * (hochkant ? 0.14 : 0.07), untenRand = H * (hochkant ? 0.78 : 0.93);
@@ -619,19 +627,22 @@ function zoomloopStarten(root, film, hilfe) {
       // beim Ein- und Ausblenden ein kleines Stueck nach oben gleiten
       var gleit = fs * 0.22;
       if (!(vorschau && Math.abs(d) < 1e-6)) {
-        if (d < 0.25) mitte += (1 - a) * gleit; else if (d > 0.75) mitte -= (1 - a) * gleit;
+        if (q < 0.25) mitte += (1 - a) * gleit; else if (q > 0.75) mitte -= (1 - a) * gleit;
       }
       var y0 = mitte - hoch / 2 + lh / 2;
-      var verlauf = c.createLinearGradient(0, y0 - fs / 2, 0, y0 + hoch - lh + fs / 2);
-      verlauf.addColorStop(0, "#fffaf0"); verlauf.addColorStop(0.55, "#f1dfc4"); verlauf.addColorStop(1, "#c9a883");
+      // 1. Durchgang: dunkle Kontur mit roter Glut, alle Zeilen
+      t.shadowColor = "rgba(150,8,8,.95)"; t.shadowBlur = fs * 0.45;
+      t.lineWidth = Math.max(2, fs * 0.13); t.strokeStyle = "rgba(22,4,4,.96)";
+      z.forEach(function (zeile, k) { t.strokeText(zeile, W / 2, y0 + k * lh); });
+      // 2. Durchgang: die helle Schrift obendrauf, jede Zeile mit eigenem Verlauf
+      t.shadowBlur = 0; t.shadowColor = "rgba(0,0,0,0)";
       z.forEach(function (zeile, k) {
-        var y = y0 + k * lh;
-        c.shadowColor = "rgba(150,8,8,.95)"; c.shadowBlur = fs * 0.45;
-        c.lineWidth = Math.max(2, fs * 0.13); c.strokeStyle = "rgba(22,4,4,.96)";
-        c.strokeText(zeile, W / 2, y);
-        c.shadowBlur = 0; c.shadowColor = "transparent";
-        c.fillStyle = verlauf; c.fillText(zeile, W / 2, y);
+        var y = y0 + k * lh, v = t.createLinearGradient(0, y - fs / 2, 0, y + fs / 2);
+        v.addColorStop(0, "#fffaf0"); v.addColorStop(0.55, "#f1dfc4"); v.addColorStop(1, "#c9a883");
+        t.fillStyle = v; t.fillText(zeile, W / 2, y);
       });
+      c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = a;
+      c.drawImage(txtC, 0, 0);
       c.restore();
     }
   }
