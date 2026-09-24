@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import Studio from "./studio.jsx";
 
 // ============================================================
 // SCHREIBKNECHT · "write or die!" dr. wicked
@@ -2469,7 +2470,7 @@ function Suchfeld({ suche, setSuche, imProjekt }) {
 }
 
 // ---------- Deckblatt ----------
-function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert,
+function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert, studio,
                     zurueckspielen, spieltZurueck, dateiFeld, platz, zaehlt, nachsehen, eindampfen, dampft, allesAufraeumen, raeumtAlles,
                     suche, setSuche, fern, suchtFern, springe, wohin }) {
   // Bei jedem Oeffnen werden drei Karten vom Stapel gezogen und zwischen
@@ -2524,6 +2525,12 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
         </div>
       )}
       <div className="kachelfeld">
+        {/* die tuer ins studio — immer an erster stelle */}
+        <button className="kachel tuer" onClick={studio} title="ins studio: bilder, zoom, ton">
+          <span className="tuerbogen">🚪</span>
+          <span className="kachelname">studio</span>
+          <span className="kachelzeile"><span>bild · zoom · ton</span></span>
+        </button>
         {projekte.length === 0 && gezogen.map((k) =>
           <img key={k.id} className="knechtkarte" src={k.bild} alt=""
             style={{ transform: `rotate(${k.kippt}deg)` }} />)}
@@ -2663,6 +2670,7 @@ export default function Schreibknecht() {
   const [tage, setTage] = useState([]);            // das tagewerk aller projekte
   const [warten, setWarten] = useState(() => warteLesen().length);   // noch nicht abgeschickt
   const [laeutet, setLaeutet] = useState(false);   // die glocke schwingt gerade
+  const [studio, setStudio] = useState(false);     // hinter der tuer: das studio
   const zuletztUhr = useRef(null);
 
   // die kartenbilder gleich beim start vorbereiten, nicht erst
@@ -3507,7 +3515,7 @@ fortfahren?`
                       </span>
                     </div>
                   } />
-              : <Deckblatt projekte={projekte} anlegen={projektAnlegen}
+              : <Deckblatt projekte={projekte} anlegen={projektAnlegen} studio={() => setStudio(true)}
                   oeffnen={setOffen} weg={projektWeg} kopieren={projektKopieren}
                   sicherung={sicherung} sichert={sichert}
                   zurueckspielen={zurueckspielen} spieltZurueck={spieltZurueck}
@@ -3529,7 +3537,7 @@ fortfahren?`
       )}
 
       {/* wenn beide kerzen aus sind, meldet sich der knecht */}
-      {spruch && (
+      {spruch && !studio && (
         <div className="knechtsagt" onClick={() => setSpruch(null)}>
           <div className="knechtblase" onClick={(e) => e.stopPropagation()}>
             <p>{spruch}</p>
@@ -3556,6 +3564,10 @@ fortfahren?`
 
       {sitzung && <button className="raus" onClick={abmelden} title="abmelden">⏻</button>}
       <NachOben />
+      {sitzung && studio && (
+        <Studio api={api} zugang={() => sitzungRef.current} URL_DB={URL_DB} KEY_DB={KEY_DB}
+          zurueck={() => setStudio(false)} />
+      )}
     </div>
   );
 }
@@ -3859,6 +3871,14 @@ function Stil() {
   border-style:dashed; background:transparent;
 }
 .kachel.neu .plus{font-size:26px; color:var(--messing)}
+/* die tuer ins studio: oben rund wie ein torbogen, dunkles holz */
+.kachel.tuer{
+  width:130px; min-height:96px; align-items:center; justify-content:center; text-align:center; gap:4px;
+  border-radius:65px 65px 4px 4px; border-color:rgba(224,139,60,.5);
+  background:linear-gradient(180deg, rgba(117,65,26,.55), rgba(38,20,8,.75));
+}
+.kachel.tuer .kachelzeile{justify-content:center}
+.tuerbogen{font-size:24px; line-height:1; filter:sepia(.45) saturate(.8)}
 .leerwort{color:var(--nebel); font-style:italic; margin-top:22px}
 .truhe{
   display:flex; align-items:center; gap:12px; flex-wrap:wrap;
