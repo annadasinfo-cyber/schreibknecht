@@ -3873,11 +3873,11 @@ function Stil() {
 .kachel.neu .plus{font-size:26px; color:var(--messing)}
 /* die tuer ins studio: oben rund wie ein torbogen, dunkles holz */
 .kachel.tuer{
-  width:130px; min-height:96px; align-items:center; justify-content:center; text-align:center; gap:4px;
+  width:150px; min-height:96px; padding:16px 10px; align-items:center; justify-content:center; text-align:center; gap:4px;
   border-radius:65px 65px 4px 4px; border-color:rgba(224,139,60,.5);
   background:linear-gradient(180deg, rgba(117,65,26,.55), rgba(38,20,8,.75));
 }
-.kachel.tuer .kachelzeile{justify-content:center}
+.kachel.tuer .kachelzeile{justify-content:center; white-space:nowrap; font-size:10px; letter-spacing:.04em}
 .tuerbogen{font-size:24px; line-height:1; filter:sepia(.45) saturate(.8)}
 .leerwort{color:var(--nebel); font-style:italic; margin-top:22px}
 .truhe{
