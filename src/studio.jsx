@@ -687,7 +687,10 @@ function zoomloopStarten(root, film, hilfe) {
   // die links weiterlaufen. Er kommt von rechts herein, die Namen rollen
   // von unten ein; am Ende blenden Bild und Abspann gemeinsam aus.
   function abspannUeber(c, W, H, t, dauer) {
-    var titel = (ab.titel || "").trim(), namen = (ab.namen || "").split(/\n/).map(function (z) { return z.trim(); }).filter(Boolean);
+    // Leerzeilen bleiben erhalten (als Abstand), nur am Anfang und Ende weg
+    var titel = (ab.titel || "").trim(), namen = (ab.namen || "").split(/\n/).map(function (z) { return z.trim(); });
+    while (namen.length && !namen[0]) namen.shift();
+    while (namen.length && !namen[namen.length - 1]) namen.pop();
     if (!titel && !namen.length) return;
     var hochkant = H > W, pw = W * (hochkant ? 0.82 : 0.42);
     var e = weich(t / 1.2), x0 = W - pw + (1 - e) * pw * 0.3;
@@ -701,19 +704,33 @@ function zoomloopStarten(root, film, hilfe) {
     c.restore();
 
     var spalte = W - fest, cx = fest + spalte / 2, breit = spalte * 0.86;
-    var basis = Math.min(W, H), fsT = Math.round(basis * 0.068), fsN = Math.round(basis * 0.044);
+    var basis = Math.min(W, H);
     if (txtC.width !== W || txtC.height !== H) { txtC.width = W; txtC.height = H; }
     var x = txtX;
     x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.clearRect(0, 0, W, H);
     x.textAlign = "center"; x.textBaseline = "middle"; x.lineJoin = "round";
-    var reihe = [];   // [text, groesse, zeilenhoehe, istTitel]
-    if (titel) { x.font = "700 " + fsT + "px " + SCHRIFT; zeilen(x, titel, breit).forEach(function (z) { reihe.push([z, fsT, fsT * 1.15, true]); }); }
-    if (titel && namen.length) reihe.push(["", fsN, fsN * 0.9, false]);
-    x.font = "700 " + fsN + "px " + SCHRIFT;
-    namen.forEach(function (n) { zeilen(x, n, breit).forEach(function (z) { reihe.push([z, fsN, fsN * 1.5, false]); }); });
-    var hoch = 0; reihe.forEach(function (r) { hoch += r[2]; });
+    // Zeilen fuer eine Schriftgroesse zusammenstellen: [text, groesse, zeilenhoehe, istTitel]
+    function aufbauen(f) {
+      var fsT = Math.round(basis * 0.068 * f), fsN = Math.round(basis * 0.044 * f), r = [];
+      if (titel) { x.font = "700 " + fsT + "px " + SCHRIFT; zeilen(x, titel, breit).forEach(function (z) { r.push([z, fsT, fsT * 1.15, true]); }); }
+      if (titel && namen.length) r.push(["", fsN, fsN * 0.9, false]);
+      x.font = "700 " + fsN + "px " + SCHRIFT;
+      namen.forEach(function (n) {
+        if (!n) { r.push(["", fsN, fsN * 1.1, false]); return; }   // Leerzeile = Abstand
+        zeilen(x, n, breit).forEach(function (z) { r.push([z, fsN, fsN * 1.5, false]); });
+      });
+      var h = 0; r.forEach(function (q) { h += q[2]; });
+      return { reihe: r, hoch: h };
+    }
+    // Passt alles auf ein Blatt? Dann so gross wie moeglich und stehen lassen.
+    // Nur wenn es auch verkleinert nicht passt, rollt der Abspann durch.
+    var platz = H * 0.88, lage = null;
+    for (var f = 1; f >= 0.6; f -= 0.05) { var l = aufbauen(f); if (l.hoch <= platz) { lage = l; break; } }
+    var steht = !!lage;
+    if (!lage) lage = aufbauen(0.85);
+    var reihe = lage.reihe, hoch = lage.hoch;
     var oben;
-    if (hoch <= H * 0.82) {
+    if (steht) {
       var rein = Math.min(dauer * 0.45, 7), q = Math.min(1, t / rein), ea = 1 - Math.pow(1 - q, 3);
       oben = H + (((H - hoch) / 2) - H) * ea;
     } else {
