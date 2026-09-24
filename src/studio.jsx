@@ -1758,8 +1758,20 @@ function aufnahmeStarten(root, hilfe) {
       status("Fertig \u2013 h\u00f6r rein. L\u00e4nge " + fmt(raw.length / sr));
     } catch (e) { status("Fehler beim Veredeln: " + (e.message || e)); }
   }
+  // manche Mikros liefern eine kleine Gleichspannung mit: die ganze Welle
+  // sitzt dann etwas neben der Mitte. Das hier zieht sie sanft auf null.
+  function gleichAus(x) {
+    var R = 1 - 2 * Math.PI * 5 / sr, vx = 0, vy = 0, y = new Float32Array(x.length);
+    // mit dem Mittel der ersten 50 ms anfangen, damit es am Anfang nicht knackt
+    var n0 = Math.min(x.length, Math.round(0.05 * sr)), m = 0;
+    for (var i = 0; i < n0; i++) m += x[i];
+    vx = n0 ? m / n0 : 0;
+    for (var j = 0; j < x.length; j++) { var v = x[j]; vy = v - vx + R * vy; vx = v; y[j] = vy; }
+    return y;
+  }
   async function showTake() {
     $("take").hidden = false; markPreset();
+    raw = gleichAus(raw); cache = {};
     schnittNeu();
     await renderPreset(S.preset);
   }
