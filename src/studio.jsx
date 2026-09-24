@@ -897,21 +897,15 @@ function zoomloopStarten(root, film, hilfe) {
     if (exporting) { cancelExport = true; return; }
     if (ton) { exportMitTon(knopf); return; }
     var S = segs(); if (!S) { msg("Mindestens zwei Bilder."); return; }
-    if (!("VideoEncoder" in window)) { msg("Der Export geht in Chrome am Rechner."); return; }
+    if (!("VideoEncoder" in window)) { msg("Dein Browser kann keine Videos bauen \u2013 bitte Safari aktualisieren (ab Version 26)."); return; }
     try { await mp4Baustein(); } catch (e) { msg(e.message); return; }
     await schriftBereit();
     var W = G.W, H = G.H, fps = G.fps, total = Math.round(S * G.sec * fps), err = null;
     var rate = W * H > 1920 * 1080 ? 45e6 : 16e6;
-    var handle = null, stream = null, target;
-    if (window.showSaveFilePicker) {
-      try {
-        handle = await window.showSaveFilePicker({ suggestedName: (film.name || "zoomloop") + ".mp4", types: [{ description: "Video", accept: { "video/mp4": [".mp4"] } }] });
-        stream = await handle.createWritable();
-      } catch (e) {
-        if (e && e.name === "AbortError") { msg("Abgebrochen."); return; }
-        handle = null; stream = null;
-      }
-    }
+    var ziel = null, stream = null, target;
+    try { ziel = await exportZiel((film.name || "zoomloop") + ".mp4"); }
+    catch (e) { if (e && e.name === "AbortError") { msg("Abgebrochen."); return; } ziel = null; }
+    if (ziel) stream = ziel.stream;
     stop(); exporting = true; cancelExport = false; knopf.textContent = "Abbrechen";
     $("prog").style.display = "block"; var bar = $("prog").firstElementChild; bar.style.width = "0";
     msg("Wird vorbereitet \u2026 (ca. " + Math.round(total / fps * rate / 8 / 1e6) + " MB, " + total + " Bilder)");
@@ -950,14 +944,16 @@ function zoomloopStarten(root, film, hilfe) {
       if (err) throw err;
       if (!cancelExport && !dead) {
         await enc.flush(); muxer.finalize();
-        if (stream) { await writes; await stream.close(); stream = null; }
+        var wo;
+        if (stream) { await writes; wo = await ziel.fertig(); stream = null; }
         else {
           var a = document.createElement("a");
           a.href = URL.createObjectURL(new Blob([target.buffer], { type: "video/mp4" }));
           a.download = (film.name || "zoomloop") + ".mp4"; document.body.appendChild(a); a.click(); a.remove();
+          wo = "liegt im Download-Ordner";
         }
         done = true;
-        msg(handle ? "Fertig: " + handle.name + " ist gespeichert." : "Fertig \u2013 liegt im Download-Ordner.");
+        msg("Fertig \u2013 " + wo + ".");
       } else {
         try { enc.close(); } catch (e) {}
         msg("Abgebrochen.");
@@ -965,7 +961,7 @@ function zoomloopStarten(root, film, hilfe) {
     } catch (e) {
       msg("Fehler: " + (e.message || e));
     }
-    if (stream) { try { await stream.close(); } catch (e) {} }
+    if (stream && ziel) { await ziel.weg(); }
     bigCache.clear(); exporting = false; knopf.textContent = "MP4 exportieren"; $("prog").style.display = "none"; draw();
     if (done && !dead) alert($("msg").textContent);
   };
@@ -1052,16 +1048,15 @@ function zoomloopStarten(root, film, hilfe) {
   /* ---------- Export mit Ton: einen Durchlauf rechnen, dann aneinanderhaengen ---------- */
   async function exportMitTon(knopf) {
     if (items.length < 2) { msg("Mindestens zwei Bilder."); return; }
-    if (!("VideoEncoder" in window) || !("AudioEncoder" in window)) { msg("Der Export mit Ton geht in Chrome am Rechner."); return; }
-    if (!window.showSaveFilePicker) { msg("Der Export mit Ton braucht Chrome am Rechner (zum Speichern gro\u00dfer Dateien)."); return; }
+    if (!("VideoEncoder" in window) || !("AudioEncoder" in window)) { msg("Dein Browser kann keinen Film mit Ton bauen \u2013 bitte Safari aktualisieren (ab Version 26)."); return; }
     try { await mp4Baustein(); } catch (e) { msg(e.message); return; }
     await schriftBereit();
 
-    var handle, stream;
-    try {
-      handle = await window.showSaveFilePicker({ suggestedName: (film.name || "zoomloop") + ".mp4", types: [{ description: "Video", accept: { "video/mp4": [".mp4"] } }] });
-      stream = await handle.createWritable();
-    } catch (e) { msg(e && e.name === "AbortError" ? "Abgebrochen." : "Speichern ging nicht: " + (e.message || e)); return; }
+    var ziel, stream;
+    try { ziel = await exportZiel((film.name || "zoomloop") + ".mp4"); }
+    catch (e) { msg(e && e.name === "AbortError" ? "Abgebrochen." : "Speichern ging nicht: " + (e.message || e)); return; }
+    if (!ziel) { msg("Dein Browser kann so gro\u00dfe Dateien nicht schreiben \u2013 bitte Safari aktualisieren (ab Version 26)."); return; }
+    stream = ziel.stream;
 
     var altLoop = G.loop; G.loop = true;
     stop(); exporting = true; cancelExport = false; knopf.textContent = "Abbrechen";
@@ -1244,16 +1239,16 @@ function zoomloopStarten(root, film, hilfe) {
         await tonBis(aFrames);
         await enc.flush(); await aenc.flush();
         muxer.finalize();
-        await writes; await stream.close(); stream = null;
+        await writes; var wo = await ziel.fertig(); stream = null;
         done = true;
-        msg("Fertig: " + handle.name + " (" + dauerText(T) + ") ist gespeichert.");
+        msg("Fertig (" + dauerText(T) + ") \u2013 " + wo + ".");
       } else msg("Abgebrochen.");
     } catch (e) {
       msg("Fehler: " + (e.message || e));
     }
     try { if (enc && enc.state !== "closed") enc.close(); } catch (e) {}
     try { if (aenc && aenc.state !== "closed") aenc.close(); } catch (e) {}
-    if (stream) { try { await stream.close(); } catch (e) {} }
+    if (stream) { await ziel.weg(); }
     try { if (lager) { var d = await navigator.storage.getDirectory(); await d.removeEntry(lagerName); } } catch (e) {}
     G.loop = altLoop;
     bigCache.clear(); exporting = false; knopf.textContent = ton ? "MP4 mit Ton exportieren" : "MP4 exportieren";
@@ -1431,6 +1426,43 @@ function auspacken(teile) {
   teile.forEach(function (t) { var k = t.faktor / 32767; for (var i = 0; i < t.daten.length; i++) x[o + i] = t.daten[i] * k; o += t.daten.length; });
   return x;
 }
+// Wohin die fertige Datei geschrieben wird:
+// Chrome fragt nach dem Speicherort; Safari (ab 26) schreibt erst in den
+// eigenen Speicher des Browsers und laedt die Datei dann herunter.
+// So passt auch ein Film von einer Stunde, ohne den Arbeitsspeicher zu sprengen.
+async function exportZiel(name) {
+  if (window.showSaveFilePicker) {
+    const handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: "Video", accept: { "video/mp4": [".mp4"] } }] });
+    const stream = await handle.createWritable();
+    return { stream: stream, fertig: async () => { await stream.close(); return handle.name + " ist gespeichert"; }, weg: async () => { try { await stream.abort(); } catch (e) {} } };
+  }
+  if (navigator.storage && navigator.storage.getDirectory) {
+    try {
+      const dir = await navigator.storage.getDirectory();
+      // alte Reste von frueheren Exporten wegraeumen
+      try { for await (const [n] of dir.entries()) if (/^export-/.test(n)) await dir.removeEntry(n); } catch (e) {}
+      const intern = "export-" + Date.now() + ".mp4";
+      const fh = await dir.getFileHandle(intern, { create: true });
+      if (fh.createWritable) {
+        const stream = await fh.createWritable();
+        return {
+          stream: stream,
+          fertig: async () => {
+            await stream.close();
+            const f = await fh.getFile();
+            const a = document.createElement("a");
+            a.href = URL.createObjectURL(f); a.download = name;
+            document.body.appendChild(a); a.click(); a.remove();
+            return name + " liegt im Download-Ordner";
+          },
+          weg: async () => { try { await stream.abort(); } catch (e) {} try { await dir.removeEntry(intern); } catch (e) {} },
+        };
+      }
+    } catch (e) {}
+  }
+  return null;   // dann bleibt nur der Arbeitsspeicher
+}
+
 function mp4BausteinLaden() {
   if (window.Mp4Muxer) return Promise.resolve();
   return new Promise(function (res, rej) {
@@ -2187,7 +2219,7 @@ function aufnahmeStarten(root, hilfe) {
     return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + "__" + titel + ".m4a";
   }
   async function alsM4a(x, rate) {
-    if (!("AudioEncoder" in window)) throw new Error("In die App speichern geht in diesem Browser nicht \u2013 am Rechner in Chrome klappt es, sonst Teilen/AirDrop.");
+    if (!("AudioEncoder" in window)) throw new Error("In die App speichern geht in diesem Browser nicht \u2013 bitte Safari aktualisieren (ab Version 26), sonst Teilen/AirDrop.");
     await mp4BausteinLaden();
     var cfg = { codec: "mp4a.40.2", sampleRate: rate, numberOfChannels: 1, bitrate: 96000 };
     if (!(await AudioEncoder.isConfigSupported(cfg)).supported) throw new Error("Dieser Browser kann den Ton nicht verkleinern \u2013 nimm Teilen/AirDrop.");
