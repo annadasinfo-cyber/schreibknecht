@@ -298,6 +298,13 @@ const ZL_HTML = `
     <div id="zl_cpair" class="zl-pair">&ndash;</div>
     <canvas id="zl_cprev" class="zl-cprev" width="246" height="60"></canvas>
     <label>Verschieben <b id="zl_v_pan"></b></label><input type="range" id="zl_pan" min="-100" max="100" step="1" value="0">
+    <h2>Text</h2>
+    <div id="zl_tpair" class="zl-pair">&ndash;</div>
+    <textarea id="zl_txt" class="zl-txt" rows="3" placeholder="Text, der zu diesem Bild erscheint"></textarea>
+    <div class="zl-row">
+      <select id="zl_tpos" style="flex:1"><option value="oben">oben</option><option value="mitte">Mitte</option><option value="unten">unten</option></select>
+    </div>
+    <label>Schriftgr&ouml;&szlig;e <b id="zl_v_tgr"></b></label><input type="range" id="zl_tgr" min="3" max="11" step="0.5">
     <h2>Einsetzen</h2>
     <div id="zl_pair" class="zl-pair">&ndash;</div>
     <label>Gr&ouml;&szlig;e <b id="zl_v_s"></b></label><input type="range" id="zl_s" min="8" max="70" step="0.5">
@@ -340,7 +347,7 @@ const ZL_HTML = `
 
 function zoomloopStarten(root, film, hilfe) {
   var $ = function (id) { return root.querySelector("#zl_" + id); };
-  var DEF = { cx: 0, cy: 0, s: 0.08, r: 0, feather: 18, shape: "oval", br: 100, co: 100, sa: 100, hu: 0, pan: 0 };
+  var DEF = { cx: 0, cy: 0, s: 0.08, r: 0, feather: 18, shape: "oval", br: 100, co: 100, sa: 100, hu: 0, pan: 0, text: "", tpos: "unten", tgr: 6 };
   var daten = film.daten || {};
   var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true }, daten.G || {});
   var items = [];
@@ -518,6 +525,7 @@ function zoomloopStarten(root, film, hilfe) {
       c.globalAlpha = A; c.setTransform(1, 0, 0, 1, 0, 0); c.drawImage(tmpC, 0, 0);
     });
     c.globalAlpha = 1;
+    texteZeichnen(c, W, H, uu);
     if (overlay && childV) {
       var s = Math.hypot(childV.m[0], childV.m[1]);
       c.setTransform(childV.m[0], childV.m[1], -childV.m[1], childV.m[0], childV.t[0] + W / 2, childV.t[1] + H / 2);
@@ -526,6 +534,64 @@ function zoomloopStarten(root, film, hilfe) {
     }
     c.setTransform(1, 0, 0, 1, 0, 0);
   }
+  /* ---------- Texteinblendungen ----------
+     Der Text eines Bildes erscheint kurz bevor das Bild ganz da ist,
+     bleibt stehen und verblasst, waehrend schon ins naechste gezoomt wird. */
+  var SCHRIFT = '"Grenze Gotisch", "IM Fell English SC", Georgia, serif';
+  function textSicht(d) {
+    if (d < -0.22 || d > 0.78) return 0;
+    if (d < -0.05) return (d + 0.22) / 0.17;
+    if (d > 0.6) return (0.78 - d) / 0.18;
+    return 1;
+  }
+  function zeilen(c, text, breit) {
+    var raus = [];
+    String(text).split(/\n/).forEach(function (absatz) {
+      var wo = absatz.split(/\s+/).filter(Boolean), z = "";
+      wo.forEach(function (w) {
+        var probe = z ? z + " " + w : w;
+        if (z && c.measureText(probe).width > breit) { raus.push(z); z = w; } else z = probe;
+      });
+      raus.push(z);
+    });
+    return raus;
+  }
+  function texteZeichnen(c, W, H, uu) {
+    var n = items.length; if (!n) return;
+    for (var i = 0; i < n; i++) {
+      var p = items[i].p; if (!p.text || !p.text.trim()) continue;
+      var d = uu - i;
+      if (G.loop && n > 1) { d = ((d % n) + n) % n; if (d > n / 2) d -= n; }
+      if (!G.loop && i === n - 1 && d >= 0) d = 0;       // letztes bild: text bleibt stehen
+      var a = textSicht(d); if (a <= 0) continue;
+      var fs = Math.round(H * (p.tgr || 6) / 100);
+      c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
+      c.globalAlpha = a;
+      c.font = "700 " + fs + "px " + SCHRIFT;
+      c.textAlign = "center"; c.textBaseline = "middle"; c.lineJoin = "round";
+      var z = zeilen(c, p.text.trim(), W * 0.84), lh = fs * 1.12, hoch = z.length * lh;
+      // oben/unten mit Abstand, damit Instagram nichts verdeckt
+      var mitte = p.tpos === "oben" ? H * 0.17 + hoch / 2 : p.tpos === "mitte" ? H / 2 : H * 0.74 - hoch / 2;
+      var y0 = mitte - hoch / 2 + lh / 2;
+      var verlauf = c.createLinearGradient(0, y0 - fs / 2, 0, y0 + hoch - lh + fs / 2);
+      verlauf.addColorStop(0, "#fffaf0"); verlauf.addColorStop(0.55, "#f1dfc4"); verlauf.addColorStop(1, "#c9a883");
+      z.forEach(function (zeile, k) {
+        var y = y0 + k * lh;
+        c.shadowColor = "rgba(150,8,8,.95)"; c.shadowBlur = fs * 0.45;
+        c.lineWidth = Math.max(2, fs * 0.13); c.strokeStyle = "rgba(22,4,4,.96)";
+        c.strokeText(zeile, W / 2, y);
+        c.shadowBlur = 0; c.shadowColor = "transparent";
+        c.fillStyle = verlauf; c.fillText(zeile, W / 2, y);
+      });
+      c.restore();
+    }
+  }
+  function schriftBereit() {
+    if (!document.fonts || !document.fonts.load) return Promise.resolve();
+    return document.fonts.load('700 64px "Grenze Gotisch"').catch(function () {});
+  }
+  schriftBereit().then(function () { draw(); });
+
   function editing() { return !playing && !exporting && Math.abs(u - Math.round(u)) < 1e-6; }
   function draw() {
     if (dead) return;
@@ -568,6 +634,13 @@ function zoomloopStarten(root, film, hilfe) {
   function afterPan() { stop(); u = Math.min(sel, segs()); syncPanel(); draw(); }
   $("pan").addEventListener("input", function () { setPan(this.value / 100); afterPan(); });
   $("pan").addEventListener("change", function () { thumbs(); save(); });
+  function aufsBild() { stop(); u = Math.min(sel, segs()); draw(); }
+  $("txt").addEventListener("input", function () { var it = items[sel]; if (!it) return; it.p.text = this.value; aufsBild(); save(); });
+  $("tpos").addEventListener("change", function () { var it = items[sel]; if (!it) return; it.p.tpos = this.value; aufsBild(); save(); });
+  $("tgr").addEventListener("input", function () {
+    var it = items[sel]; if (!it) return; it.p.tgr = +this.value;
+    $("v_tgr").textContent = String(it.p.tgr).replace(".", ",") + " %"; aufsBild(); save();
+  });
   var cdrag = false;
   function panFromPointer(e) {
     var it = items[sel]; if (!it) return;
@@ -601,6 +674,13 @@ function zoomloopStarten(root, film, hilfe) {
     } else {
       $("cpair").innerHTML = "&ndash;"; $("pan").disabled = true; $("pan").value = 0; $("v_pan").textContent = "";
     }
+    if (it) {
+      $("tpair").textContent = "Text zu Bild " + (sel + 1);
+      if (document.activeElement !== $("txt")) $("txt").value = it.p.text || "";
+      $("tpos").value = it.p.tpos || "unten"; $("tgr").value = it.p.tgr || 6;
+      $("v_tgr").textContent = String(it.p.tgr || 6).replace(".", ",") + " %";
+    } else { $("tpair").innerHTML = "&ndash;"; $("txt").value = ""; }
+    $("txt").disabled = $("tpos").disabled = $("tgr").disabled = !it;
     drawCropPrev();
     PK.forEach(function (k) {
       var el = $(k); el.disabled = !ch; if (!ch) return;
@@ -618,7 +698,7 @@ function zoomloopStarten(root, film, hilfe) {
       stop(); u = sel; syncPanel(); draw(); save();
     });
   });
-  $("reset").onclick = function () { var ch = child(); if (!ch) return; ch.p = Object.assign({}, DEF, { pan: ch.p.pan || 0 }); syncPanel(); draw(); save(); };
+  $("reset").onclick = function () { var ch = child(); if (!ch) return; ch.p = Object.assign({}, DEF, { pan: ch.p.pan || 0, text: ch.p.text || "", tpos: ch.p.tpos || "unten", tgr: ch.p.tgr || 6 }); syncPanel(); draw(); save(); };
   $("frame").onchange = draw;
   $("sec").oninput = function () { G.sec = +this.value; syncPanel(); draw(); save(); };
   $("ease").oninput = function () { G.ease = this.value / 100; syncPanel(); save(); };
@@ -782,6 +862,7 @@ function zoomloopStarten(root, film, hilfe) {
     var S = segs(); if (!S) { msg("Mindestens zwei Bilder."); return; }
     if (!("VideoEncoder" in window)) { msg("Der Export geht in Chrome am Rechner."); return; }
     try { await mp4Baustein(); } catch (e) { msg(e.message); return; }
+    await schriftBereit();
     var W = G.W, H = G.H, fps = G.fps, total = Math.round(S * G.sec * fps), err = null;
     var rate = W * H > 1920 * 1080 ? 45e6 : 16e6;
     var handle = null, stream = null, target;
@@ -937,6 +1018,7 @@ function zoomloopStarten(root, film, hilfe) {
     if (!("VideoEncoder" in window) || !("AudioEncoder" in window)) { msg("Der Export mit Ton geht in Chrome am Rechner."); return; }
     if (!window.showSaveFilePicker) { msg("Der Export mit Ton braucht Chrome am Rechner (zum Speichern gro\u00dfer Dateien)."); return; }
     try { await mp4Baustein(); } catch (e) { msg(e.message); return; }
+    await schriftBereit();
 
     var handle, stream;
     try {
@@ -1233,8 +1315,9 @@ const AU_HTML = `
         <button id="au_schnitt" disabled>&#9986; Auswahl raus</button>
         <button id="au_undo" disabled title="letzten Schnitt zur&uuml;cknehmen">&#8630;</button>
         <span class="au-luft"></span>
-        <button id="au_zraus" title="weiter weg">&minus;</button>
-        <button id="au_zrein" title="n&auml;her ran">+</button>
+        <span class="au-klein">Zeit:</span>
+        <button id="au_zraus" title="mehr Zeit auf einmal sehen">&minus;</button>
+        <button id="au_zrein" title="genauer hinsehen, zum Schneiden">+</button>
       </div>
       <div id="au_zeit" class="au-zeit"></div>
     </div>
@@ -1687,7 +1770,7 @@ function aufnahmeStarten(root, hilfe) {
   var spitzen = null, BLOCK = 256;          // min/max je 256 Proben, fuer schnelles Zeichnen
   var sicht0 = 0, sichtLang = 0;             // sichtbarer Ausschnitt in Sekunden
   var wahlA = null, wahlB = null, kopf = 0;  // Auswahl und Abspielkopf in Sekunden
-  var rueck = [], lautFaktor = 1;
+  var rueck = [], lautFaktor = 1, bildFaktor = 1;
   function dauer() { return raw ? raw.length / sr : 0; }
   function spitzenBauen() {
     var n = Math.ceil(raw.length / BLOCK), mn = new Float32Array(n), mx = new Float32Array(n), gross = 0;
@@ -1697,7 +1780,10 @@ function aufnahmeStarten(root, hilfe) {
       mn[b] = lo; mx[b] = hi; if (hi > gross) gross = hi; if (-lo > gross) gross = -lo;
     }
     spitzen = { mn: mn, mx: mx };
-    lautFaktor = gross > 0.001 ? Math.min(20, 0.9 / gross) : 1;
+    // zum Probehoeren und Anzeigen immer auf volle Hoehe bringen,
+    // egal wie leise die Aufnahme ist
+    lautFaktor = gross > 0.00001 ? Math.min(300, 0.9 / gross) : 1;
+    bildFaktor = gross > 0.00001 ? 0.97 / gross : 1;
   }
   function schnittNeu() {
     hoerStop(); rueck = []; wahlA = wahlB = null; kopf = 0;
@@ -1724,7 +1810,7 @@ function aufnahmeStarten(root, hilfe) {
     if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
     var x = c.getContext("2d"); x.clearRect(0, 0, W, H);
     x.fillStyle = "#0b0907"; x.fillRect(0, 0, W, H);
-    var proPx = sichtLang * sr / W, mitte = H / 2, amp = H / 2 * 0.95 * Math.min(4, lautFaktor);
+    var proPx = sichtLang * sr / W, mitte = H / 2;
     x.fillStyle = "#c79a5a";
     for (var px = 0; px < W; px++) {
       var s0 = Math.floor((sicht0 + px / W * sichtLang) * sr), s1 = Math.max(s0 + 1, Math.floor(s0 + proPx));
@@ -1736,8 +1822,8 @@ function aufnahmeStarten(root, hilfe) {
       } else {
         for (i = s0; i < s1; i++) { var v = raw[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
       }
-      var y0 = mitte - Math.max(-1, Math.min(1, hi * Math.min(4, lautFaktor))) * H / 2 * 0.95;
-      var y1 = mitte - Math.max(-1, Math.min(1, lo * Math.min(4, lautFaktor))) * H / 2 * 0.95;
+      var y0 = mitte - Math.max(-1, Math.min(1, hi * bildFaktor)) * H / 2;
+      var y1 = mitte - Math.max(-1, Math.min(1, lo * bildFaktor)) * H / 2;
       x.fillRect(px, y0, 1, Math.max(1, y1 - y0));
     }
     if (wahlA !== null && Math.abs(wahlB - wahlA) > 0.01) {
@@ -1987,6 +2073,7 @@ function aufnahmeStarten(root, hilfe) {
 function StudioStil() {
   return (
     <style>{`
+@import url('https://fonts.googleapis.com/css2?family=Grenze+Gotisch:wght@400;700&display=swap');
 .studio{
   position:fixed; inset:0; z-index:70; display:flex; flex-direction:column;
   background:#0b0907; color:#e6d9bb;
@@ -2080,6 +2167,7 @@ function StudioStil() {
 .zl-msg{color:var(--st-dim); font-size:12px; margin-top:6px; min-height:1.4em}
 .zl-pair{color:#e6d9bb; font-size:13px; margin-bottom:4px}
 .zl-cprev{width:100%; display:block; margin:4px 0; cursor:grab; touch-action:none}
+.zl-txt{width:100%; background:#0b0907; color:#e6d9bb; border:1px solid var(--st-linie); border-radius:3px; padding:6px 8px; font:15px/1.35 "Grenze Gotisch", Georgia, serif; resize:vertical; margin-bottom:6px}
 .zl-tonname{color:#e6d9bb; font-size:12px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .zl-tonhinweis{color:var(--st-dim); font-size:11px; margin-top:4px; font-style:italic}
 .zl-tonhinweis[hidden]{display:none}
@@ -2135,7 +2223,7 @@ function StudioStil() {
 .au-take[hidden]{display:none}
 .au-row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:6px 0}
 .au-schnitt{border-bottom:1px solid var(--st-linie); padding-bottom:6px; margin-bottom:6px}
-.au-welle{display:block; width:100%; height:96px; border:1px solid var(--st-linie); border-radius:3px; cursor:crosshair; touch-action:none}
+.au-welle{display:block; width:100%; height:150px; border:1px solid var(--st-linie); border-radius:3px; cursor:crosshair; touch-action:none}
 .au-lauf{width:100%; margin:4px 0 0}
 .au-zeit{color:var(--st-dim); font-size:12px; font-variant-numeric:tabular-nums}
 .au-klein{color:var(--st-dim); font-size:12px}
