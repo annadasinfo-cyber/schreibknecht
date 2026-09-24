@@ -835,6 +835,13 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
   };
   const [klein, setKlein] = useState(false);   // pult eingeklappt?
+  // Liegt das pult offen, bleibt am handy die seite darunter stehen —
+  // sonst schiebt jeder wisch im pult die karten dahinter mit.
+  useEffect(() => {
+    const auf = pult.length > 0 && !klein;
+    document.documentElement.classList.toggle("pultoffen", auf);
+    return () => document.documentElement.classList.remove("pultoffen");
+  }, [pult.length, klein]);
   const [liest, setLiest] = useState(null);   // {id, pause} — wer gerade vorgelesen wird
   const [asche, setAsche] = useState(null);  // zuletzt verbrannte karte, kurz zurueckholbar
 
@@ -4397,7 +4404,14 @@ function Stil() {
   display:flex; align-items:center; gap:12px; margin-bottom:12px;
   flex:0 0 auto; cursor:default; user-select:none;
 }
-.pultblatt{overflow-y:auto; overflow-x:hidden; flex:1; min-height:0; padding-right:2px}
+.pultblatt{overflow-y:auto; overflow-x:hidden; flex:1; min-height:0; padding-right:2px;
+  overscroll-behavior:contain; -webkit-overflow-scrolling:touch}
+.pult{overscroll-behavior:contain}
+/* am handy: solange das pult offen liegt, scrollt nur das pult */
+@media(hover:none){
+  html.pultoffen, html.pultoffen body{overflow:hidden; overscroll-behavior:none}
+  .pult{max-height:min(82vh, 720px)}
+}
 .pultblatt::-webkit-scrollbar{width:9px}
 .pultblatt::-webkit-scrollbar-track{background:transparent}
 .pultblatt::-webkit-scrollbar-thumb{background:rgba(168,135,79,.3); border-radius:4px}
@@ -4760,6 +4774,12 @@ function Stil() {
 
 /* iphones zoomen in jedes feld hinein, dessen schrift unter 16 px liegt —
    das reisst beim tippen die seite weg. also 16 px, dann bleibt alles stehen. */
+/* am handy: die unsichtbare anfasskante oben auf jeder karte fing jeden
+   wisch ab — statt zu scrollen, hing die karte am finger. auf touch-geraeten
+   gibt es die kante darum nicht; karten wandern dort mit ✂ (in die hand nehmen). */
+@media(hover:none){
+  .griff{display:none}
+}
 @media(hover:none) and (max-width:700px){
   .seite.text textarea, .bogenfeld, .bogenhinter, .ti, .kartentitel, .bogentitel,
   .strichtitel, .projektname{font-size:16px}
