@@ -683,33 +683,42 @@ function zoomloopStarten(root, film, hilfe) {
      hereingerollt, bleibt stehen und blendet am Ende aus. Ist die Liste zu
      lang fuer den Bildschirm, rollt sie ganz durch. */
   var ab = { titel: "", namen: "" };
-  function abspannZeichnen(c, W, H, t, dauer) {
-    c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1;
-    c.fillStyle = "#000"; c.fillRect(0, 0, W, H);
+  // Der Abspann liegt als dunkle Bahn am rechten Rand UEBER den Bildern,
+  // die links weiterlaufen. Er kommt von rechts herein, die Namen rollen
+  // von unten ein; am Ende blenden Bild und Abspann gemeinsam aus.
+  function abspannUeber(c, W, H, t, dauer) {
     var titel = (ab.titel || "").trim(), namen = (ab.namen || "").split(/\n/).map(function (z) { return z.trim(); }).filter(Boolean);
     if (!titel && !namen.length) return;
-    var basis = Math.min(W, H), fsT = Math.round(basis * 0.085), fsN = Math.round(basis * 0.052);
+    var hochkant = H > W, pw = W * (hochkant ? 0.82 : 0.42);
+    var e = weich(t / 1.2), x0 = W - pw + (1 - e) * pw * 0.3;
+    var verlaufBreit = pw * 0.32, fest = x0 + verlaufBreit;
+    // die dunkle Bahn: weicher Uebergang links, dann fast schwarz
+    c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = e;
+    var g = c.createLinearGradient(x0, 0, fest, 0);
+    g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, "rgba(0,0,0,.9)");
+    c.fillStyle = g; c.fillRect(x0, 0, verlaufBreit + 1, H);
+    c.fillStyle = "rgba(0,0,0,.9)"; c.fillRect(fest, 0, W - fest + 1, H);
+    c.restore();
+
+    var spalte = W - fest, cx = fest + spalte / 2, breit = spalte * 0.86;
+    var basis = Math.min(W, H), fsT = Math.round(basis * 0.068), fsN = Math.round(basis * 0.044);
     if (txtC.width !== W || txtC.height !== H) { txtC.width = W; txtC.height = H; }
     var x = txtX;
     x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.clearRect(0, 0, W, H);
     x.textAlign = "center"; x.textBaseline = "middle"; x.lineJoin = "round";
-    // Zeilen sammeln: [text, groesse]
-    var reihe = [];
-    if (titel) { x.font = "700 " + fsT + "px " + SCHRIFT; zeilen(x, titel, W * 0.86).forEach(function (z) { reihe.push([z, fsT, fsT * 1.15]); }); }
-    if (titel && namen.length) reihe.push(["", fsN, fsN * 0.9]);
+    var reihe = [];   // [text, groesse, zeilenhoehe, istTitel]
+    if (titel) { x.font = "700 " + fsT + "px " + SCHRIFT; zeilen(x, titel, breit).forEach(function (z) { reihe.push([z, fsT, fsT * 1.15, true]); }); }
+    if (titel && namen.length) reihe.push(["", fsN, fsN * 0.9, false]);
     x.font = "700 " + fsN + "px " + SCHRIFT;
-    namen.forEach(function (n) { zeilen(x, n, W * 0.8).forEach(function (z) { reihe.push([z, fsN, fsN * 1.55]); }); });
+    namen.forEach(function (n) { zeilen(x, n, breit).forEach(function (z) { reihe.push([z, fsN, fsN * 1.5, false]); }); });
     var hoch = 0; reihe.forEach(function (r) { hoch += r[2]; });
-    // wo steht der Block oben?
-    var oben, a = 1;
+    var oben;
     if (hoch <= H * 0.82) {
-      var rein = Math.min(dauer * 0.45, 7), q = Math.min(1, t / rein), e = 1 - Math.pow(1 - q, 3);
-      oben = H + (((H - hoch) / 2) - H) * e;
-      if (t > dauer - 1.8) a = Math.max(0, (dauer - t) / 1.8);
+      var rein = Math.min(dauer * 0.45, 7), q = Math.min(1, t / rein), ea = 1 - Math.pow(1 - q, 3);
+      oben = H + (((H - hoch) / 2) - H) * ea;
     } else {
       oben = H - (H + hoch) * (t / dauer);
     }
-    // 1. Durchgang Glut und Kontur, 2. Durchgang die helle Schrift
     for (var gang = 0; gang < 2; gang++) {
       var y = oben;
       reihe.forEach(function (r) {
@@ -717,30 +726,38 @@ function zoomloopStarten(root, film, hilfe) {
         if (!r[0] || mitte < -r[1] || mitte > H + r[1]) return;
         x.font = "700 " + r[1] + "px " + SCHRIFT;
         if (gang === 0) {
-          x.shadowColor = "rgba(150,8,8,.95)"; x.shadowBlur = r[1] * 0.45;
-          x.lineWidth = Math.max(2, r[1] * 0.13); x.strokeStyle = "rgba(22,4,4,.96)";
-          x.strokeText(r[0], W / 2, mitte);
+          // die Namen nur mit einem Hauch Glut, die Ueberschrift mit voller
+          x.shadowColor = r[3] ? "rgba(150,8,8,.95)" : "rgba(130,8,8,.7)";
+          x.shadowBlur = r[1] * (r[3] ? 0.45 : 0.16);
+          x.lineWidth = Math.max(1.5, r[1] * (r[3] ? 0.13 : 0.08)); x.strokeStyle = "rgba(22,4,4,.96)";
+          x.strokeText(r[0], cx, mitte);
         } else {
           x.shadowBlur = 0; x.shadowColor = "rgba(0,0,0,0)";
           var v = x.createLinearGradient(0, mitte - r[1] / 2, 0, mitte + r[1] / 2);
           v.addColorStop(0, "#fffaf0"); v.addColorStop(0.55, "#f1dfc4"); v.addColorStop(1, "#c9a883");
-          x.fillStyle = v; x.fillText(r[0], W / 2, mitte);
+          x.fillStyle = v; x.fillText(r[0], cx, mitte);
         }
       });
     }
-    c.globalAlpha = a; c.drawImage(txtC, 0, 0); c.globalAlpha = 1;
+    c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = e; c.drawImage(txtC, 0, 0); c.restore();
   }
-  var abVor = null;   // laufende Vorschau
+  var abVor = null, abVorU = 0;   // laufende Vorschau
   function abVorLauf(tz) {
     if (!abVor || dead) return;
-    var t = (tz - abVor) / 1000;
+    var t = (tz - abVor) / 1000, S = segs();
     if (t >= G.abDauer) { abVor = null; $("abvor").textContent = "Abspann ansehen"; draw(); return; }
-    abspannZeichnen(ctx, cv.width, cv.height, t, G.abDauer);
+    var uu = S ? (abVorU + t / G.sec) % S : 0;
+    render(ctx, cv.width, cv.height, uu, false, false, false);
+    abspannUeber(ctx, cv.width, cv.height, t, G.abDauer);
+    if (t > G.abDauer - 2) {   // am Ende gemeinsam ausblenden
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = "rgba(0,0,0," + Math.min(1, (t - (G.abDauer - 2)) / 2) + ")"; ctx.fillRect(0, 0, cv.width, cv.height);
+    }
     requestAnimationFrame(abVorLauf);
   }
   $("abvor").onclick = function () {
     if (abVor) { abVor = null; this.textContent = "Abspann ansehen"; draw(); return; }
-    stop(); schriftBereit().then(function () { abVor = performance.now(); $("abvor").textContent = "Vorschau beenden"; requestAnimationFrame(abVorLauf); });
+    stop(); abVorU = u; schriftBereit().then(function () { abVor = performance.now(); $("abvor").textContent = "Vorschau beenden"; requestAnimationFrame(abVorLauf); });
   };
   var abUhr = 0;
   function abSpeichern() {
@@ -1253,8 +1270,12 @@ function zoomloopStarten(root, film, hilfe) {
 
       // Bild-Kodierer
       var S = segs(), framesPerLoop = Math.max(2, Math.round(S * G.sec * fps));
-      var total = Math.ceil(T * fps), fadeV = Math.min(total, 2 * fps);
-      var ziel = total - fadeV;
+      // nach der Stimme laeuft der Film unter dem Abspann weiter; erst danach wird ausgeblendet
+      var totalV = Math.ceil(T * fps);
+      var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
+      var abFrames = abDa ? Math.round(G.abDauer * fps) : 0;
+      var total = totalV + abFrames, fadeV = Math.min(total, 2 * fps);
+      var ziel = Math.min(totalV, total - fadeV);
       var c0 = Math.floor(ziel / framesPerLoop), r0 = ziel - c0 * framesPerLoop;
       var start = c0 * framesPerLoop + Math.floor(r0 / K) * K;   // hier beginnt das frisch gerechnete ende
       var kopieren = start > framesPerLoop;
@@ -1291,6 +1312,7 @@ function zoomloopStarten(root, film, hilfe) {
 
       async function bildRechnen(g, schluessel) {
         render(ox, W, H, (g % framesPerLoop) / framesPerLoop * S, true, false, false);
+        if (abFrames && g >= totalV) abspannUeber(ox, W, H, (g - totalV) / fps, G.abDauer);
         if (g >= total - fadeV) {
           ox.setTransform(1, 0, 0, 1, 0, 0);
           ox.fillStyle = "rgba(0,0,0," + Math.min(1, (g - (total - fadeV) + 1) / fadeV) + ")"; ox.fillRect(0, 0, W, H);
@@ -1362,27 +1384,12 @@ function zoomloopStarten(root, film, hilfe) {
         }
       }
 
-      // 4) der Abspann nach der Stimme, dazu Stille
-      var abFrames = 0;
-      var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
-      if (abDa && !cancelExport && !err && !dead) {
-        abFrames = Math.round(G.abDauer * fps);
-        for (var ga = 0; ga < abFrames; ga++) {
-          if (cancelExport || err || dead) break;
-          abspannZeichnen(ox, W, H, ga / fps, G.abDauer);
-          var vfa = new VideoFrame(oc, { timestamp: Math.round((total + ga) * frameUs), duration: Math.round(frameUs) });
-          enc.encode(vfa, { keyFrame: ga % K === 0 }); vfa.close();
-          while (enc.encodeQueueSize > 8) await sleep(4);
-          if (ga % 8 === 0) { melde("Der Abspann wird gerechnet \u2026", 0.97 + ga / abFrames * 0.03); await sleep(0); }
-        }
-      }
-
       if (err) throw err;
       if (!cancelExport && !dead) {
         await tonBis(aFrames);
         if (abFrames) {
           // Stille fuer die Dauer des Abspanns
-          var stilleBis = Math.round((total + abFrames) / fps * sr);
+          var stilleBis = Math.round(total / fps * sr);
           while (aPos < stilleBis && !err) {
             var sl = Math.min(sr, stilleBis - aPos), leer = new Float32Array(sl * ausKanaele);
             var sd = new AudioData({ format: "f32-planar", sampleRate: sr, numberOfFrames: sl, numberOfChannels: ausKanaele, timestamp: Math.round(aPos * 1e6 / sr), data: leer });
@@ -1394,7 +1401,7 @@ function zoomloopStarten(root, film, hilfe) {
         muxer.finalize();
         await writes; var wo = await ziel.fertig(); stream = null;
         done = true;
-        msg("Fertig (" + dauerText(T + abFrames / fps) + ") \u2013 " + wo + ".");
+        msg("Fertig (" + dauerText(total / fps) + ") \u2013 " + wo + ".");
       } else msg("Abgebrochen.");
     } catch (e) {
       msg("Fehler: " + (e.message || e));
