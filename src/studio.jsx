@@ -169,6 +169,43 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
     weg: async (id) => api("DELETE", `/rest/v1/studio_texte?id=eq.${id}`),
   }), [api]);
 
+  // Aufnahmen im Ablagefach (verkleinert als m4a)
+  const aufnHilfe = useCallback(() => ({
+    ...textHilfe(),
+    aufnahmenListe: async () => {
+      const s = await frisch();
+      const r = await fetch(`${URL_DB}/storage/v1/object/list/${EIMER}`, {
+        method: "POST", headers: kopf(s, "application/json"),
+        body: JSON.stringify({ prefix: `${s.user.id}/aufnahmen`, limit: 300, offset: 0, sortBy: { column: "name", order: "desc" } }),
+      });
+      if (!r.ok) throw new Error((await r.text()).slice(0, 160) || "Liste ging nicht");
+      const l = await r.json();
+      return (l || []).filter((x) => x.id && /\.m4a$/.test(x.name)).map((x) => ({
+        pfad: `${s.user.id}/aufnahmen/${x.name}`, name: x.name,
+        groesse: x.metadata && x.metadata.size,
+      }));
+    },
+    aufnahmeHoch: async (blob, dateiname) => {
+      const s = await frisch();
+      const pfad = `${s.user.id}/aufnahmen/${dateiname}`;
+      const r = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
+        method: "POST", headers: { ...kopf(s, "audio/mp4"), "x-upsert": "true" }, body: blob,
+      });
+      if (!r.ok) throw new Error((await r.text()).slice(0, 160) || "hochladen ging nicht");
+      return pfad;
+    },
+    aufnahmeHolen: async (pfad) => {
+      const s = await frisch();
+      const r = await fetch(`${URL_DB}/storage/v1/object/authenticated/${EIMER}/${pfad}`, { headers: kopf(s) });
+      if (!r.ok) throw new Error("Aufnahme fehlt");
+      return await r.blob();
+    },
+    aufnahmeWeg: async (pfad) => {
+      const s = await frisch();
+      await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, { method: "DELETE", headers: kopf(s) });
+    },
+  }), [textHilfe, frisch, kopf, URL_DB]);
+
   return (
     <div className="studio">
       <StudioStil />
@@ -186,7 +223,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           <ZoomloopRaum key={film.id} film={film} hilfe={filmHilfe(film.id)} />
         )}
 
-        {ansicht === "aufnahme" && <AufnahmeRaum hilfe={textHilfe()} />}
+        {ansicht === "aufnahme" && <AufnahmeRaum hilfe={aufnHilfe()} />}
       </div>
 
       <div className="st-leiste">
@@ -1329,19 +1366,80 @@ const AU_HTML = `
     </div>
     <audio id="au_player" controls></audio>
     <div class="au-row">
+      <button id="au_wolke" title="verkleinert in der App ablegen, auf allen Ger&auml;ten da">&#9729; in die App</button>
       <button id="au_save">Speichern</button>
       <button id="au_share" hidden>Teilen</button>
       <span class="au-luft"></span>
       <button id="au_discard">Verwerfen</button>
     </div>
   </div>
+  <div id="au_liste" class="au-liste" hidden>
+    <div class="au-row">
+      <b class="au-listkopf">Aufnahmen in der App</b>
+      <span class="au-luft"></span>
+      <button id="au_platte">von der Festplatte &hellip;</button>
+      <button id="au_listezu" title="schlie&szlig;en">&#10005;</button>
+    </div>
+    <div id="au_listeninhalt"></div>
+  </div>
   <div class="au-fuss">
     <button id="au_rec" class="au-rec">&#9679; Aufnahme</button>
     <span id="au_status" class="au-status"></span>
-    <button id="au_oeffnen" title="eine Aufnahme zum Schneiden &ouml;ffnen">&#128194;</button>
+    <button id="au_oeffnen" title="eine Aufnahme &ouml;ffnen">&#128194;</button>
     <input id="au_datei" type="file" accept="audio/*,.wav" hidden>
   </div>
 </div>`;
+
+// ============================================================
+// SICHERHEITSNETZ: die Aufnahme liegt waehrend und nach dem Aufnehmen
+// zusaetzlich im Browser. Geht der Rechner aus, ist sie beim naechsten
+// Oeffnen wieder da.
+// ============================================================
+function dbAuf() {
+  return new Promise(function (res, rej) {
+    if (!window.indexedDB) { rej(new Error("kein speicher")); return; }
+    var r = indexedDB.open("studio-aufnahme", 1);
+    r.onupgradeneeded = function () {
+      var db = r.result;
+      if (!db.objectStoreNames.contains("stuecke")) db.createObjectStore("stuecke", { autoIncrement: true });
+      if (!db.objectStoreNames.contains("kopie")) db.createObjectStore("kopie");
+    };
+    r.onsuccess = function () { res(r.result); };
+    r.onerror = function () { rej(r.error); };
+  });
+}
+function dbTun(store, mode, fn) {
+  return dbAuf().then(function (db) {
+    return new Promise(function (res, rej) {
+      var t = db.transaction(store, mode), os = t.objectStore(store), ergebnis;
+      var q = fn(os); if (q) q.onsuccess = function () { ergebnis = q.result; };
+      t.oncomplete = function () { db.close(); res(ergebnis); };
+      t.onerror = t.onabort = function () { db.close(); rej(t.error); };
+    });
+  });
+}
+// leise Stuecke nicht vergroebern: jedes Stueck wird fuer sich auf volle 16 Bit gebracht
+function einpacken(x) {
+  var pk = 0; for (var i = 0; i < x.length; i++) { var a = Math.abs(x[i]); if (a > pk) pk = a; }
+  var f = pk > 1e-9 ? pk : 1, d = new Int16Array(x.length);
+  for (var j = 0; j < x.length; j++) d[j] = Math.round(x[j] / f * 32767);
+  return { faktor: f, daten: d };
+}
+function auspacken(teile) {
+  var n = 0; teile.forEach(function (t) { n += t.daten.length; });
+  var x = new Float32Array(n), o = 0;
+  teile.forEach(function (t) { var k = t.faktor / 32767; for (var i = 0; i < t.daten.length; i++) x[o + i] = t.daten[i] * k; o += t.daten.length; });
+  return x;
+}
+function mp4BausteinLaden() {
+  if (window.Mp4Muxer) return Promise.resolve();
+  return new Promise(function (res, rej) {
+    var s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.2/build/mp4-muxer.js";
+    s.onload = res; s.onerror = function () { rej(new Error("MP4-Baustein nicht erreichbar")); };
+    document.head.appendChild(s);
+  });
+}
 
 function aufnahmeStarten(root, hilfe) {
   var $ = function (id) { return root.querySelector("#au_" + id); };
@@ -1562,6 +1660,7 @@ function aufnahmeStarten(root, hilfe) {
   $("rec").onclick = async function () {
     if (state === "rec") { stopAll(); return; }
     if (state !== "idle") return;
+    if (!darfErsetzen()) return;
     if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
     ac.resume();
     state = "busy"; setBtn(); $("take").hidden = true; schliesseEditor(false);
@@ -1573,10 +1672,24 @@ function aufnahmeStarten(root, hilfe) {
     for (var k = 3; k > 0; k--) { c.textContent = k; await sleep(800); if (dead) return; }
     c.style.display = "none";
     capturing = true; state = "rec"; setBtn(); status("Aufnahme l\u00e4uft");
+    // alle 5 Sekunden das Neue zusaetzlich im Browser ablegen
+    gesichertBis = 0;
+    dbTun("stuecke", "readwrite", function (os) { return os.clear(); }).catch(function () {});
+    sicherUhr = setInterval(zwischenSichern, 5000);
     startPrompter();
   };
+  var gesichertBis = 0, sicherUhr = null;
+  function zwischenSichern() {
+    if (gesichertBis >= chunks.length) return;
+    var neu = chunks.slice(gesichertBis); gesichertBis = chunks.length;
+    var n = 0; neu.forEach(function (c) { n += c.length; });
+    var x = new Float32Array(n), o = 0; neu.forEach(function (c) { x.set(c, o); o += c.length; });
+    var st = einpacken(x); st.sr = sr;
+    dbTun("stuecke", "readwrite", function (os) { return os.add(st); }).catch(function () {});
+  }
   function stopAll() {
-    capturing = false; stopPrompter(); raw = closeMic();
+    if (sicherUhr) { clearInterval(sicherUhr); sicherUhr = null; }
+    capturing = false; stopPrompter(); raw = closeMic(); inApp = false;
     if (wake) { try { wake.release(); } catch (e) {} wake = null; }
     state = "idle"; setBtn();
     if (raw.length < sr * 0.5) { status("Die Aufnahme war zu kurz."); raw = null; return; }
@@ -1800,7 +1913,31 @@ function aufnahmeStarten(root, hilfe) {
   function schnittNeu() {
     hoerStop(); rueck = []; wahlA = wahlB = null; kopf = 0;
     spitzenBauen(); sicht0 = 0; sichtLang = dauer();
-    knoepfe(); zeichneWelle();
+    knoepfe(); zeichneWelle(); kopieMerken();
+  }
+  // die Arbeitskopie im Browser: nach jeder Aenderung (kurz verzoegert)
+  var kopieUhr = 0, inApp = false;
+  function kopieMerken() {
+    clearTimeout(kopieUhr);
+    kopieUhr = setTimeout(function () {
+      if (!raw) return;
+      var k = einpacken(raw); k.sr = sr; k.inApp = inApp;
+      dbTun("kopie", "readwrite", function (os) { return os.put(k, "aktuell"); })
+        .then(function () { return dbTun("stuecke", "readwrite", function (os) { return os.clear(); }); })
+        .catch(function () {});
+    }, 800);
+  }
+  function inAppMerken(wert) {
+    inApp = wert;
+    dbTun("kopie", "readwrite", function (os) {
+      var q = os.get("aktuell");
+      q.onsuccess = function () { if (q.result) { q.result.inApp = wert; os.put(q.result, "aktuell"); } };
+      return null;
+    }).catch(function () {});
+  }
+  function darfErsetzen() {
+    if (!raw || inApp) return true;
+    return confirm("Die jetzige Aufnahme ist noch nicht in der App gespeichert.\n\nTrotzdem ersetzen?");
   }
   function zeitText(t) {
     var m = Math.floor(t / 60), s = t - m * 60;
@@ -1916,7 +2053,7 @@ function aufnahmeStarten(root, hilfe) {
     raw = neu; nachSchnitt(u.pos / sr);
   }
   function nachSchnitt(t) {
-    wahlA = wahlB = null; kopf = Math.min(t, dauer());
+    wahlA = wahlB = null; kopf = Math.min(t, dauer()); inApp = false; kopieMerken();
     spitzenBauen();
     sichtLang = Math.min(sichtLang, dauer()); sicht0 = Math.max(0, Math.min(sicht0, dauer() - sichtLang));
     // die fertige Fassung stimmt nicht mehr — beim naechsten Anhoeren/Speichern neu machen
@@ -1983,20 +2120,128 @@ function aufnahmeStarten(root, hilfe) {
   window.addEventListener("resize", onGroesse);
 
   // eine Aufnahme von der Festplatte oeffnen (z.B. vom Handy geschickt)
-  $("oeffnen").onclick = function () { if (state === "idle") $("datei").click(); };
+  async function tonLaden(arrayBuffer, ausApp) {
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    var ab = await ac.decodeAudioData(arrayBuffer);
+    var n = ab.length, kan = ab.numberOfChannels, m = new Float32Array(n);
+    for (var c = 0; c < kan; c++) { var d = ab.getChannelData(c); for (var i = 0; i < n; i++) m[i] += d[i] / kan; }
+    raw = m; sr = ab.sampleRate; cache = {}; inApp = !!ausApp;
+    await showTake();
+  }
+  $("oeffnen").onclick = function () {
+    if (state !== "idle") return;
+    var l = $("liste"); l.hidden = !l.hidden;
+    if (!l.hidden) listeZeigen();
+  };
+  $("listezu").onclick = function () { $("liste").hidden = true; };
+  $("platte").onclick = function () { $("datei").click(); };
+  function anzeigeName(datei) {
+    var m = datei.replace(/\.m4a$/, "").split("__");
+    var d = m[0].match(/^(\d{4})-(\d\d)-(\d\d)-(\d\d)(\d\d)/);
+    var wann = d ? d[3] + "." + d[2] + "." + d[1] + ", " + d[4] + ":" + d[5] : m[0];
+    return { wann: wann, titel: (m[1] || "Aufnahme").replace(/-/g, " ") };
+  }
+  async function listeZeigen() {
+    var box = $("listeninhalt"); box.innerHTML = "<p class=\"au-klein\">wird geholt \u2026</p>";
+    try {
+      var l = await hilfe.aufnahmenListe();
+      if (dead) return;
+      box.innerHTML = "";
+      if (!l.length) { box.innerHTML = "<p class=\"au-klein\">Noch keine Aufnahme in der App.</p>"; return; }
+      l.forEach(function (a) {
+        var nm = anzeigeName(a.name), z = document.createElement("div"); z.className = "au-row au-eintrag";
+        var b = document.createElement("button"); b.className = "au-auf";
+        b.textContent = nm.titel + "  \u00b7  " + nm.wann + (a.groesse ? "  \u00b7  " + (a.groesse / 1048576).toFixed(1).replace(".", ",") + " MB" : "");
+        b.onclick = async function () {
+          if (!darfErsetzen()) return;
+          $("liste").hidden = true; status("Wird geholt \u2026");
+          try { await tonLaden(await (await hilfe.aufnahmeHolen(a.pfad)).arrayBuffer(), true); }
+          catch (e) { status("\u00d6ffnen ging nicht: " + (e.message || e)); }
+        };
+        var w = document.createElement("button"); w.textContent = "\u2715"; w.title = "aus der App l\u00f6schen";
+        w.onclick = async function () {
+          if (!confirm("\u201e" + nm.titel + "\u201c vom " + nm.wann + " aus der App l\u00f6schen?")) return;
+          try { await hilfe.aufnahmeWeg(a.pfad); z.remove(); } catch (e) { status("L\u00f6schen ging nicht: " + (e.message || e)); }
+        };
+        z.appendChild(b); z.appendChild(w); box.appendChild(z);
+      });
+    } catch (e) { box.innerHTML = ""; var p = document.createElement("p"); p.className = "au-klein"; p.textContent = "Liste ging nicht: " + (e.message || e); box.appendChild(p); }
+  }
   $("datei").onchange = async function () {
     var f = this.files && this.files[0]; this.value = "";
     if (!f) return;
+    if (!darfErsetzen()) return;
+    $("liste").hidden = true;
     status("Wird ge\u00f6ffnet \u2026");
-    try {
-      if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
-      var ab = await ac.decodeAudioData(await f.arrayBuffer());
-      var n = ab.length, kan = ab.numberOfChannels, m = new Float32Array(n);
-      for (var c = 0; c < kan; c++) { var d = ab.getChannelData(c); for (var i = 0; i < n; i++) m[i] += d[i] / kan; }
-      raw = m; sr = ab.sampleRate; cache = {};
-      await showTake();
-    } catch (e) { status("Die Datei kann ich nicht \u00f6ffnen: " + (e.message || e)); }
+    try { await tonLaden(await f.arrayBuffer(), false); }
+    catch (e) { status("Die Datei kann ich nicht \u00f6ffnen: " + (e.message || e)); }
   };
+
+  // verkleinert in die App: die geschnittene rohe Aufnahme als m4a (AAC, 96 kbit/s)
+  function dateiNameFuer() {
+    var d = new Date(), p = function (n) { return (n < 10 ? "0" : "") + n; };
+    var t = texte.find(function (x) { return x.id === curId; });
+    var titel = (t ? t.name : "Aufnahme").toLowerCase()
+      .replace(/\u00e4/g, "ae").replace(/\u00f6/g, "oe").replace(/\u00fc/g, "ue").replace(/\u00df/g, "ss")
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "aufnahme";
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + "__" + titel + ".m4a";
+  }
+  async function alsM4a(x, rate) {
+    if (!("AudioEncoder" in window)) throw new Error("In die App speichern geht in diesem Browser nicht \u2013 am Rechner in Chrome klappt es, sonst Teilen/AirDrop.");
+    await mp4BausteinLaden();
+    var cfg = { codec: "mp4a.40.2", sampleRate: rate, numberOfChannels: 1, bitrate: 96000 };
+    if (!(await AudioEncoder.isConfigSupported(cfg)).supported) throw new Error("Dieser Browser kann den Ton nicht verkleinern \u2013 nimm Teilen/AirDrop.");
+    var pk = 0; for (var i = 0; i < x.length; i++) { var a = Math.abs(x[i]); if (a > pk) pk = a; }
+    var g = pk > 1e-6 ? Math.min(30, 0.9 / pk) : 1;
+    var target = new window.Mp4Muxer.ArrayBufferTarget(), err = null;
+    var mux = new window.Mp4Muxer.Muxer({ target: target, audio: { codec: "aac", sampleRate: rate, numberOfChannels: 1 }, fastStart: "in-memory" });
+    var enc = new AudioEncoder({ output: function (c, m) { mux.addAudioChunk(c, m); }, error: function (e) { err = e; } });
+    enc.configure(cfg);
+    for (var s0 = 0; s0 < x.length && !err; s0 += rate) {
+      var s1 = Math.min(x.length, s0 + rate), d = new Float32Array(s1 - s0);
+      for (var j = 0; j < d.length; j++) d[j] = x[s0 + j] * g;
+      var ad = new AudioData({ format: "f32-planar", sampleRate: rate, numberOfFrames: d.length, numberOfChannels: 1, timestamp: Math.round(s0 * 1e6 / rate), data: d });
+      enc.encode(ad); ad.close();
+      while (enc.encodeQueueSize > 20) await sleep(2);
+      if ((s0 / rate) % 30 === 0) { status("Wird verkleinert \u2026 " + Math.round(s0 / x.length * 100) + " %"); await sleep(0); }
+    }
+    await enc.flush(); if (err) throw err;
+    mux.finalize();
+    return new Blob([target.buffer], { type: "audio/mp4" });
+  }
+  $("wolke").onclick = async function () {
+    if (!raw || state !== "idle") return;
+    var k = this; k.disabled = true;
+    try {
+      status("Wird verkleinert \u2026");
+      var blob = await alsM4a(raw, sr);
+      if (blob.size > 49 * 1048576) throw new Error("Die Aufnahme ist zu lang f\u00fcr ein St\u00fcck (\u00fcber 50 MB). Teil sie auf oder nimm Speichern.");
+      status("Wird hochgeladen \u2026 (" + (blob.size / 1048576).toFixed(1).replace(".", ",") + " MB)");
+      await hilfe.aufnahmeHoch(blob, dateiNameFuer());
+      inAppMerken(true);
+      status("In der App gespeichert \u2013 \u00fcber \ud83d\udcc2 auf jedem Ger\u00e4t zu \u00f6ffnen.");
+    } catch (e) { status(e.message || String(e)); }
+    k.disabled = false;
+  };
+
+  // beim Oeffnen nachsehen, ob noch etwas im Browser liegt
+  (async function () {
+    try {
+      var st = await dbTun("stuecke", "readonly", function (os) { return os.getAll(); });
+      if (dead) return;
+      if (st && st.length) {
+        raw = auspacken(st); sr = st[0].sr; cache = {}; inApp = false;
+        await showTake();
+        status("Die Aufnahme wurde unterbrochen \u2013 alles bis dahin Aufgenommene ist wieder da.");
+        return;
+      }
+      var k = await dbTun("kopie", "readonly", function (os) { return os.get("aktuell"); });
+      if (dead || !k || raw) return;
+      raw = auspacken([k]); sr = k.sr; cache = {}; inApp = !!k.inApp;
+      await showTake();
+      status(inApp ? "Deine letzte Aufnahme ist noch da." : "Deine letzte Aufnahme ist noch da \u2013 sie liegt noch nicht in der App.");
+    } catch (e) {}
+  })();
   root.querySelectorAll("[data-p]").forEach(function (b) {
     b.onclick = function () { S.preset = this.dataset.p; saveS(); markPreset(); renderPreset(S.preset); };
   });
@@ -2018,7 +2263,9 @@ function aufnahmeStarten(root, hilfe) {
     catch (e) {}
   };
   $("discard").onclick = function () {
-    hoerStop(); rueck = [];
+    if (!inApp && !confirm("Aufnahme wirklich verwerfen? Sie ist nicht in der App gespeichert.")) return;
+    hoerStop(); rueck = []; clearTimeout(kopieUhr); inApp = false;
+    dbTun("kopie", "readwrite", function (os) { return os.delete("aktuell"); }).catch(function () {});
     raw = null; cache = {}; lastBlob = null; $("take").hidden = true;
     $("player").removeAttribute("src"); if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
     status("");
@@ -2069,6 +2316,7 @@ function aufnahmeStarten(root, hilfe) {
     if (!$("ta").hidden) schliesseEditor();
     dead = true; active = false; capturing = false;
     stopFollow(); hoerStop();
+    if (sicherUhr) { clearInterval(sicherUhr); sicherUhr = null; }
     document.removeEventListener("keydown", onKey);
     document.removeEventListener("keydown", onTasteSchnitt);
     window.removeEventListener("resize", onGroesse);
@@ -2239,6 +2487,11 @@ function StudioStil() {
 .au-lauf{width:100%; margin:4px 0 0}
 .au-zeit{color:var(--st-dim); font-size:12px; font-variant-numeric:tabular-nums}
 .au-klein{color:var(--st-dim); font-size:12px}
+.au-liste{padding:8px 12px; background:#110d09; border-top:1px solid var(--st-linie); max-height:40vh; overflow-y:auto}
+.au-liste[hidden]{display:none}
+.au-listkopf{font-family:'IM Fell English SC', Georgia, serif; font-weight:normal; color:var(--st-hell); font-size:16px}
+.au-eintrag{margin:4px 0}
+.au button.au-auf{flex:1; text-align:left; font-size:13px}
 .au audio{width:100%; margin:6px 0}
 @media (max-width:560px){
   .au-set{grid-template-columns:1fr}
