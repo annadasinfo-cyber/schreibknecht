@@ -9,6 +9,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 // ============================================================
 
 const EIMER = "studiobilder";
+const ABSPANN = "🎬 Abspann";   // liegt als besonderer Text in studio_texte, gilt fuer alle Filme
 
 // Die BILDER, die zwischen den Filmen liegen. Bei jedem Oeffnen der
 // Filmliste werden drei davon gezogen. Sie stecken direkt hier drin,
@@ -129,7 +130,24 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
 
   // ---- helfer fuer die zoomloop ----
   const film = filme.find((f) => f.id === filmId) || null;
+  const abspannId = useRef(null);
   const filmHilfe = useCallback((id) => ({
+    abspannHolen: async () => {
+      const l = await api("GET", `/rest/v1/studio_texte?select=id,text&name=eq.${encodeURIComponent(ABSPANN)}&limit=1`);
+      if (!l || !l[0]) return { titel: "", namen: "" };
+      abspannId.current = l[0].id;
+      try { const d = JSON.parse(l[0].text || "{}"); return { titel: d.titel || "", namen: d.namen || "" }; }
+      catch (e) { return { titel: "", namen: "" }; }
+    },
+    abspannSpeichern: async (daten) => {
+      const text = JSON.stringify(daten);
+      if (abspannId.current) {
+        await api("PATCH", `/rest/v1/studio_texte?id=eq.${abspannId.current}`, { text, updated_at: new Date().toISOString() });
+      } else {
+        const r = await api("POST", "/rest/v1/studio_texte", { name: ABSPANN, text }, { Prefer: "return=representation" });
+        if (r && r[0]) abspannId.current = r[0].id;
+      }
+    },
     speichern: async (daten) => {
       setFilme((l) => l.map((x) => x.id === id ? { ...x, daten } : x));
       await api("PATCH", `/rest/v1/studio_filme?id=eq.${id}`, { daten, updated_at: new Date().toISOString() });
@@ -159,7 +177,8 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
 
   // ---- helfer fuer den teleprompter ----
   const textHilfe = useCallback(() => ({
-    holen: async () => (await api("GET", "/rest/v1/studio_texte?select=id,name,text&order=created_at.asc")) || [],
+    holen: async () => ((await api("GET", "/rest/v1/studio_texte?select=id,name,text&order=created_at.asc")) || [])
+      .filter((t) => t.name !== ABSPANN),
     neu: async (name, text) => {
       const r = await api("POST", "/rest/v1/studio_texte", { name, text }, { Prefer: "return=representation" });
       return r && r[0];
@@ -371,6 +390,12 @@ const ZL_HTML = `
     </div>
     <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
     <div id="zl_tonhinweis" class="zl-tonhinweis" hidden>Mit Ton l&auml;uft der Film endlos weiter, bis die Sprache aufh&ouml;rt, und blendet dann aus.</div>
+    <h2>Abspann</h2>
+    <label class="zl-row"><input type="checkbox" id="zl_abspann"> nach der Stimme anh&auml;ngen</label>
+    <input id="zl_abtitel" class="zl-abtitel" placeholder="&Uuml;berschrift">
+    <textarea id="zl_abnamen" class="zl-txt zl-abnamen" rows="6" placeholder="ein Name pro Zeile"></textarea>
+    <label>Dauer <b id="zl_v_abdauer"></b></label><input type="range" id="zl_abdauer" min="8" max="40" step="1">
+    <button id="zl_abvor" style="width:100%">Abspann ansehen</button>
     <button class="zl-big" id="zl_exp">MP4 exportieren</button>
     <div id="zl_prog" class="zl-prog"><i></i></div>
     <div id="zl_msg" class="zl-msg"></div>
@@ -386,7 +411,7 @@ function zoomloopStarten(root, film, hilfe) {
   var $ = function (id) { return root.querySelector("#zl_" + id); };
   var DEF = { cx: 0, cy: 0, s: 0.08, r: 0, feather: 18, shape: "oval", br: 100, co: 100, sa: 100, hu: 0, pan: 0, text: "", tpos: "unten", tgr: 6 };
   var daten = film.daten || {};
-  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true }, daten.G || {});
+  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15 }, daten.G || {});
   var items = [];
   var sel = 0, u = 0, playing = false, exporting = false, cancelExport = false, dead = false;
   var cv = $("cv"), ctx = cv.getContext("2d", { alpha: false });
@@ -653,8 +678,88 @@ function zoomloopStarten(root, film, hilfe) {
   schriftBereit().then(function () { draw(); });
 
   function editing() { return !playing && !exporting && Math.abs(u - Math.round(u)) < 1e-6; }
+  /* ---------- Abspann ----------
+     Auf Schwarz: oben die Ueberschrift, darunter die Namen. Kommt von unten
+     hereingerollt, bleibt stehen und blendet am Ende aus. Ist die Liste zu
+     lang fuer den Bildschirm, rollt sie ganz durch. */
+  var ab = { titel: "", namen: "" };
+  function abspannZeichnen(c, W, H, t, dauer) {
+    c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1;
+    c.fillStyle = "#000"; c.fillRect(0, 0, W, H);
+    var titel = (ab.titel || "").trim(), namen = (ab.namen || "").split(/\n/).map(function (z) { return z.trim(); }).filter(Boolean);
+    if (!titel && !namen.length) return;
+    var basis = Math.min(W, H), fsT = Math.round(basis * 0.085), fsN = Math.round(basis * 0.052);
+    if (txtC.width !== W || txtC.height !== H) { txtC.width = W; txtC.height = H; }
+    var x = txtX;
+    x.setTransform(1, 0, 0, 1, 0, 0); x.globalAlpha = 1; x.clearRect(0, 0, W, H);
+    x.textAlign = "center"; x.textBaseline = "middle"; x.lineJoin = "round";
+    // Zeilen sammeln: [text, groesse]
+    var reihe = [];
+    if (titel) { x.font = "700 " + fsT + "px " + SCHRIFT; zeilen(x, titel, W * 0.86).forEach(function (z) { reihe.push([z, fsT, fsT * 1.15]); }); }
+    if (titel && namen.length) reihe.push(["", fsN, fsN * 0.9]);
+    x.font = "700 " + fsN + "px " + SCHRIFT;
+    namen.forEach(function (n) { zeilen(x, n, W * 0.8).forEach(function (z) { reihe.push([z, fsN, fsN * 1.55]); }); });
+    var hoch = 0; reihe.forEach(function (r) { hoch += r[2]; });
+    // wo steht der Block oben?
+    var oben, a = 1;
+    if (hoch <= H * 0.82) {
+      var rein = Math.min(dauer * 0.45, 7), q = Math.min(1, t / rein), e = 1 - Math.pow(1 - q, 3);
+      oben = H + (((H - hoch) / 2) - H) * e;
+      if (t > dauer - 1.8) a = Math.max(0, (dauer - t) / 1.8);
+    } else {
+      oben = H - (H + hoch) * (t / dauer);
+    }
+    // 1. Durchgang Glut und Kontur, 2. Durchgang die helle Schrift
+    for (var gang = 0; gang < 2; gang++) {
+      var y = oben;
+      reihe.forEach(function (r) {
+        var mitte = y + r[2] / 2; y += r[2];
+        if (!r[0] || mitte < -r[1] || mitte > H + r[1]) return;
+        x.font = "700 " + r[1] + "px " + SCHRIFT;
+        if (gang === 0) {
+          x.shadowColor = "rgba(150,8,8,.95)"; x.shadowBlur = r[1] * 0.45;
+          x.lineWidth = Math.max(2, r[1] * 0.13); x.strokeStyle = "rgba(22,4,4,.96)";
+          x.strokeText(r[0], W / 2, mitte);
+        } else {
+          x.shadowBlur = 0; x.shadowColor = "rgba(0,0,0,0)";
+          var v = x.createLinearGradient(0, mitte - r[1] / 2, 0, mitte + r[1] / 2);
+          v.addColorStop(0, "#fffaf0"); v.addColorStop(0.55, "#f1dfc4"); v.addColorStop(1, "#c9a883");
+          x.fillStyle = v; x.fillText(r[0], W / 2, mitte);
+        }
+      });
+    }
+    c.globalAlpha = a; c.drawImage(txtC, 0, 0); c.globalAlpha = 1;
+  }
+  var abVor = null;   // laufende Vorschau
+  function abVorLauf(tz) {
+    if (!abVor || dead) return;
+    var t = (tz - abVor) / 1000;
+    if (t >= G.abDauer) { abVor = null; $("abvor").textContent = "Abspann ansehen"; draw(); return; }
+    abspannZeichnen(ctx, cv.width, cv.height, t, G.abDauer);
+    requestAnimationFrame(abVorLauf);
+  }
+  $("abvor").onclick = function () {
+    if (abVor) { abVor = null; this.textContent = "Abspann ansehen"; draw(); return; }
+    stop(); schriftBereit().then(function () { abVor = performance.now(); $("abvor").textContent = "Vorschau beenden"; requestAnimationFrame(abVorLauf); });
+  };
+  var abUhr = 0;
+  function abSpeichern() {
+    clearTimeout(abUhr);
+    abUhr = setTimeout(function () { hilfe.abspannSpeichern({ titel: ab.titel, namen: ab.namen }).catch(function (e) { msg("Abspann speichern ging nicht: " + (e.message || e)); }); }, 900);
+  }
+  $("abtitel").addEventListener("input", function () { ab.titel = this.value; abSpeichern(); });
+  $("abnamen").addEventListener("input", function () { ab.namen = this.value; abSpeichern(); });
+  $("abspann").onchange = function () { G.abspann = this.checked; save(); };
+  $("abdauer").oninput = function () { G.abDauer = +this.value; $("v_abdauer").textContent = G.abDauer + " s"; save(); };
+  $("abspann").checked = !!G.abspann; $("abdauer").value = G.abDauer; $("v_abdauer").textContent = G.abDauer + " s";
+  hilfe.abspannHolen().then(function (d) {
+    if (dead) return;
+    ab = d; $("abtitel").value = d.titel; $("abnamen").value = d.namen;
+  }).catch(function () {});
+
   function draw() {
     if (dead) return;
+    if (abVor) return;   // waehrend der Abspann-Vorschau nicht dazwischenmalen
     render(ctx, cv.width, cv.height, u, false, editing() && $("frame").checked, editing());
     var S = segs();
     $("scrub").max = Math.max(S, 0.001); $("scrub").value = u;
@@ -1257,14 +1362,39 @@ function zoomloopStarten(root, film, hilfe) {
         }
       }
 
+      // 4) der Abspann nach der Stimme, dazu Stille
+      var abFrames = 0;
+      var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
+      if (abDa && !cancelExport && !err && !dead) {
+        abFrames = Math.round(G.abDauer * fps);
+        for (var ga = 0; ga < abFrames; ga++) {
+          if (cancelExport || err || dead) break;
+          abspannZeichnen(ox, W, H, ga / fps, G.abDauer);
+          var vfa = new VideoFrame(oc, { timestamp: Math.round((total + ga) * frameUs), duration: Math.round(frameUs) });
+          enc.encode(vfa, { keyFrame: ga % K === 0 }); vfa.close();
+          while (enc.encodeQueueSize > 8) await sleep(4);
+          if (ga % 8 === 0) { melde("Der Abspann wird gerechnet \u2026", 0.97 + ga / abFrames * 0.03); await sleep(0); }
+        }
+      }
+
       if (err) throw err;
       if (!cancelExport && !dead) {
         await tonBis(aFrames);
+        if (abFrames) {
+          // Stille fuer die Dauer des Abspanns
+          var stilleBis = Math.round((total + abFrames) / fps * sr);
+          while (aPos < stilleBis && !err) {
+            var sl = Math.min(sr, stilleBis - aPos), leer = new Float32Array(sl * ausKanaele);
+            var sd = new AudioData({ format: "f32-planar", sampleRate: sr, numberOfFrames: sl, numberOfChannels: ausKanaele, timestamp: Math.round(aPos * 1e6 / sr), data: leer });
+            aenc.encode(sd); sd.close(); aPos += sl;
+            while (aenc.encodeQueueSize > 20) await sleep(2);
+          }
+        }
         await enc.flush(); await aenc.flush();
         muxer.finalize();
         await writes; var wo = await ziel.fertig(); stream = null;
         done = true;
-        msg("Fertig (" + dauerText(T) + ") \u2013 " + wo + ".");
+        msg("Fertig (" + dauerText(T + abFrames / fps) + ") \u2013 " + wo + ".");
       } else msg("Abgebrochen.");
     } catch (e) {
       msg("Fehler: " + (e.message || e));
@@ -2483,6 +2613,8 @@ function StudioStil() {
 .zl-pair{color:#e6d9bb; font-size:13px; margin-bottom:4px}
 .zl-cprev{width:100%; display:block; margin:4px 0; cursor:grab; touch-action:none}
 .zl-txt{width:100%; background:#0b0907; color:#e6d9bb; border:1px solid var(--st-linie); border-radius:3px; padding:6px 8px; font:15px/1.35 "Grenze Gotisch", Georgia, serif; resize:vertical; margin-bottom:6px}
+.zl-abtitel{width:100%; background:#0b0907; color:#e6d9bb; border:1px solid var(--st-linie); border-radius:3px; padding:6px 8px; font:16px "Grenze Gotisch", Georgia, serif; text-align:center; margin:6px 0}
+.zl-abnamen{text-align:center}
 .zl-tonname{color:#e6d9bb; font-size:12px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .zl-tonhinweis{color:var(--st-dim); font-size:11px; margin-top:4px; font-style:italic}
 .zl-tonhinweis[hidden]{display:none}
