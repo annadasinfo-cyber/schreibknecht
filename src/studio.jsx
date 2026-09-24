@@ -48,6 +48,20 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck }) {
 
   useEffect(() => { filmeHolen(); }, [filmeHolen]);
 
+  // Escape = eine tuer zurueck (nicht, waehrend man in einem feld schreibt)
+  const ansichtRef = useRef(ansicht);
+  ansichtRef.current = ansicht;
+  useEffect(() => {
+    const taste = (e) => {
+      if (e.key !== "Escape") return;
+      const a = document.activeElement;
+      if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+      if (ansichtRef.current === "film") setAnsicht("liste"); else zurueck();
+    };
+    document.addEventListener("keydown", taste);
+    return () => document.removeEventListener("keydown", taste);
+  }, [zurueck]);
+
   const neuerFilm = async () => {
     const name = prompt("wie soll der film heißen?", "neuer film");
     if (name === null) return;
@@ -1361,6 +1375,10 @@ function StudioStil() {
 .studio *{box-sizing:border-box}
 .studio button, .studio select, .studio input, .studio textarea{font-family:inherit}
 .st-kopf{display:flex; gap:8px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--st-linie); background:#110d09; flex-wrap:wrap}
+/* als app im dock: die leiste unter die fensterknoepfe und die menueleiste schieben */
+@media (display-mode: standalone), (display-mode: fullscreen){
+  .st-kopf{padding-top:34px}
+}
 .st-titel{font-family:'IM Fell English SC', Georgia, serif; font-size:19px; color:var(--st-hell); letter-spacing:.04em; margin-left:6px}
 .st-luft{flex:1}
 .st-knopf{background:var(--st-feld); color:#e6d9bb; border:1px solid var(--st-linie); border-radius:4px; padding:7px 12px; cursor:pointer; font-size:13px}
