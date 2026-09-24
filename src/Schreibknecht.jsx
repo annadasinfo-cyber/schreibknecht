@@ -727,7 +727,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                        hand, setHand, laden, glocke, allesHolen,
                        abschnittHand, setAbschnittHand,
                        suche, setSuche, fern, suchtFern, springe, springZu, setSpringZu,
-                       alleProjekte }) {
+                       alleProjekte, zumPrompter }) {
   const [zug, setZug] = useState(null);      // {ai, id, karte, dx, dy, x, y, laeuft}
   const [ziel, setZiel] = useState(null);   // worauf gerade gezeigt wird
   const zugRef = useRef(null);
@@ -2411,6 +2411,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                         )}
                       </>
                     )}
+                    {zumPrompter && (
+                      <button className="klein" onClick={() => zumPrompter(f.karte)}
+                        disabled={!f.karte.text.trim()} title="in den teleprompter im studio">🎙</button>
+                    )}
                     <span className="fuellung" />
                     {zaehle(f.karte.text).toLocaleString("de-DE")} wörter
                   </div>
@@ -2671,6 +2675,7 @@ export default function Schreibknecht() {
   const [warten, setWarten] = useState(() => warteLesen().length);   // noch nicht abgeschickt
   const [laeutet, setLaeutet] = useState(false);   // die glocke schwingt gerade
   const [studio, setStudio] = useState(false);     // hinter der tuer: das studio
+  const [studioStart, setStudioStart] = useState("liste");   // womit das studio aufgeht
   const zuletztUhr = useRef(null);
 
   // die kartenbilder gleich beim start vorbereiten, nicht erst
@@ -3471,6 +3476,28 @@ fortfahren?`
     }, 2500);
   }, [projektWorte, projekt, geladen]); // eslint-disable-line
 
+  // eine karte in den teleprompter schieben: gibt es schon einen text mit
+  // ihrem namen, wird der ueberschrieben — sonst entsteht ein neuer
+  const zumPrompter = async (karte) => {
+    const text = (karte.text || "").trim();
+    if (!text) return;
+    const kopfzeile = (karte.titel || "").trim() || text.split(/\s+/).slice(0, 5).join(" ");
+    const name = "🃏 " + kopfzeile.slice(0, 60);
+    try {
+      const alle = (await api("GET", "/rest/v1/studio_texte?select=id,name")) || [];
+      const da = alle.find((t) => t.name === name);
+      let id = da && da.id;
+      if (id) await api("PATCH", `/rest/v1/studio_texte?id=eq.${id}`, { text, updated_at: new Date().toISOString() });
+      else {
+        const r = await api("POST", "/rest/v1/studio_texte", { name, text }, { Prefer: "return=representation" });
+        id = r && r[0] && r[0].id;
+      }
+      if (!id) { setMsg("das ging gerade nicht — ist das netz da?"); return; }
+      try { localStorage.setItem("studio:text", id); } catch {}
+      setStudioStart("aufnahme"); setStudio(true);
+    } catch (e) { setMsg(String(e.message || e)); }
+  };
+
   return (
     <div className="huette">
       <Stil />
@@ -3503,7 +3530,7 @@ fortfahren?`
                   abschnittHand={abschnittHand} setAbschnittHand={setAbschnittHand}
                   suche={suche} setSuche={setSuche} fern={fern} suchtFern={suchtFern}
                   springe={springe} springZu={springZu} setSpringZu={setSpringZu}
-                  alleProjekte={projekte}
+                  alleProjekte={projekte} zumPrompter={zumPrompter}
                   glocke={
                     <div className={"glocke" + (laeutet ? " schwingt" : "")
                         + (heutGeschrieben >= ziel ? " voll" : "")}
@@ -3515,7 +3542,8 @@ fortfahren?`
                       </span>
                     </div>
                   } />
-              : <Deckblatt projekte={projekte} anlegen={projektAnlegen} studio={() => setStudio(true)}
+              : <Deckblatt projekte={projekte} anlegen={projektAnlegen}
+                  studio={() => { setStudioStart("liste"); setStudio(true); }}
                   oeffnen={setOffen} weg={projektWeg} kopieren={projektKopieren}
                   sicherung={sicherung} sichert={sichert}
                   zurueckspielen={zurueckspielen} spieltZurueck={spieltZurueck}
@@ -3566,7 +3594,7 @@ fortfahren?`
       <NachOben />
       {sitzung && studio && (
         <Studio api={api} zugang={() => sitzungRef.current} URL_DB={URL_DB} KEY_DB={KEY_DB}
-          zurueck={() => setStudio(false)} />
+          zurueck={() => setStudio(false)} start={studioStart} />
       )}
     </div>
   );

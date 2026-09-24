@@ -41,8 +41,8 @@ const streuung = (id) => {
   return { breit: [200, 250, 300, 230][h % 4], kipp: ((h % 5) - 2) * 0.35, hoch: (h % 3) * 4 };
 };
 
-export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck }) {
-  const [ansicht, setAnsicht] = useState("liste");   // liste | film | aufnahme
+export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) {
+  const [ansicht, setAnsicht] = useState(start || "liste");   // liste | film | aufnahme
   const [filme, setFilme] = useState([]);
   const [filmId, setFilmId] = useState(null);
   const [laedt, setLaedt] = useState(true);
@@ -172,18 +172,9 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck }) {
   return (
     <div className="studio">
       <StudioStil />
-      <div className="st-kopf">
-        <button className="st-knopf" onClick={ansicht === "film" ? () => setAnsicht("liste") : zurueck}>
-          {ansicht === "film" ? "← filme" : "← schreibknecht"}
-        </button>
-        <span className="st-titel">{ansicht === "film" && film ? film.name : "studio"}</span>
-        <span className="st-luft" />
-        <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
-          onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
-        <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
-          onClick={() => setAnsicht("aufnahme")}>🎙 aufnahme</button>
-      </div>
-
+      {/* oben nur schmuck, nichts zum klicken: dort legt sich in der web-app
+          beim drueberfahren die leiste vom browser drueber */}
+      <div className="st-zier">{ansicht === "film" && film ? film.name : ansicht === "aufnahme" ? "aufnahme" : "studio"}</div>
       <div className="st-rumpf">
         {ansicht === "liste" && (
           <FilmListe filme={filme} laedt={laedt} fehler={fehler} setFehler={setFehler}
@@ -196,6 +187,17 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck }) {
         )}
 
         {ansicht === "aufnahme" && <AufnahmeRaum hilfe={textHilfe()} />}
+      </div>
+
+      <div className="st-leiste">
+        <button className="st-knopf" onClick={ansicht === "film" ? () => setAnsicht("liste") : zurueck}>
+          {ansicht === "film" ? "← filme" : "← schreibknecht"}
+        </button>
+        <span className="st-luft" />
+        <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
+          onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
+        <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
+          onClick={() => setAnsicht("aufnahme")}>🎙 aufnahme</button>
       </div>
     </div>
   );
@@ -1448,12 +1450,16 @@ function StudioStil() {
 }
 .studio *{box-sizing:border-box}
 .studio button, .studio select, .studio input, .studio textarea{font-family:inherit}
-.st-kopf{display:flex; gap:8px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--st-linie); background:#110d09; flex-wrap:wrap}
-/* als app im dock: die leiste unter die fensterknoepfe und die menueleiste schieben */
-@media (display-mode: standalone), (display-mode: fullscreen){
-  .st-kopf{padding-top:34px}
+/* oben: nur ein schild, nichts zum anklicken — in der web-app legt sich dort
+   die browserleiste drueber, sobald die maus hinkommt */
+.st-zier{
+  flex:none; height:58px; display:flex; align-items:flex-end; justify-content:center; padding-bottom:8px;
+  font-family:'IM Fell English SC', Georgia, serif; font-size:22px; letter-spacing:.06em; color:var(--st-hell);
+  border-bottom:1px solid var(--st-linie); background:#0e0b08; pointer-events:none; user-select:none;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
-.st-titel{font-family:'IM Fell English SC', Georgia, serif; font-size:19px; color:var(--st-hell); letter-spacing:.04em; margin-left:6px}
+/* unten: die leiste mit den tueren */
+.st-leiste{flex:none; display:flex; gap:8px; align-items:center; padding:8px 12px; border-top:1px solid var(--st-linie); background:#110d09}
 .st-luft{flex:1}
 .st-knopf{background:var(--st-feld); color:#e6d9bb; border:1px solid var(--st-linie); border-radius:4px; padding:7px 12px; cursor:pointer; font-size:13px}
 .st-knopf:hover{border-color:var(--st-gold)}
