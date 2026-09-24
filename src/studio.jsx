@@ -319,6 +319,14 @@ const ZL_HTML = `
     <label>N&auml;chstes Bild einblenden <b id="zl_v_fade"></b></label><input type="range" id="zl_fade" min="0" max="100" step="5">
     <label>Bilder pro Sekunde</label><select id="zl_fps"><option>60</option><option>30</option><option>25</option></select>
     <label class="zl-row" style="margin-top:10px"><input type="checkbox" id="zl_loop" checked> Endlos (letztes Bild zoomt zur&uuml;ck in Bild 1)</label>
+    <label>Ton dazu</label>
+    <div class="zl-row">
+      <button id="zl_tonwahl">Ton w&auml;hlen &hellip;</button>
+      <span id="zl_tonname" class="zl-tonname">kein Ton</span>
+      <button id="zl_tonweg" hidden title="Ton wieder weg">&#10005;</button>
+    </div>
+    <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
+    <div id="zl_tonhinweis" class="zl-tonhinweis" hidden>Mit Ton l&auml;uft der Film endlos weiter, bis die Sprache aufh&ouml;rt, und blendet dann aus.</div>
     <button class="zl-big" id="zl_exp">MP4 exportieren</button>
     <div id="zl_prog" class="zl-prog"><i></i></div>
     <div id="zl_msg" class="zl-msg"></div>
@@ -770,6 +778,7 @@ function zoomloopStarten(root, film, hilfe) {
   $("exp").onclick = async function () {
     var knopf = this;
     if (exporting) { cancelExport = true; return; }
+    if (ton) { exportMitTon(knopf); return; }
     var S = segs(); if (!S) { msg("Mindestens zwei Bilder."); return; }
     if (!("VideoEncoder" in window)) { msg("Der Export geht in Chrome am Rechner."); return; }
     try { await mp4Baustein(); } catch (e) { msg(e.message); return; }
@@ -842,6 +851,296 @@ function zoomloopStarten(root, film, hilfe) {
     bigCache.clear(); exporting = false; knopf.textContent = "MP4 exportieren"; $("prog").style.display = "none"; draw();
     if (done && !dead) alert($("msg").textContent);
   };
+
+
+  /* ---------- Ton dazu ---------- */
+  var ton = null;   // { file, name }
+  function tonAnzeigen(extra) {
+    $("tonname").textContent = ton ? ton.name + (extra ? " \u2013 " + extra : "") : "kein Ton";
+    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton;
+    $("exp").textContent = ton ? "MP4 mit Ton exportieren" : "MP4 exportieren";
+  }
+  function dauerText(sec) {
+    var h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = Math.round(sec % 60);
+    if (s === 60) { s = 0; m++; }
+    return (h ? h + ":" + (m < 10 ? "0" : "") : "") + m + ":" + (s < 10 ? "0" : "") + s;
+  }
+  $("tonwahl").onclick = function () { if (!exporting) $("ton").click(); };
+  $("ton").onchange = async function () {
+    var f = this.files && this.files[0]; this.value = "";
+    if (!f) return;
+    ton = { file: f, name: f.name }; tonAnzeigen();
+    try {
+      var k = wavKopf(new DataView(await f.slice(0, Math.min(f.size, 1 << 20)).arrayBuffer()), f.size);
+      if (k && ton && ton.file === f) tonAnzeigen(dauerText(k.frames / k.sr));
+    } catch (e) {}
+  };
+  $("tonweg").onclick = function () { if (exporting) return; ton = null; tonAnzeigen(); };
+
+  function wavKopf(dv, size) {
+    function str(o, n) { var t = ""; for (var i = 0; i < n; i++) t += String.fromCharCode(dv.getUint8(o + i)); return t; }
+    if (dv.byteLength < 12 || str(0, 4) !== "RIFF" || str(8, 4) !== "WAVE") return null;
+    var pos = 12, fmt = null;
+    while (pos + 8 <= dv.byteLength) {
+      var id = str(pos, 4), len = dv.getUint32(pos + 4, true);
+      if (id === "fmt ") {
+        fmt = { tag: dv.getUint16(pos + 8, true), ch: dv.getUint16(pos + 10, true), sr: dv.getUint32(pos + 12, true), bits: dv.getUint16(pos + 22, true) };
+        if (fmt.tag === 0xFFFE && len >= 26) fmt.tag = dv.getUint16(pos + 32, true);
+      } else if (id === "data") {
+        if (!fmt) return null;
+        var ok = (fmt.tag === 1 && (fmt.bits === 16 || fmt.bits === 24 || fmt.bits === 32)) || (fmt.tag === 3 && fmt.bits === 32);
+        if (!ok) return null;
+        var off = pos + 8, bpf = fmt.ch * fmt.bits / 8;
+        var n = (len === 0 || len === 0xFFFFFFFF || off + len > size) ? size - off : len;
+        return { sr: fmt.sr, ch: fmt.ch, bits: fmt.bits, tag: fmt.tag, off: off, bpf: bpf, frames: Math.floor(n / bpf) };
+      }
+      pos += 8 + len + (len & 1);
+    }
+    return null;
+  }
+  /* liest den Ton stueckweise — eine Stunde passt nicht auf einmal in den Speicher */
+  async function tonOeffnen(file) {
+    var k = wavKopf(new DataView(await file.slice(0, Math.min(file.size, 1 << 20)).arrayBuffer()), file.size);
+    if (k) {
+      var outCh = Math.min(2, k.ch), by = k.bits / 8;
+      return {
+        sr: k.sr, ch: outCh, frames: k.frames,
+        lies: async function (a, b) {
+          var buf = await file.slice(k.off + a * k.bpf, k.off + b * k.bpf).arrayBuffer();
+          var dv = new DataView(buf), n = Math.floor(buf.byteLength / k.bpf), planes = [];
+          for (var c = 0; c < outCh; c++) planes.push(new Float32Array(n));
+          for (var i = 0; i < n; i++) {
+            for (var c2 = 0; c2 < outCh; c2++) {
+              var o = i * k.bpf + c2 * by, v;
+              if (k.tag === 3) v = dv.getFloat32(o, true);
+              else if (k.bits === 16) v = dv.getInt16(o, true) / 32768;
+              else if (k.bits === 24) { var q = dv.getUint8(o) | (dv.getUint8(o + 1) << 8) | (dv.getUint8(o + 2) << 16); if (q & 0x800000) q -= 0x1000000; v = q / 8388608; }
+              else v = dv.getInt32(o, true) / 2147483648;
+              planes[c2][i] = v;
+            }
+          }
+          return planes;
+        }
+      };
+    }
+    var AC = window.AudioContext || window.webkitAudioContext, ac = new AC({ sampleRate: 48000 });
+    var ab = await ac.decodeAudioData(await file.arrayBuffer());
+    try { ac.close(); } catch (e) {}
+    var ch = Math.min(2, ab.numberOfChannels), daten = [];
+    for (var c = 0; c < ch; c++) daten.push(ab.getChannelData(c));
+    return { sr: ab.sampleRate, ch: ch, frames: ab.length, lies: async function (a, b) { return daten.map(function (d) { return d.slice(a, b); }); } };
+  }
+
+  /* ---------- Export mit Ton: einen Durchlauf rechnen, dann aneinanderhaengen ---------- */
+  async function exportMitTon(knopf) {
+    if (items.length < 2) { msg("Mindestens zwei Bilder."); return; }
+    if (!("VideoEncoder" in window) || !("AudioEncoder" in window)) { msg("Der Export mit Ton geht in Chrome am Rechner."); return; }
+    if (!window.showSaveFilePicker) { msg("Der Export mit Ton braucht Chrome am Rechner (zum Speichern gro\u00dfer Dateien)."); return; }
+    try { await mp4Baustein(); } catch (e) { msg(e.message); return; }
+
+    var handle, stream;
+    try {
+      handle = await window.showSaveFilePicker({ suggestedName: (film.name || "zoomloop") + ".mp4", types: [{ description: "Video", accept: { "video/mp4": [".mp4"] } }] });
+      stream = await handle.createWritable();
+    } catch (e) { msg(e && e.name === "AbortError" ? "Abgebrochen." : "Speichern ging nicht: " + (e.message || e)); return; }
+
+    var altLoop = G.loop; G.loop = true;
+    stop(); exporting = true; cancelExport = false; knopf.textContent = "Abbrechen";
+    $("prog").style.display = "block"; var bar = $("prog").firstElementChild; bar.style.width = "0";
+    msg("Ton wird gelesen \u2026");
+
+    var W = G.W, H = G.H, fps = G.fps, err = null, done = false;
+    var rate = W * H > 1920 * 1080 ? (fps > 30 ? 40e6 : 30e6) : (fps > 30 ? 12e6 : 8e6);
+    var K = fps * 2, frameUs = 1e6 / fps;
+    var enc = null, aenc = null, lager = null, lagerName = "zl-durchlauf-" + Date.now() + ".bin";
+
+    try {
+      var t = await tonOeffnen(ton.file);
+      var sr = t.sr, aFrames = t.frames, T = aFrames / sr;
+      if (T < 1) throw new Error("Der Ton ist zu kurz.");
+      // rss.com (Max) nimmt Videos bis 5 GB: die Datenrate so waehlen, dass
+      // der ganze Film unter 4,6 GB bleibt. Bei ruhigen Zoomfahrten reicht das locker.
+      rate = Math.max(2e6, Math.min(rate, 4.6e9 * 8 / T - 256000));
+      var ausKanaele = 2;   // immer Stereo, wie Apple es empfiehlt — Mono wird verdoppelt
+
+      // Ton-Kodierer: AAC, sonst Opus
+      var acfg = { codec: "mp4a.40.2", sampleRate: sr, numberOfChannels: ausKanaele, bitrate: 192000 }, amux = "aac";
+      if (!(await AudioEncoder.isConfigSupported(acfg)).supported) {
+        acfg = { codec: "opus", sampleRate: sr, numberOfChannels: ausKanaele, bitrate: 160000 }; amux = "opus";
+        if (!(await AudioEncoder.isConfigSupported(acfg)).supported) throw new Error("Dieses Tonformat kann ich nicht einbauen \u2013 nimm eine WAV mit 44,1 oder 48 kHz.");
+      }
+
+      var writes = Promise.resolve();
+      var target = new window.Mp4Muxer.StreamTarget({
+        chunked: true, chunkSize: 4 * 1024 * 1024,
+        onData: function (data, position) {
+          var copy = data.slice();
+          writes = writes.then(function () { return stream.write({ type: "write", position: position, data: copy }); });
+        }
+      });
+      var muxer = new window.Mp4Muxer.Muxer({
+        target: target,
+        video: { codec: "avc", width: W, height: H, frameRate: fps },
+        audio: { codec: amux, sampleRate: sr, numberOfChannels: ausKanaele },
+        fastStart: false
+      });
+
+      aenc = new AudioEncoder({ output: function (c, m) { muxer.addAudioChunk(c, m); }, error: function (e) { err = e; } });
+      aenc.configure(acfg);
+      var aPos = 0, fadeA = Math.min(aFrames, 2 * sr);
+      async function tonBis(ziel) {
+        ziel = Math.min(aFrames, Math.floor(ziel));
+        while (aPos < ziel && !err) {
+          var b = Math.min(ziel, aPos + sr);
+          var planes = await t.lies(aPos, b), len = Math.min(b - aPos, planes[0].length);
+          if (len <= 0) { aPos = ziel; break; }
+          var data = new Float32Array(len * ausKanaele);
+          for (var c = 0; c < ausKanaele; c++) {
+            var pl = planes[Math.min(c, planes.length - 1)];
+            for (var j = 0; j < len; j++) {
+              var k = aPos + j, g = k > aFrames - fadeA ? Math.max(0, (aFrames - k) / fadeA) : 1;
+              data[c * len + j] = pl[j] * g;
+            }
+          }
+          var ad = new AudioData({ format: "f32-planar", sampleRate: sr, numberOfFrames: len, numberOfChannels: ausKanaele, timestamp: Math.round(aPos * 1e6 / sr), data: data });
+          aenc.encode(ad); ad.close();
+          aPos += len;
+          while (aenc.encodeQueueSize > 20) await sleep(2);
+        }
+      }
+
+      // Bild-Kodierer
+      var S = segs(), framesPerLoop = Math.max(2, Math.round(S * G.sec * fps));
+      var total = Math.ceil(T * fps), fadeV = Math.min(total, 2 * fps);
+      var ziel = total - fadeV;
+      var c0 = Math.floor(ziel / framesPerLoop), r0 = ziel - c0 * framesPerLoop;
+      var start = c0 * framesPerLoop + Math.floor(r0 / K) * K;   // hier beginnt das frisch gerechnete ende
+      var kopieren = start > framesPerLoop;
+
+      // der erste Durchlauf wird zwischengelagert (auf der Festplatte des Browsers)
+      var sammeln = kopieren, stuecke = [], lagerOff = 0, lagerW = null, lagerDir = null, lagerSchreib = Promise.resolve(), imSpeicher = false;
+      if (kopieren) {
+        try {
+          lagerDir = await navigator.storage.getDirectory();
+          var lh = await lagerDir.getFileHandle(lagerName, { create: true });
+          lagerW = await lh.createWritable();
+          lager = lh;
+        } catch (e) { imSpeicher = true; }
+      }
+
+      var oc = document.createElement("canvas"); oc.width = W; oc.height = H;
+      var ox = oc.getContext("2d", { alpha: false });
+      enc = new VideoEncoder({
+        output: function (c, m) {
+          if (sammeln) {
+            var buf = new Uint8Array(c.byteLength); c.copyTo(buf);
+            var st = { idx: Math.round(c.timestamp / frameUs), type: c.type, len: buf.length };
+            if (imSpeicher) st.data = buf;
+            else { st.off = lagerOff; lagerOff += buf.length; lagerSchreib = lagerSchreib.then(function () { return lagerW.write(buf); }); }
+            stuecke.push(st);
+          }
+          muxer.addVideoChunk(c, m);
+        },
+        error: function (e) { err = e; }
+      });
+      var cfg = { codec: (W * H > 1920 * 1080 ? "avc1.640033" : "avc1.64002A"), width: W, height: H, bitrate: rate, framerate: fps };
+      if (!(await VideoEncoder.isConfigSupported(cfg)).supported) throw new Error("Dieses Format kann dein Browser nicht als MP4 kodieren.");
+      enc.configure(cfg);
+
+      async function bildRechnen(g, schluessel) {
+        render(ox, W, H, (g % framesPerLoop) / framesPerLoop * S, true, false, false);
+        if (g >= total - fadeV) {
+          ox.setTransform(1, 0, 0, 1, 0, 0);
+          ox.fillStyle = "rgba(0,0,0," + Math.min(1, (g - (total - fadeV) + 1) / fadeV) + ")"; ox.fillRect(0, 0, W, H);
+        }
+        var vf = new VideoFrame(oc, { timestamp: Math.round(g * frameUs), duration: Math.round(frameUs) });
+        enc.encode(vf, { keyFrame: schluessel }); vf.close();
+        while (enc.encodeQueueSize > 8) await sleep(4);
+      }
+      var t0 = performance.now();
+      function melde(text, anteil) {
+        bar.style.width = Math.min(100, anteil * 100) + "%";
+        msg(text);
+      }
+
+      // 1) frisch rechnen: entweder alles (kurzer Ton) oder genau einen Durchlauf
+      var ersteBis = kopieren ? framesPerLoop : total;
+      for (var g = 0; g < ersteBis; g++) {
+        if (cancelExport || err || dead) break;
+        await bildRechnen(g, g % K === 0);
+        if (g % K === 0) await tonBis((g + K) / fps * sr);
+        if (g % 8 === 0) {
+          var left = Math.ceil((performance.now() - t0) / (g + 1) * (ersteBis - g) / 1000);
+          melde((kopieren ? "Durchlauf wird gerechnet: " : "Film wird gerechnet: ") + Math.round(g / ersteBis * 100) + " % \u2013 noch ca. " + (left > 90 ? Math.ceil(left / 60) + " min" : left + " s"),
+            kopieren ? g / ersteBis * 0.8 : g / ersteBis);
+          await sleep(0);
+        }
+      }
+
+      if (kopieren && !cancelExport && !err && !dead) {
+        await enc.flush(); sammeln = false;
+        var lagerDatei = null;
+        if (!imSpeicher) { await lagerSchreib; await lagerW.close(); lagerW = null; lagerDatei = await lager.getFile(); }
+
+        // in Gruppen von Schluesselbild zu Schluesselbild
+        stuecke.sort(function (a, b) { return a.idx - b.idx; });
+        var gruppen = [];
+        stuecke.forEach(function (st) { if (st.type === "key" || !gruppen.length) gruppen.push([]); gruppen[gruppen.length - 1].push(st); });
+
+        // 2) aneinanderhaengen bis kurz vor Schluss
+        var fertig = false;
+        for (var r = 1; !fertig; r++) {
+          for (var gi = 0; gi < gruppen.length; gi++) {
+            if (cancelExport || err || dead) { fertig = true; break; }
+            var gr = gruppen[gi], basis = r * framesPerLoop;
+            if (basis + gr[0].idx >= start) { fertig = true; break; }
+            var bytes = null, b0 = 0;
+            if (!imSpeicher) {
+              b0 = gr[0].off;
+              var ende = gr[gr.length - 1].off + gr[gr.length - 1].len;
+              bytes = new Uint8Array(await lagerDatei.slice(b0, ende).arrayBuffer());
+            }
+            for (var si = 0; si < gr.length; si++) {
+              var st = gr[si];
+              var daten = imSpeicher ? st.data : bytes.subarray(st.off - b0, st.off - b0 + st.len);
+              muxer.addVideoChunk(new EncodedVideoChunk({ type: st.type, timestamp: Math.round((basis + st.idx) * frameUs), duration: Math.round(frameUs), data: daten }));
+            }
+            var bisBild = basis + gr[gr.length - 1].idx + 1;
+            await tonBis(bisBild / fps * sr);
+            melde("Wird aneinandergeh\u00e4ngt: " + dauerText(bisBild / fps) + " von " + dauerText(T), 0.8 + bisBild / total * 0.15);
+            await sleep(0);
+          }
+        }
+
+        // 3) das Ende frisch rechnen, mit Ausblenden
+        for (var g2 = start; g2 < total; g2++) {
+          if (cancelExport || err || dead) break;
+          await bildRechnen(g2, (g2 - start) % K === 0);
+          if (g2 % 8 === 0) { melde("Das Ende wird gerechnet \u2026", 0.95 + (g2 - start) / Math.max(1, total - start) * 0.05); await sleep(0); }
+        }
+      }
+
+      if (err) throw err;
+      if (!cancelExport && !dead) {
+        await tonBis(aFrames);
+        await enc.flush(); await aenc.flush();
+        muxer.finalize();
+        await writes; await stream.close(); stream = null;
+        done = true;
+        msg("Fertig: " + handle.name + " (" + dauerText(T) + ") ist gespeichert.");
+      } else msg("Abgebrochen.");
+    } catch (e) {
+      msg("Fehler: " + (e.message || e));
+    }
+    try { if (enc && enc.state !== "closed") enc.close(); } catch (e) {}
+    try { if (aenc && aenc.state !== "closed") aenc.close(); } catch (e) {}
+    if (stream) { try { await stream.close(); } catch (e) {} }
+    try { if (lager) { var d = await navigator.storage.getDirectory(); await d.removeEntry(lagerName); } } catch (e) {}
+    G.loop = altLoop;
+    bigCache.clear(); exporting = false; knopf.textContent = ton ? "MP4 mit Ton exportieren" : "MP4 exportieren";
+    $("prog").style.display = "none"; draw();
+    if (done && !dead) alert($("msg").textContent);
+  }
 
   /* ---------- Start: Bilder aus dem Ablagefach holen ---------- */
   function onResize() { draw(); }
@@ -926,7 +1225,21 @@ const AU_HTML = `
   </div>
   <div class="au-meter"><i id="au_meter"></i></div>
   <div id="au_take" class="au-take" hidden>
+    <div class="au-schnitt">
+      <canvas id="au_welle" class="au-welle"></canvas>
+      <input type="range" id="au_lauf" class="au-lauf" min="0" max="1000" value="0">
+      <div class="au-row">
+        <button id="au_hoer">&#9654; h&ouml;ren</button>
+        <button id="au_schnitt" disabled>&#9986; Auswahl raus</button>
+        <button id="au_undo" disabled title="letzten Schnitt zur&uuml;cknehmen">&#8630;</button>
+        <span class="au-luft"></span>
+        <button id="au_zraus" title="weiter weg">&minus;</button>
+        <button id="au_zrein" title="n&auml;her ran">+</button>
+      </div>
+      <div id="au_zeit" class="au-zeit"></div>
+    </div>
     <div class="au-row">
+      <span class="au-klein">fertige Fassung:</span>
       <button data-p="raw">Roh</button>
       <button data-p="normal">Normal</button>
       <button data-p="studio">Studio &#10024;</button>
@@ -942,6 +1255,8 @@ const AU_HTML = `
   <div class="au-fuss">
     <button id="au_rec" class="au-rec">&#9679; Aufnahme</button>
     <span id="au_status" class="au-status"></span>
+    <button id="au_oeffnen" title="eine Aufnahme zum Schneiden &ouml;ffnen">&#128194;</button>
+    <input id="au_datei" type="file" accept="audio/*,.wav" hidden>
   </div>
 </div>`;
 
@@ -1360,23 +1675,252 @@ function aufnahmeStarten(root, hilfe) {
       status("Fertig \u2013 h\u00f6r rein. L\u00e4nge " + fmt(raw.length / sr));
     } catch (e) { status("Fehler beim Veredeln: " + (e.message || e)); }
   }
-  async function showTake() { $("take").hidden = false; markPreset(); await renderPreset(S.preset); }
+  async function showTake() {
+    $("take").hidden = false; markPreset();
+    schnittNeu();
+    await renderPreset(S.preset);
+  }
+
+  /* ---------- Schneiden ----------
+     Geschnitten wird immer die ROHE Aufnahme; die fertige Fassung
+     (Roh/Normal/Studio) wird danach neu gemacht. */
+  var spitzen = null, BLOCK = 256;          // min/max je 256 Proben, fuer schnelles Zeichnen
+  var sicht0 = 0, sichtLang = 0;             // sichtbarer Ausschnitt in Sekunden
+  var wahlA = null, wahlB = null, kopf = 0;  // Auswahl und Abspielkopf in Sekunden
+  var rueck = [], lautFaktor = 1;
+  function dauer() { return raw ? raw.length / sr : 0; }
+  function spitzenBauen() {
+    var n = Math.ceil(raw.length / BLOCK), mn = new Float32Array(n), mx = new Float32Array(n), gross = 0;
+    for (var b = 0; b < n; b++) {
+      var lo = 1, hi = -1, e = Math.min(raw.length, (b + 1) * BLOCK);
+      for (var i = b * BLOCK; i < e; i++) { var v = raw[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+      mn[b] = lo; mx[b] = hi; if (hi > gross) gross = hi; if (-lo > gross) gross = -lo;
+    }
+    spitzen = { mn: mn, mx: mx };
+    lautFaktor = gross > 0.001 ? Math.min(20, 0.9 / gross) : 1;
+  }
+  function schnittNeu() {
+    hoerStop(); rueck = []; wahlA = wahlB = null; kopf = 0;
+    spitzenBauen(); sicht0 = 0; sichtLang = dauer();
+    knoepfe(); zeichneWelle();
+  }
+  function zeitText(t) {
+    var m = Math.floor(t / 60), s = t - m * 60;
+    return m + ":" + (s < 10 ? "0" : "") + s.toFixed(1).replace(".", ",");
+  }
+  function knoepfe() {
+    var hat = wahlA !== null && Math.abs(wahlB - wahlA) > 0.01;
+    $("schnitt").disabled = !hat; $("undo").disabled = !rueck.length;
+    var z = "L\u00e4nge " + zeitText(dauer()) + "  \u00b7  Kopf " + zeitText(kopf);
+    if (hat) { var a = Math.min(wahlA, wahlB), b = Math.max(wahlA, wahlB); z += "  \u00b7  Auswahl " + zeitText(a) + " \u2013 " + zeitText(b) + " (" + (b - a).toFixed(1).replace(".", ",") + " s)"; }
+    $("zeit").textContent = z;
+    var frei = dauer() - sichtLang;
+    $("lauf").disabled = frei <= 0.01;
+    $("lauf").value = frei > 0 ? Math.round(sicht0 / frei * 1000) : 0;
+  }
+  function zeichneWelle() {
+    var c = $("welle"); if (!raw || !spitzen || c.clientWidth === 0) return;
+    var dpr = window.devicePixelRatio || 1, W = Math.round(c.clientWidth * dpr), H = Math.round(c.clientHeight * dpr);
+    if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+    var x = c.getContext("2d"); x.clearRect(0, 0, W, H);
+    x.fillStyle = "#0b0907"; x.fillRect(0, 0, W, H);
+    var proPx = sichtLang * sr / W, mitte = H / 2, amp = H / 2 * 0.95 * Math.min(4, lautFaktor);
+    x.fillStyle = "#c79a5a";
+    for (var px = 0; px < W; px++) {
+      var s0 = Math.floor((sicht0 + px / W * sichtLang) * sr), s1 = Math.max(s0 + 1, Math.floor(s0 + proPx));
+      if (s0 >= raw.length) break;
+      s1 = Math.min(s1, raw.length);
+      var lo = 1, hi = -1, i;
+      if (proPx >= BLOCK * 2) {
+        for (i = Math.floor(s0 / BLOCK); i < Math.ceil(s1 / BLOCK); i++) { if (spitzen.mn[i] < lo) lo = spitzen.mn[i]; if (spitzen.mx[i] > hi) hi = spitzen.mx[i]; }
+      } else {
+        for (i = s0; i < s1; i++) { var v = raw[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+      }
+      var y0 = mitte - Math.max(-1, Math.min(1, hi * Math.min(4, lautFaktor))) * H / 2 * 0.95;
+      var y1 = mitte - Math.max(-1, Math.min(1, lo * Math.min(4, lautFaktor))) * H / 2 * 0.95;
+      x.fillRect(px, y0, 1, Math.max(1, y1 - y0));
+    }
+    if (wahlA !== null && Math.abs(wahlB - wahlA) > 0.01) {
+      var a = (Math.min(wahlA, wahlB) - sicht0) / sichtLang * W, b = (Math.max(wahlA, wahlB) - sicht0) / sichtLang * W;
+      x.fillStyle = "rgba(184,69,47,.35)"; x.fillRect(a, 0, b - a, H);
+      x.fillStyle = "rgba(184,69,47,.9)"; x.fillRect(a, 0, 1 * dpr, H); x.fillRect(b - dpr, 0, dpr, H);
+    }
+    var k = (kopf - sicht0) / sichtLang * W;
+    if (k >= 0 && k <= W) { x.fillStyle = "#ffd79a"; x.fillRect(k, 0, 2 * dpr, H); }
+  }
+  function zeitAn(e) {
+    var r = $("welle").getBoundingClientRect();
+    return Math.max(0, Math.min(dauer(), sicht0 + (e.clientX - r.left) / r.width * sichtLang));
+  }
+  var zieht = null;
+  $("welle").addEventListener("pointerdown", function (e) {
+    if (!raw) return;
+    this.setPointerCapture(e.pointerId);
+    zieht = { x: e.clientX, t: zeitAn(e) };
+  });
+  $("welle").addEventListener("pointermove", function (e) {
+    if (!zieht) return;
+    if (Math.abs(e.clientX - zieht.x) > 3) { wahlA = zieht.t; wahlB = zeitAn(e); knoepfe(); zeichneWelle(); }
+  });
+  function ziehEnde(e) {
+    if (!zieht) return;
+    if (Math.abs(e.clientX - zieht.x) <= 3) {        // nur geklickt: dort steht jetzt der Kopf
+      wahlA = wahlB = null; kopf = zieht.t;
+      if (hoerer) hoerStart(kopf);
+    } else if (!hoerer) kopf = Math.min(wahlA, wahlB);
+    zieht = null; knoepfe(); zeichneWelle();
+  }
+  $("welle").addEventListener("pointerup", ziehEnde);
+  $("welle").addEventListener("pointercancel", function () { zieht = null; });
+  function zoomen(f, um) {
+    var d = dauer(); if (!d) return;
+    var mitte = um !== undefined ? um : (wahlA !== null && Math.abs(wahlB - wahlA) > 0.01 ? (wahlA + wahlB) / 2 : kopf);
+    var neu = Math.max(1, Math.min(d, sichtLang * f));
+    sicht0 = Math.max(0, Math.min(d - neu, mitte - neu / 2)); sichtLang = neu;
+    knoepfe(); zeichneWelle();
+  }
+  $("zrein").onclick = function () { zoomen(0.25); };
+  $("zraus").onclick = function () { zoomen(4); };
+  $("welle").addEventListener("wheel", function (e) {
+    if (!raw) return; e.preventDefault();
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {       // seitlich wischen = verschieben
+      sicht0 = Math.max(0, Math.min(dauer() - sichtLang, sicht0 + e.deltaX / this.clientWidth * sichtLang));
+      knoepfe(); zeichneWelle();
+    } else zoomen(Math.exp(e.deltaY * 0.004), zeitAn(e));
+  }, { passive: false });
+  $("lauf").oninput = function () {
+    sicht0 = (dauer() - sichtLang) * this.value / 1000; zeichneWelle();
+  };
+
+  // die Auswahl herausnehmen, mit 10 ms Ueberblendung, damit es nicht knackt
+  function schneiden() {
+    if (wahlA === null || Math.abs(wahlB - wahlA) <= 0.01) return;
+    hoerStop();
+    var a = Math.round(Math.min(wahlA, wahlB) * sr), b = Math.round(Math.max(wahlA, wahlB) * sr);
+    a = Math.max(0, a); b = Math.min(raw.length, b);
+    var x = Math.min(Math.round(0.01 * sr), a, raw.length - b);
+    var pos = a - x;
+    rueck.push({ pos: pos, weg: raw.slice(pos, b + x), x: x });
+    if (rueck.length > 30) rueck.shift();
+    var neu = new Float32Array(raw.length - (b - a) - x);
+    neu.set(raw.subarray(0, pos), 0);
+    for (var i = 0; i < x; i++) { var t = (i + 0.5) / x; neu[pos + i] = raw[pos + i] * (1 - t) + raw[b + i] * t; }
+    neu.set(raw.subarray(b + x), pos + x);
+    raw = neu; nachSchnitt(a / sr);
+  }
+  function zuruecknehmen() {
+    var u = rueck.pop(); if (!u) return;
+    hoerStop();
+    var neu = new Float32Array(raw.length - u.x + u.weg.length);
+    neu.set(raw.subarray(0, u.pos), 0);
+    neu.set(u.weg, u.pos);
+    neu.set(raw.subarray(u.pos + u.x), u.pos + u.weg.length);
+    raw = neu; nachSchnitt(u.pos / sr);
+  }
+  function nachSchnitt(t) {
+    wahlA = wahlB = null; kopf = Math.min(t, dauer());
+    spitzenBauen();
+    sichtLang = Math.min(sichtLang, dauer()); sicht0 = Math.max(0, Math.min(sicht0, dauer() - sichtLang));
+    // die fertige Fassung stimmt nicht mehr — beim naechsten Anhoeren/Speichern neu machen
+    cache = {}; lastBlob = null; $("player").removeAttribute("src");
+    if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
+    knoepfe(); zeichneWelle();
+    status("Geschnitten. Die fertige Fassung wird beim Antippen von Roh/Normal/Studio oder beim Speichern neu gemacht.");
+  }
+  $("schnitt").onclick = schneiden;
+  $("undo").onclick = zuruecknehmen;
+
+  // Probehoeren der rohen Aufnahme, in Stuecken von 10 Sekunden
+  var hoerer = null;
+  function hoerStart(ab) {
+    hoerStop();
+    if (!raw) return;
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    ac.resume();
+    var STUECK = 10, t0 = ac.currentTime + 0.05, k = 0, quellen = [];
+    function planen() {
+      while (t0 + k * STUECK - ac.currentTime < 20) {
+        var a = Math.floor((ab + k * STUECK) * sr); if (a >= raw.length) break;
+        var b = Math.min(raw.length, a + STUECK * sr), buf = ac.createBuffer(1, b - a, sr), d = buf.getChannelData(0);
+        for (var i = 0; i < b - a; i++) d[i] = raw[a + i] * lautFaktor;
+        var q = ac.createBufferSource(); q.buffer = buf; q.connect(ac.destination); q.start(t0 + k * STUECK);
+        quellen.push(q); k++;
+      }
+    }
+    planen();
+    hoerer = { uhr: setInterval(planen, 1000), quellen: quellen };
+    $("hoer").innerHTML = "&#10073;&#10073; stopp";
+    (function lauf() {
+      if (!hoerer || dead) return;
+      kopf = ab + (ac.currentTime - t0);
+      if (kopf >= dauer()) { kopf = dauer(); hoerStop(); knoepfe(); zeichneWelle(); return; }
+      if (kopf > sicht0 + sichtLang) { sicht0 = Math.min(dauer() - sichtLang, kopf); }
+      zeichneWelle(); knoepfe();
+      requestAnimationFrame(lauf);
+    })();
+  }
+  function hoerStop() {
+    if (!hoerer) return;
+    clearInterval(hoerer.uhr);
+    hoerer.quellen.forEach(function (q) { try { q.stop(); } catch (e) {} });
+    hoerer = null;
+    if (!dead) $("hoer").innerHTML = "&#9654; h&ouml;ren";
+  }
+  $("hoer").onclick = function () {
+    if (hoerer) { hoerStop(); return; }
+    $("player").pause();
+    hoerStart(wahlA !== null && Math.abs(wahlB - wahlA) > 0.01 ? Math.max(0, Math.min(wahlA, wahlB) - 2) : kopf);
+  };
+  function onTasteSchnitt(e) {
+    if ($("take").hidden || active || state !== "idle") return;
+    var el = document.activeElement;
+    if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.type !== "range") return;
+    if (e.code === "Space" && el && el.tagName === "BUTTON") return;   // da klickt der browser selbst
+    if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); schneiden(); }
+    else if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); zuruecknehmen(); }
+    else if (e.code === "Space") { e.preventDefault(); $("hoer").click(); }
+  }
+  document.addEventListener("keydown", onTasteSchnitt);
+  function onGroesse() { zeichneWelle(); }
+  window.addEventListener("resize", onGroesse);
+
+  // eine Aufnahme von der Festplatte oeffnen (z.B. vom Handy geschickt)
+  $("oeffnen").onclick = function () { if (state === "idle") $("datei").click(); };
+  $("datei").onchange = async function () {
+    var f = this.files && this.files[0]; this.value = "";
+    if (!f) return;
+    status("Wird ge\u00f6ffnet \u2026");
+    try {
+      if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+      var ab = await ac.decodeAudioData(await f.arrayBuffer());
+      var n = ab.length, kan = ab.numberOfChannels, m = new Float32Array(n);
+      for (var c = 0; c < kan; c++) { var d = ab.getChannelData(c); for (var i = 0; i < n; i++) m[i] += d[i] / kan; }
+      raw = m; sr = ab.sampleRate; cache = {};
+      await showTake();
+    } catch (e) { status("Die Datei kann ich nicht \u00f6ffnen: " + (e.message || e)); }
+  };
   root.querySelectorAll("[data-p]").forEach(function (b) {
     b.onclick = function () { S.preset = this.dataset.p; saveS(); markPreset(); renderPreset(S.preset); };
   });
-  $("save").onclick = function () {
+  $("save").onclick = async function () {
+    if (!raw) return;
+    if (!curUrl) await renderPreset(S.preset);
     if (!curUrl) return;
     var a = document.createElement("a"); a.href = curUrl; a.download = fname();
     document.body.appendChild(a); a.click(); a.remove();
   };
   if (navigator.canShare) $("share").hidden = false;
+  $("player").addEventListener("play", function () { hoerStop(); });
   $("share").onclick = async function () {
+    if (!raw) return;
+    if (!lastBlob) await renderPreset(S.preset);
     if (!lastBlob) return;
     var f = new File([lastBlob], fname(), { type: "audio/wav" });
     try { if (navigator.canShare({ files: [f] })) await navigator.share({ files: [f] }); else status("Teilen geht hier nicht \u2013 nimm Speichern."); }
     catch (e) {}
   };
   $("discard").onclick = function () {
+    hoerStop(); rueck = [];
     raw = null; cache = {}; lastBlob = null; $("take").hidden = true;
     $("player").removeAttribute("src"); if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
     status("");
@@ -1426,8 +1970,10 @@ function aufnahmeStarten(root, hilfe) {
   return function aufraeumen() {
     if (!$("ta").hidden) schliesseEditor();
     dead = true; active = false; capturing = false;
-    stopFollow();
+    stopFollow(); hoerStop();
     document.removeEventListener("keydown", onKey);
+    document.removeEventListener("keydown", onTasteSchnitt);
+    window.removeEventListener("resize", onGroesse);
     if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
     if (wake) { try { wake.release(); } catch (e) {} }
     if (ac) { try { ac.close(); } catch (e) {} }
@@ -1534,6 +2080,9 @@ function StudioStil() {
 .zl-msg{color:var(--st-dim); font-size:12px; margin-top:6px; min-height:1.4em}
 .zl-pair{color:#e6d9bb; font-size:13px; margin-bottom:4px}
 .zl-cprev{width:100%; display:block; margin:4px 0; cursor:grab; touch-action:none}
+.zl-tonname{color:#e6d9bb; font-size:12px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.zl-tonhinweis{color:var(--st-dim); font-size:11px; margin-top:4px; font-style:italic}
+.zl-tonhinweis[hidden]{display:none}
 @media (max-width:820px){
   .zl-app{grid-template-columns:1fr; grid-template-rows:auto auto auto auto; height:auto}
   .zl-stage{grid-column:1; grid-row:1; height:52vh; padding:8px}
@@ -1585,6 +2134,11 @@ function StudioStil() {
 .au-take{padding:8px 12px 14px; background:#110d09; border-top:1px solid var(--st-linie)}
 .au-take[hidden]{display:none}
 .au-row{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:6px 0}
+.au-schnitt{border-bottom:1px solid var(--st-linie); padding-bottom:6px; margin-bottom:6px}
+.au-welle{display:block; width:100%; height:96px; border:1px solid var(--st-linie); border-radius:3px; cursor:crosshair; touch-action:none}
+.au-lauf{width:100%; margin:4px 0 0}
+.au-zeit{color:var(--st-dim); font-size:12px; font-variant-numeric:tabular-nums}
+.au-klein{color:var(--st-dim); font-size:12px}
 .au audio{width:100%; margin:6px 0}
 @media (max-width:560px){
   .au-set{grid-template-columns:1fr}
