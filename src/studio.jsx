@@ -744,8 +744,12 @@ function zoomloopStarten(root, film, hilfe) {
   var abVor = null, abVorU = 0;   // laufende Vorschau
   function abVorLauf(tz) {
     if (!abVor || dead) return;
-    var t = (tz - abVor) / 1000, S = segs();
-    if (t >= G.abDauer) { abVor = null; $("abvor").textContent = "Abspann ansehen"; draw(); return; }
+    try { abVorBild(tz); }
+    catch (e) { abVor = null; $("abvor").textContent = "Abspann ansehen"; msg("Vorschau-Fehler: " + (e && e.message || e)); draw(); }
+  }
+  function abVorBild(tz) {
+    var t = Math.max(0, (tz - abVor) / 1000), S = segs();
+    if (t >= G.abDauer) { abVor = null; $("abvor").textContent = "Abspann ansehen"; msg(""); draw(); return; }
     var uu = S ? (abVorU + t / G.sec) % S : 0;
     render(ctx, cv.width, cv.height, uu, false, false, false);
     abspannUeber(ctx, cv.width, cv.height, t, G.abDauer);
@@ -756,8 +760,12 @@ function zoomloopStarten(root, film, hilfe) {
     requestAnimationFrame(abVorLauf);
   }
   $("abvor").onclick = function () {
-    if (abVor) { abVor = null; this.textContent = "Abspann ansehen"; draw(); return; }
-    stop(); abVorU = u; schriftBereit().then(function () { abVor = performance.now(); $("abvor").textContent = "Vorschau beenden"; requestAnimationFrame(abVorLauf); });
+    if (abVor) { abVor = null; this.textContent = "Abspann ansehen"; msg(""); draw(); return; }
+    if (!(ab.titel || "").trim() && !(ab.namen || "").trim()) { msg("Trag erst eine \u00dcberschrift oder Namen ein."); return; }
+    stop(); abVorU = u;
+    abVor = performance.now(); this.textContent = "Vorschau beenden"; msg("Abspann-Vorschau l\u00e4uft \u2026");
+    requestAnimationFrame(abVorLauf);
+    schriftBereit();   // die Schrift darf nachkommen, die Vorschau wartet nicht darauf
   };
   var abUhr = 0;
   function abSpeichern() {
