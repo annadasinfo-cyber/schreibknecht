@@ -119,8 +119,12 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
     const name = prompt("Name f\u00fcr die Kopie:", f.name + " (Kopie)");
     if (name === null) return;
     try {
-      const alt = (f.daten && f.daten.items) || [];
       setArbeitet("wird verdoppelt \u2026");
+      await laufend.current;   // erst warten, bis die letzte Aenderung wirklich gespeichert ist
+      // immer den Stand aus der Datenbank nehmen, nicht die Liste auf dem Bildschirm
+      const frischL = await api("GET", `/rest/v1/studio_filme?select=daten&id=eq.${f.id}`);
+      const quelle = (frischL && frischL[0] && frischL[0].daten) || f.daten || {};
+      const alt = JSON.parse(JSON.stringify(quelle.items || []));
       const r = await api("POST", "/rest/v1/studio_filme",
         { name: name.trim() || f.name + " (Kopie)", daten: {} }, { Prefer: "return=representation" });
       const neu = r && r[0]; if (!neu) throw new Error("anlegen ging nicht");
@@ -134,9 +138,9 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           method: "POST", headers: kopf(s, "application/json"),
           body: JSON.stringify({ bucketId: EIMER, sourceKey: it.pfad, destinationKey: ziel }),
         });
-        items.push({ ...it, p: { ...(it.p || {}) }, pfad: k.ok ? ziel : it.pfad });
+        items.push({ id: it.id, name: it.name, p: it.p || {}, pfad: k.ok ? ziel : it.pfad });
       }
-      const daten = { G: { ...((f.daten && f.daten.G) || {}) }, items };
+      const daten = { G: JSON.parse(JSON.stringify(quelle.G || {})), items };
       await api("PATCH", `/rest/v1/studio_filme?id=eq.${neu.id}`, { daten });
       setFilme((l) => [{ ...neu, daten }, ...l]);
       setArbeitet("");
@@ -162,6 +166,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
   // ---- helfer fuer die zoomloop ----
   const film = filme.find((f) => f.id === filmId) || null;
   const abspannId = useRef(null);
+  const laufend = useRef(Promise.resolve());   // noch nicht fertig gespeicherte Aenderungen
   const filmHilfe = useCallback((id) => ({
     abspannHolen: async () => {
       const l = await api("GET", `/rest/v1/studio_texte?select=id,text&name=eq.${encodeURIComponent(ABSPANN)}&limit=1`);
@@ -181,7 +186,9 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
     },
     speichern: async (daten) => {
       setFilme((l) => l.map((x) => x.id === id ? { ...x, daten } : x));
-      await api("PATCH", `/rest/v1/studio_filme?id=eq.${id}`, { daten, updated_at: new Date().toISOString() });
+      const auftrag = api("PATCH", `/rest/v1/studio_filme?id=eq.${id}`, { daten, updated_at: new Date().toISOString() });
+      laufend.current = laufend.current.then(() => auftrag).catch(() => {});
+      await auftrag;
     },
     hochladen: async (blob, bildId) => {
       const s = await frisch();
@@ -456,7 +463,7 @@ function zoomloopStarten(root, film, hilfe) {
   /* ---------- Speichern: 0,8 s nach der letzten Aenderung ---------- */
   var saveT = 0, saveOffen = false;
   function paket() {
-    return { G: Object.assign({}, G), items: items.map(function (it) { return { id: it.id, name: it.name, pfad: it.pfad, p: it.p }; }) };
+    return JSON.parse(JSON.stringify({ G: G, items: items.map(function (it) { return { id: it.id, name: it.name, pfad: it.pfad, p: it.p }; }) }));
   }
   function jetztSpeichern() {
     if (!saveOffen) return;
