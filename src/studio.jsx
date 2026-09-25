@@ -141,7 +141,21 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
         });
         items.push({ id: it.id, name: it.name, p: it.p || {}, pfad: k.ok ? ziel : it.pfad });
       }
-      const daten = { G: JSON.parse(JSON.stringify(quelle.G || {})), items };
+      const G2 = JSON.parse(JSON.stringify(quelle.G || {}));
+      if (G2.vorlage && Array.isArray(G2.vorlage.bilder)) {
+        const neueBilder = [];
+        for (const pf of G2.vorlage.bilder) {
+          if (pf.indexOf("/" + f.id + "/") < 0) { neueBilder.push(pf); continue; }
+          const ziel = `${s.user.id}/${neu.id}/${pf.split("/").pop()}`;
+          const k = await fetch(`${URL_DB}/storage/v1/object/copy`, {
+            method: "POST", headers: kopf(s, "application/json"),
+            body: JSON.stringify({ bucketId: EIMER, sourceKey: pf, destinationKey: ziel }),
+          });
+          neueBilder.push(k.ok ? ziel : pf);
+        }
+        G2.vorlage.bilder = neueBilder;
+      }
+      const daten = { G: G2, items };
       await api("PATCH", `/rest/v1/studio_filme?id=eq.${neu.id}`, { daten });
       setFilme((l) => [{ ...neu, daten }, ...l]);
       setArbeitet("");
@@ -153,7 +167,8 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
     if (!confirm(`„${f.name}" mit ${n} ${n === 1 ? "bild" : "bildern"} wirklich wegwerfen?`)) return;
     setFilme((l) => l.filter((x) => x.id !== f.id));
     try {
-      const pfade = ((f.daten && f.daten.items) || []).map((it) => it.pfad).filter(Boolean);
+      const refs = ((f.daten && f.daten.G && f.daten.G.vorlage && f.daten.G.vorlage.bilder) || []).filter((pf) => pf.indexOf("/" + f.id + "/") >= 0);
+      const pfade = ((f.daten && f.daten.items) || []).map((it) => it.pfad).filter(Boolean).concat(refs);
       if (pfade.length) {
         const s = await frisch();
         await fetch(`${URL_DB}/storage/v1/object/${EIMER}`, {
@@ -450,6 +465,13 @@ const ZL_HTML = `
       <textarea id="zl_kistil" class="zl-txt" rows="3" placeholder="z. B. dunkel, filmisch, Kerzenlicht, viktorianisch &hellip;"></textarea>
       <label>Figuren und Gegenst&auml;nde</label>
       <textarea id="zl_kifig" class="zl-txt" rows="4" placeholder="z. B. Frau mit dunklen Locken im roten Samtkleid; bestickte Stiefel mit lila Steinen"></textarea>
+      <label>Referenzbilder (h&ouml;chstens 3) &ndash; zeigen Stil und Aussehen</label>
+      <div id="zl_kirefs" class="zl-kirefs"></div>
+      <div class="zl-row">
+        <button id="zl_kirefsel" title="das links ausgew&auml;hlte Bild als Referenz">+ ausgew&auml;hltes Bild</button>
+        <button id="zl_kirefdatei">+ von der Festplatte</button>
+      </div>
+      <input id="zl_kirefinput" type="file" accept="image/*" hidden>
       <label>Vorlage &uuml;bernehmen von</label>
       <select id="zl_kivon"><option value="">&ndash; Film w&auml;hlen &ndash;</option></select>
       <label>Modell</label>
@@ -518,6 +540,7 @@ function zoomloopStarten(root, film, hilfe) {
   var daten = film.daten || {};
   var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "" }, daten.G || {});
   if (!G.vorlage) G.vorlage = { stil: "", figuren: "" };
+  if (!G.vorlage.bilder) G.vorlage.bilder = [];
   var items = [];
   var sel = 0, u = 0, playing = false, exporting = false, cancelExport = false, dead = false;
   var cv = $("cv"), ctx = cv.getContext("2d", { alpha: false });
@@ -1100,8 +1123,10 @@ function zoomloopStarten(root, film, hilfe) {
     });
   }
   var laedtHoch = false;
-  async function addFiles(files) {
+  // einfuegenBei: an dieser Stelle einfuegen (sonst hinten anhaengen)
+  async function addFiles(files, einfuegenBei) {
     if (laedtHoch) return;
+    var stelle = typeof einfuegenBei === "number" ? Math.max(0, Math.min(items.length, einfuegenBei)) : -1;
     var list = Array.prototype.slice.call(files).filter(function (f) { return /^image\//.test(f.type) || /\.(jpe?g|png|webp|gif|avif)$/i.test(f.name); });
     list.sort(function (a, b) { return a.name.localeCompare(b.name, undefined, { numeric: true }); });
     if (!list.length) return;
@@ -1115,7 +1140,9 @@ function zoomloopStarten(root, film, hilfe) {
         var pfad = await hilfe.hochladen(blob, id);
         var url = URL.createObjectURL(blob); urls.push(url);
         var el = await bildAus(url);
-        items.push({ id: id, name: f.name, pfad: pfad, el: el, p: Object.assign({}, DEF) });
+        var neu = { id: id, name: f.name, pfad: pfad, el: el, p: Object.assign({}, DEF) };
+        if (stelle >= 0) { items.splice(stelle, 0, neu); smallCache.clear(); bigCache.clear(); stelle++; }
+        else items.push(neu);
         thumbs(); syncPanel(); draw(); save();
       } catch (e) { bad.push(f.name + " (" + (e.message || e) + ")"); }
     }
@@ -1615,9 +1642,77 @@ function zoomloopStarten(root, film, hilfe) {
     var v = (hilfe.vorlagen() || []).find(function (x) { return x.id === $("kivon").value; });
     if (!v) return;
     if ((G.vorlage.stil || G.vorlage.figuren) && !confirm("Die Vorlage dieses Films mit der von \u201e" + v.name + "\u201c ersetzen?")) { this.value = ""; return; }
-    G.vorlage = { stil: v.vorlage.stil || "", figuren: v.vorlage.figuren || "" };
+    G.vorlage = { stil: v.vorlage.stil || "", figuren: v.vorlage.figuren || "", bilder: (v.vorlage.bilder || []).slice(0, 3) };
     $("kistil").value = G.vorlage.stil; $("kifig").value = G.vorlage.figuren; this.value = ""; save();
+    refLaden(G.vorlage.bilder);
   };
+
+
+  /* Referenzbilder der Stilvorlage: liegen im Fach dieses Films, werden
+     bei jedem Bild mitgeschickt, damit Stil und Figuren gleich bleiben */
+  var kiRefs = [];   // { pfad, el }
+  function refsZeigen() {
+    if (dead) return;
+    var box = $("kirefs"); box.innerHTML = "";
+    kiRefs.forEach(function (r, i) {
+      var d = document.createElement("div"); d.className = "zl-kiref";
+      var im = document.createElement("img"); im.src = r.el.src; d.appendChild(im);
+      var x = document.createElement("button"); x.textContent = "\u2715"; x.title = "Referenz entfernen";
+      x.onclick = function () {
+        var weg = kiRefs.splice(i, 1)[0];
+        G.vorlage.bilder = kiRefs.map(function (q) { return q.pfad; }); save();
+        // nur loeschen, wenn das Bild diesem Film gehoert (nicht aus einer uebernommenen Vorlage)
+        if (weg && weg.pfad && weg.pfad.indexOf("/" + film.id + "/") >= 0) hilfe.entfernen(weg.pfad);
+        refsZeigen();
+      };
+      d.appendChild(x); box.appendChild(d);
+    });
+    $("kirefsel").disabled = $("kirefdatei").disabled = kiRefs.length >= 3;
+  }
+  function refLaden(pfade) {
+    kiRefs = [];
+    (pfade || []).forEach(function (pf) {
+      hilfe.holen(pf).then(function (blob) {
+        var url = URL.createObjectURL(blob); urls.push(url);
+        return bildAus(url);
+      }).then(function (el) {
+        if (dead) return;
+        kiRefs.push({ pfad: pf, el: el });
+        kiRefs.sort(function (a, b) { return (G.vorlage.bilder || []).indexOf(a.pfad) - (G.vorlage.bilder || []).indexOf(b.pfad); });
+        refsZeigen();
+      }).catch(function () {});
+    });
+    refsZeigen();
+  }
+  async function refDazu(quelle) {
+    if (kiRefs.length >= 3) return;
+    try {
+      kiStatus("Referenz wird abgelegt \u2026");
+      var blob = await verkleinern(quelle);
+      var pfad = await hilfe.hochladen(blob, "vorlage-" + neueId());
+      var url = URL.createObjectURL(blob); urls.push(url);
+      var el = await bildAus(url);
+      kiRefs.push({ pfad: pfad, el: el });
+      G.vorlage.bilder = kiRefs.map(function (q) { return q.pfad; }); save();
+      refsZeigen(); kiStatus("");
+    } catch (e) { kiStatus("Referenz ging nicht: " + (e.message || e)); }
+  }
+  $("kirefdatei").onclick = function () { $("kirefinput").click(); };
+  $("kirefinput").onchange = function () { var f = this.files && this.files[0]; this.value = ""; if (f) refDazu(f); };
+  $("kirefsel").onclick = async function () {
+    var it = items[sel]; if (!it) return;
+    var b = await (await fetch(it.el.src)).blob();
+    refDazu(new File([b], "ref.jpg", { type: b.type || "image/jpeg" }));
+  };
+  function refDaten() {
+    return kiRefs.map(function (r) {
+      var el = r.el, w = el.naturalWidth, h = el.naturalHeight, k = Math.min(1, 1024 / Math.max(w, h));
+      var c = document.createElement("canvas"); c.width = Math.round(w * k); c.height = Math.round(h * k);
+      c.getContext("2d").drawImage(el, 0, 0, c.width, c.height);
+      return c.toDataURL("image/jpeg", 0.85);
+    });
+  }
+  refLaden(G.vorlage.bilder);
 
   /* Ausgangsbild: das ausgewaehlte Bild der Reihe oder eines von der Festplatte */
   function kiVorEl() {
@@ -1658,16 +1753,21 @@ function zoomloopStarten(root, film, hilfe) {
 
   function kiFormat() { return G.W > G.H ? "16:9" : G.W < G.H ? "9:16" : "1:1"; }
   function kiText(mitVorlage) {
-    var t = [];
+    var t = [], refHinweis = kiRefs.length
+      ? (mitVorlage ? "Die weiteren mitgeschickten Bilder sind nur Referenzen f\u00fcr Stil und Aussehen der Figuren und Gegenst\u00e4nde \u2013 \u00fcbernimm daraus ihr Aussehen, aber nicht ihren Bildinhalt."
+                    : "Die mitgeschickten Bilder sind Referenzen f\u00fcr Stil und Aussehen der Figuren und Gegenst\u00e4nde \u2013 \u00fcbernimm daraus ihr Aussehen, aber nicht ihren Bildinhalt.")
+      : "";
     if (mitVorlage) {
       t.push("Nimm das mitgeschickte Bild als Grundlage und ver\u00e4ndere nur, was hier steht: " + $("kiprompt").value.trim() +
         "\nAlles andere \u2013 Bildausschnitt, Licht, Farben, Figuren und Gegenst\u00e4nde \u2013 bleibt genau so wie im mitgeschickten Bild.");
       if ((G.vorlage.stil || "").trim()) t.push("Stil: " + G.vorlage.stil.trim());
+      if (refHinweis) t.push(refHinweis);
       return t.join("\n\n");
     }
     if ((G.vorlage.stil || "").trim()) t.push("Stil: " + G.vorlage.stil.trim());
     if ((G.vorlage.figuren || "").trim()) t.push("Figuren und Gegenst\u00e4nde, die in diesem Film immer gleich aussehen: " + G.vorlage.figuren.trim());
     t.push("Szene: " + $("kiprompt").value.trim());
+    if (refHinweis) t.push(refHinweis);
     return t.join("\n\n");
   }
   async function kiErzeugen() {
@@ -1678,7 +1778,8 @@ function zoomloopStarten(root, film, hilfe) {
     kiStatus("Bild wird gemalt \u2026 (das dauert meist 10 bis 30 Sekunden)");
     try {
       var vor = kiVorDaten();
-      var j = await hilfe.ki("bild", { prompt: kiText(!!vor), modell: G.kiModell, format: kiFormat(), vorlage: vor || undefined });
+      var refs = refDaten();
+      var j = await hilfe.ki("bild", { prompt: kiText(!!vor), modell: G.kiModell, format: kiFormat(), vorlage: vor || undefined, referenzen: refs.length ? refs : undefined });
       if (dead) return;
       kiWeg();   // ein vorheriges, nicht uebernommenes Bild wegraeumen
       if (j.pfad) {
@@ -1704,9 +1805,10 @@ function zoomloopStarten(root, film, hilfe) {
       var blob = await (await fetch(kiLetzt)).blob();
       var datei = new File([blob], "ki-" + Date.now() + ".png", { type: blob.type || "image/png" });
       $("kibild").hidden = true;
-      await addFiles([datei]);
+      var nach = items.length ? sel + 1 : 0;   // direkt hinter das ausgewaehlte Bild
+      await addFiles([datei], nach);
       kiWeg();   // die Zwischenablage im Fach wird nicht mehr gebraucht, das Bild liegt jetzt im Film
-      sel = items.length - 1; u = Math.min(sel, segs()); thumbs(); syncPanel(); draw();
+      sel = Math.min(nach, items.length - 1); u = Math.min(sel, segs()); thumbs(); syncPanel(); draw();
     } catch (e) { kiStatus("\u00dcbernehmen ging nicht: " + (e.message || e)); }
   };
 
@@ -2922,6 +3024,10 @@ function StudioStil() {
 .zl-kibild img{max-width:100%; max-height:calc(100% - 56px); object-fit:contain; box-shadow:0 0 40px #000}
 .zl-kiknoepfe{gap:10px}
 .zl button.zl-kiueber{background:var(--st-rot); border-color:var(--st-rot); color:#fff}
+.zl-kirefs{display:flex; gap:6px; flex-wrap:wrap; margin:4px 0}
+.zl-kiref{position:relative; width:72px; height:48px}
+.zl-kiref img{width:100%; height:100%; object-fit:cover; border:1px solid var(--st-linie); border-radius:3px; display:block}
+.zl-kiref button{position:absolute; top:-6px; right:-6px; width:18px; height:18px; padding:0 !important; border-radius:50%; font-size:9px; line-height:16px}
 .zl-kivorbild{display:block; max-width:100%; max-height:110px; margin:6px auto 2px; border:1px solid var(--st-linie); border-radius:3px}
 .zl-kizaehler{color:#e6d9bb; font-size:12px; margin:2px 0 6px}
 .zl-vorlage{margin:6px 0 4px; border:1px solid var(--st-linie); border-radius:3px; padding:4px 8px}

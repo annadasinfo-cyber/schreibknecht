@@ -66,14 +66,17 @@ export default async function handler(req, res) {
     }
 
     if (body.aktion === "bild") {
+      // erst das Ausgangsbild (wird bearbeitet), dann die Referenzbilder (nur Stil/Aussehen)
+      const bildTeile = [];
+      if (body.vorlage) bildTeile.push({ type: "image_url", image_url: { url: body.vorlage } });
+      (Array.isArray(body.referenzen) ? body.referenzen.slice(0, 3) : [])
+        .forEach((u) => bildTeile.push({ type: "image_url", image_url: { url: u } }));
+      const text = String(body.prompt || "").slice(0, 8000);
       const anfrage = {
         model: body.modell,
         messages: [{
           role: "user",
-          content: body.vorlage
-            ? [{ type: "text", text: String(body.prompt || "").slice(0, 8000) },
-               { type: "image_url", image_url: { url: body.vorlage } }]
-            : String(body.prompt || "").slice(0, 8000),
+          content: bildTeile.length ? [{ type: "text", text }].concat(bildTeile) : text,
         }],
         modalities: ["image", "text"],
         image_config: { aspect_ratio: body.format || "16:9", image_size: "2K" },
