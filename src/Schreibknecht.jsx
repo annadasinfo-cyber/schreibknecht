@@ -865,7 +865,7 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
     setDenkt(false);
   };
   const leeren = () => {
-    if (!verlauf.length || !confirm("das gespräch mit dem knecht für dieses projekt leeren?")) return;
+    if (!verlauf.length || !confirm("das gespräch mit dem schreibknecht für dieses projekt leeren?")) return;
     setVerlauf([]); merken([]);
   };
 
@@ -876,7 +876,7 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
           {stapel.length ? <img src={stapel[bildNr % stapel.length]} alt="" /> : <span>🕯</span>}
         </button>
         <div className="knechtleiste">
-          <span className="knechtname">knecht</span>
+          <span className="knechtname">schreibknecht</span>
           <select className="knechtmodell" value={modell} onChange={(e) => setModell(e.target.value)} title="wer spricht">
             {!modelle.length && <option value={modell}>{modell || "wird geholt …"}</option>}
             {modelle.map((m) => <option key={m.id} value={m.id}>{(m.frei ? "✦ " : "") + m.name + (m.ctx ? " · liest " + Math.round(m.ctx / 1000) + "k" : "")}</option>)}
@@ -886,7 +886,7 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
               <input type="checkbox" checked={ganz} onChange={(e) => setGanz(e.target.checked)} /> ganzes projekt
             </label>
             <button className="klein" onClick={leeren} title="gespräch leeren">🗑</button>
-            <button className="klein" onClick={weg} title="knecht wegschicken">✕</button>
+            <button className="klein" onClick={weg} title="schreibknecht wegschicken">✕</button>
           </div>
         </div>
       </div>
@@ -899,7 +899,7 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
       {leseInfo && <div className="knechtlese">{leseInfo}</div>}
       <div className="knechteingabe">
         <textarea value={eingabe} onChange={(e) => setEingabe(e.target.value)} rows={2}
-          placeholder="schreib dem knecht … (enter schickt, shift+enter neue zeile)"
+          placeholder="schreib dem schreibknecht … (enter schickt, shift+enter neue zeile)"
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); senden(); } if (e.key === "Escape") e.stopPropagation(); }} />
         <button className="btn" onClick={senden} disabled={denkt || !eingabe.trim()}>↵</button>
       </div>
@@ -2511,19 +2511,15 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             </span>
             <span className="fuellung" />
             <button className={"klein knechtknopf" + (knechtAuf ? " an" : "")} onClick={() => setKnechtAuf((k) => !k)}
-              title={knechtAuf ? "knecht wegschicken" : "mit dem knecht reden"}>🕯 knecht</button>
+              title={knechtAuf ? "schreibknecht wegschicken" : "mit dem schreibknecht reden"}>🕯 schreibknecht</button>
             <button className="klein" onClick={neueImPult}
               title="neue karte rechts daneben · ⌘/strg + enter">+</button>
             <button className="klein" onClick={() => setKlein((k) => !k)}
               title={klein ? "pult aufklappen" : "pult einklappen"}>{klein ? "▲" : "▼"}</button>
             <button className="klein" onClick={() => setPult([])} title="pult schließen · esc">✕</button>
           </div>
-          <div className={"pultblatt" + (pult.length === 2 ? " zwei" : "") + (knechtAuf ? " mitknecht" : "")}>
-            {knechtAuf && (
-              <KnechtChat api={api} zugang={zugang} projekt={projekt}
-                karten={pult.map((id) => findeKarte(id)).filter(Boolean).map((f) => f.karte)}
-                weg={() => setKnechtAuf(false)} />
-            )}
+          <div className={"pultrumpf" + (knechtAuf ? " mitknecht" : "")}>
+          <div className={"pultblatt" + (pult.length === 2 ? " zwei" : "")}>
             {pult.map((id) => {
               const f = findeKarte(id);
               if (!f) return null;
@@ -2622,6 +2618,12 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 </div>
               );
             })}
+          </div>
+            {knechtAuf && (
+              <KnechtChat api={api} zugang={zugang} projekt={projekt}
+                karten={pult.map((id) => findeKarte(id)).filter(Boolean).map((f) => f.karte)}
+                weg={() => setKnechtAuf(false)} />
+            )}
           </div>
         </div>
       )}
@@ -4590,7 +4592,7 @@ function Stil() {
 
 /* eingeklappt bleibt nur der kopf stehen */
 .pult.klein{max-height:52px; padding-bottom:10px; overflow:hidden}
-.pult.klein .pultblatt{display:none}
+.pult.klein .pultblatt, .pult.klein .pultrumpf{display:none}
 
 /* der freie raum unten, damit die letzte reihe nicht verdeckt liegt */
 .pultplatz{height:min(66vh, 620px); transition:height .25s ease}
@@ -4620,26 +4622,28 @@ function Stil() {
 .pultblatt{display:grid; grid-template-columns:1fr; gap:18px}
 .pultblatt.zwei{grid-template-columns:1fr 1fr}
 @media(max-width:820px){.pultblatt.zwei{grid-template-columns:1fr}}
-/* der knecht: links, ein drittel */
-.pultblatt.mitknecht{grid-template-columns:1fr 2fr}
-.pultblatt.mitknecht.zwei{grid-template-columns:1fr 1fr 1fr}
+/* der schreibknecht: rechts, ein drittel, eigene spalte neben den karten.
+   er scrollt nicht mit den karten mit und passt immer genau ins pult. */
+.pultrumpf{display:flex; gap:18px; flex:1; min-height:0}
+.pultrumpf .pultblatt{flex:2; min-width:0}
 .knecht{
-  position:sticky; top:0; align-self:start; height:calc(min(66vh, 620px) - 86px); min-height:300px;
-  display:flex; flex-direction:column; border-radius:12px; overflow:hidden;
+  flex:1; min-width:280px; margin-right:96px; margin-bottom:6px;
+  display:flex; flex-direction:column; border-radius:12px; overflow:hidden; min-height:0;
   background:linear-gradient(180deg, rgba(40,24,12,.92), rgba(16,11,7,.95));
   border:1px solid rgba(168,135,79,.35); box-shadow:0 10px 26px rgba(0,0,0,.5);
 }
 .knechtkopf{display:flex; gap:10px; align-items:center; padding:10px; border-bottom:1px solid rgba(168,135,79,.25)}
-.knechtbild{width:52px; height:74px; padding:0; border:0; background:none; cursor:pointer; flex:none}
+.knechtbild{width:104px; height:148px; padding:0; border:0; background:none; cursor:pointer; flex:none}
 .knechtbild img{width:100%; height:100%; object-fit:cover; border-radius:5px; box-shadow:0 4px 10px rgba(0,0,0,.6)}
 .knechtleiste{flex:1; min-width:0; display:flex; flex-direction:column; gap:5px}
 .knechtname{font-family:'IM Fell English SC', Georgia, serif; font-size:17px; letter-spacing:.12em; color:var(--kerze2)}
+.knechtmodell option{background:#1a120b; color:#f3e6cc}
 .knechtmodell{width:100%; background:rgba(0,0,0,.35); color:var(--papier, #e6d9bb); border:1px solid rgba(168,135,79,.3); border-radius:4px; padding:3px 5px; font:11px 'Courier Prime', monospace}
 .knechtknoepfe{display:flex; gap:6px; justify-content:flex-end; align-items:center}
 .knechtganz{display:flex; align-items:center; gap:4px; font-size:11px; color:var(--nebel); margin-right:auto; cursor:pointer}
 .knechtganz input{accent-color:#b8452f}
 .knechtlese{font-size:10.5px; letter-spacing:.04em; color:var(--nebel); padding:3px 10px 0}
-.knechtverlauf{flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; overscroll-behavior:contain}
+.knechtverlauf{flex:1; min-height:0; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; overscroll-behavior:contain}
 .knechtleer{color:var(--nebel); font-style:italic; font-size:13px; margin:6px 2px}
 .knechtsatz{max-width:92%; padding:8px 10px; border-radius:10px; font:14px/1.45 Georgia, serif; white-space:pre-wrap; word-wrap:break-word}
 .knechtsatz.du{align-self:flex-end; background:rgba(224,139,60,.18); border:1px solid rgba(224,139,60,.35); color:#f3e6cc}
@@ -4652,10 +4656,7 @@ function Stil() {
 /* nur auf dem grossen bildschirm */
 @media(max-width:1100px){
   .knechtknopf, .knecht{display:none !important}
-  .pultblatt.mitknecht{grid-template-columns:1fr}
-  .pultblatt.mitknecht.zwei{grid-template-columns:1fr 1fr}
 }
-@media(max-width:820px){ .pultblatt.mitknecht.zwei{grid-template-columns:1fr} }
 
 .bogen{
   display:flex; flex-direction:column; min-height:min(52vh, 440px); border-radius:12px; overflow:hidden;
