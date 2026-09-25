@@ -79,14 +79,29 @@ export default async function handler(req, res) {
         image_config: { aspect_ratio: body.format || "16:9", image_size: "2K" },
         usage: { include: true },
       };
-      let r = await fetch(`${OR}/chat/completions`, { method: "POST", headers: kopf, body: JSON.stringify(anfrage) });
-      let j = await r.json();
-      if (!r.ok && /image_size|image_config/i.test(JSON.stringify(j))) {
+      // Nicht jedes Modell kennt Groesse und Format. Klappt es nicht,
+      // erst ohne Groesse versuchen, dann ganz ohne Bildeinstellungen.
+      const senden = async () => {
+        const r = await fetch(`${OR}/chat/completions`, { method: "POST", headers: kopf, body: JSON.stringify(anfrage) });
+        let j = null; try { j = await r.json(); } catch (e) { j = {}; }
+        return { r, j };
+      };
+      let { r, j } = await senden();
+      if (!r.ok || (j.error && !j.choices)) {
         delete anfrage.image_config.image_size;
-        r = await fetch(`${OR}/chat/completions`, { method: "POST", headers: kopf, body: JSON.stringify(anfrage) });
-        j = await r.json();
+        ({ r, j } = await senden());
       }
-      if (!r.ok) { res.status(r.status).json({ fehler: (j.error && j.error.message) || "Das Bild ging nicht" }); return; }
+      if (!r.ok || (j.error && !j.choices)) {
+        delete anfrage.image_config;
+        ({ r, j } = await senden());
+      }
+      if (!r.ok || (j.error && !j.choices)) {
+        const e = j.error || {};
+        const m = e.metadata || {};
+        const genauer = (m.raw || m.provider_name) ? " (" + String(m.provider_name || "") + ": " + String(m.raw || "").slice(0, 300) + ")" : "";
+        res.status(r.ok ? 502 : r.status).json({ fehler: (e.message || "Das Bild ging nicht") + genauer + " [Modell: " + body.modell + "]" });
+        return;
+      }
       const nachricht = j.choices && j.choices[0] && j.choices[0].message;
       const bilder = (nachricht && nachricht.images) || [];
       const erstes = bilder[0] && ((bilder[0].image_url && bilder[0].image_url.url) || (bilder[0].imageUrl && bilder[0].imageUrl.url));
