@@ -723,11 +723,195 @@ const Karte = React.memo(function Karte({ karte, bildUrl, onText, onTitel, onBil
   && a.zielMarke === b.zielMarke && a.abseits === b.abseits && a.gefunden === b.gefunden);
 
 // ---------- Projekt-Seite ----------
+
+// ============================================================
+// DER KNECHT ZUM REDEN
+// Sitzt links im pult. Kennt die karten, die gerade aufgeschlagen
+// liegen. Das gespraech wird je projekt aufgehoben (als besonderer
+// eintrag in studio_texte). Geredet wird ueber /api/bild bei Vercel,
+// dort liegt der OpenRouter-schluessel.
+// ============================================================
+const KNECHT_ANWEISUNG = `Du bist der Schreibknecht, der Gesprächspartner von Anni beim Schreiben. Anni ist Autorin (Horror, Urban Fantasy, Schauergeschichten) und denkt am liebsten im Gespräch — so erschließen sich ihr Ideen.
+So redest du: Deutsch, locker und warm, eher kurz. Du bist ein Sparringspartner, kein Lehrer.
+Du hilfst beim Weiterdenken, beim Wortfinden und mit Denkanstößen. Stell gern eine Frage, die etwas öffnet, statt Lösungen vorzugeben.
+Bitte nicht: keine Beat-Pläne oder Handlungsgerüste bauen, keine Schreibratgeber-Weisheiten erklären, ihre Texte nicht ungefragt bewerten oder umschreiben. Wenn sie nach etwas fragt, antworte genau darauf.
+Unten steht ihr Text: entweder die Karten, die gerade auf ihrem Pult liegen, oder ihr ganzes Projekt. Wenn der Text gekürzt werden musste, steht das dabei — sag es ihr dann, wenn es für ihre Frage eine Rolle spielt (zum Beispiel wenn sie nach allen Figuren fragt).`;
+
+function KnechtChat({ api, zugang, projekt, karten, weg }) {
+  const NAME = "💬 knecht " + projekt.id;
+  const [verlauf, setVerlauf] = useState([]);       // [{rolle:"du"|"knecht", text}]
+  const [eingabe, setEingabe] = useState("");
+  const [denkt, setDenkt] = useState(false);
+  const [fehler, setFehler] = useState("");
+  const [modelle, setModelle] = useState([]);
+  const [modell, setModell] = useState(() => { try { return localStorage.getItem("knecht:modell") || ""; } catch { return ""; } });
+  const [bildNr, setBildNr] = useState(() => { try { return +(localStorage.getItem("knecht:bild") || 0); } catch { return 0; } });
+  const [ganz, setGanz] = useState(() => { try { return localStorage.getItem("knecht:ganz") === "1"; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem("knecht:ganz", ganz ? "1" : "0"); } catch {} }, [ganz]);
+  const eintragId = useRef(null);
+  const unten = useRef(null);
+  const [leseInfo, setLeseInfo] = useState("");
+  const stapel = stapelHolen();
+
+  const frisch = useCallback(async () => {
+    const s = zugang && zugang();
+    if (s && s.expires_at && s.expires_at - 120 < Date.now() / 1000) {
+      try { await api("GET", "/rest/v1/projekte?select=id&limit=1"); } catch {}
+    }
+    return zugang && zugang();
+  }, [api, zugang]);
+  const fragen = useCallback(async (aktion, daten) => {
+    const s = await frisch();
+    if (!s) throw new Error("nicht angemeldet");
+    const r = await fetch("/api/bild", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + s.access_token },
+      body: JSON.stringify({ aktion, ...(daten || {}) }),
+    });
+    let j = null; try { j = await r.json(); } catch { j = { fehler: "Antwort unlesbar (" + r.status + ")" }; }
+    if (!r.ok) throw new Error(j.fehler || "Fehler " + r.status);
+    return j;
+  }, [frisch]);
+
+  // gespraech dieses projekts holen
+  useEffect(() => {
+    let weg = false;
+    (async () => {
+      try {
+        const l = await api("GET", `/rest/v1/studio_texte?select=id,text&name=eq.${encodeURIComponent(NAME)}&limit=1`);
+        if (weg || !l || !l[0]) return;
+        eintragId.current = l[0].id;
+        try { setVerlauf(JSON.parse(l[0].text || "[]")); } catch {}
+      } catch (e) { setFehler(String(e.message || e)); }
+    })();
+    return () => { weg = true; };
+  }, [api, NAME]);
+  // modelle holen, kostenlose zuerst
+  useEffect(() => {
+    fragen("textmodelle").then((j) => {
+      const l = j.modelle || [];
+      setModelle(l);
+      if (!modell || !l.some((m) => m.id === modell)) {
+        const lieb = l.find((m) => m.frei && /deepseek|llama-3\.3|gemma|mistral|qwen/i.test(m.id)) || l.find((m) => m.frei) || l[0];
+        if (lieb) setModell(lieb.id);
+      }
+    }).catch((e) => setFehler(String(e.message || e)));
+  }, []); // eslint-disable-line
+  useEffect(() => { try { if (modell) localStorage.setItem("knecht:modell", modell); } catch {} }, [modell]);
+  useEffect(() => { try { localStorage.setItem("knecht:bild", String(bildNr)); } catch {} }, [bildNr]);
+  useEffect(() => { if (unten.current) unten.current.scrollTop = unten.current.scrollHeight; }, [verlauf, denkt]);
+
+  const merken = async (neu) => {
+    const text = JSON.stringify(neu.slice(-200));
+    try {
+      if (eintragId.current) await api("PATCH", `/rest/v1/studio_texte?id=eq.${eintragId.current}`, { text, updated_at: new Date().toISOString() });
+      else {
+        const r = await api("POST", "/rest/v1/studio_texte", { name: NAME, text }, { Prefer: "return=representation" });
+        if (r && r[0]) eintragId.current = r[0].id;
+      }
+    } catch (e) { setFehler("merken ging nicht: " + (e.message || e)); }
+  };
+
+  // Wie viel darf er lesen? So viel, wie das gewaehlte Modell auf einmal fasst
+  // (grob 3 Zeichen je Token, etwas Platz fuer Gespraech und Antwort bleibt frei),
+  // hoechstens 3 Millionen Zeichen, mehr passt nicht durch Vercel.
+  const lesestoff = (verlaufZeichen) => {
+    const m = modelle.find((x) => x.id === modell);
+    const ctx = (m && m.ctx) || 32000;
+    const budget = Math.max(8000, Math.min(3000000, Math.floor((ctx - 8000) * 3) - verlaufZeichen));
+    const quelle = ganz
+      ? projekt.abschnitte.flatMap((a) => a.karten.map((k) => ({ k, abschnitt: a.titel || "" })))
+      : karten.map((k) => ({ k, abschnitt: "" }));
+    let text = "", gelesen = 0, alles = 0, voll = 0, letzterAbschnitt = null;
+    quelle.forEach(({ k, abschnitt }) => {
+      let stueck = "";
+      if (ganz && abschnitt !== letzterAbschnitt) { stueck += `\n=== Abschnitt: ${abschnitt || "ohne Namen"} ===\n`; letzterAbschnitt = abschnitt; }
+      stueck += `--- Karte${k.titel ? ": " + k.titel : ""} ---\n${String(k.text || "")}\n\n`;
+      alles += stueck.length;
+      if (text.length + stueck.length <= budget) { text += stueck; gelesen += stueck.length; voll++; }
+      else if (text.length < budget) { const rest = budget - text.length; text += stueck.slice(0, rest); gelesen += rest; }
+    });
+    const gekuerzt = gelesen < alles;
+    const kopf = ganz ? `Das ganze Projekt (${quelle.length} Karten)` : `Die Karten auf dem Pult (${quelle.length})`;
+    return {
+      text: kopf + ":\n" + (text || "(keine Karte)") + (gekuerzt
+        ? `\n\n[ACHTUNG: gekürzt — gelesen wurden nur die ersten ${gelesen.toLocaleString("de-DE")} von ${alles.toLocaleString("de-DE")} Zeichen, das sind ${voll} von ${quelle.length} Karten vollständig.]`
+        : ""),
+      info: (ganz ? "ganzes projekt: " : "pult: ") + quelle.length + (quelle.length === 1 ? " karte" : " karten") +
+        (gekuerzt ? ` · gekürzt auf ${Math.round(gelesen / alles * 100)} %` : " · alles gelesen"),
+    };
+  };
+
+  const senden = async () => {
+    const t = eingabe.trim();
+    if (!t || denkt) return;
+    if (!modell) { setFehler("kein modell gewählt"); return; }
+    const neu = [...verlauf, { rolle: "du", text: t }];
+    setVerlauf(neu); setEingabe(""); setDenkt(true); setFehler("");
+    try {
+      const verlaufZeichen = neu.slice(-40).reduce((s, m) => s + m.text.length, 0);
+      const stoff = lesestoff(verlaufZeichen);
+      setLeseInfo(stoff.info);
+      const nachrichten = [
+        { role: "system", content: KNECHT_ANWEISUNG + `\n\nProjekt: ${projekt.name || ""}\n\n` + stoff.text },
+        ...neu.slice(-40).map((m) => ({ role: m.rolle === "du" ? "user" : "assistant", content: m.text })),
+      ];
+      const j = await fragen("chat", { modell, nachrichten });
+      const fertig = [...neu, { rolle: "knecht", text: j.antwort || "…" }];
+      setVerlauf(fertig); merken(fertig);
+    } catch (e) {
+      setFehler(String(e.message || e)); merken(neu);
+    }
+    setDenkt(false);
+  };
+  const leeren = () => {
+    if (!verlauf.length || !confirm("das gespräch mit dem knecht für dieses projekt leeren?")) return;
+    setVerlauf([]); merken([]);
+  };
+
+  return (
+    <div className="knecht">
+      <div className="knechtkopf">
+        <button className="knechtbild" title="anderes bild" onClick={() => setBildNr((n) => (n + 1) % Math.max(1, stapel.length))}>
+          {stapel.length ? <img src={stapel[bildNr % stapel.length]} alt="" /> : <span>🕯</span>}
+        </button>
+        <div className="knechtleiste">
+          <span className="knechtname">knecht</span>
+          <select className="knechtmodell" value={modell} onChange={(e) => setModell(e.target.value)} title="wer spricht">
+            {!modelle.length && <option value={modell}>{modell || "wird geholt …"}</option>}
+            {modelle.map((m) => <option key={m.id} value={m.id}>{(m.frei ? "✦ " : "") + m.name + (m.ctx ? " · liest " + Math.round(m.ctx / 1000) + "k" : "")}</option>)}
+          </select>
+          <div className="knechtknoepfe">
+            <label className="knechtganz" title="soll er alle karten des projekts lesen oder nur die auf dem pult?">
+              <input type="checkbox" checked={ganz} onChange={(e) => setGanz(e.target.checked)} /> ganzes projekt
+            </label>
+            <button className="klein" onClick={leeren} title="gespräch leeren">🗑</button>
+            <button className="klein" onClick={weg} title="knecht wegschicken">✕</button>
+          </div>
+        </div>
+      </div>
+      <div className="knechtverlauf" ref={unten}>
+        {!verlauf.length && <p className="knechtleer">{karten.length ? "ich hab deine karte vor mir. worüber reden wir?" : "leg eine karte aufs pult, dann können wir darüber reden."}</p>}
+        {verlauf.map((m, i) => <div key={i} className={"knechtsatz " + (m.rolle === "du" ? "du" : "er")}>{m.text}</div>)}
+        {denkt && <div className="knechtsatz er denkt">… überlegt …</div>}
+        {fehler && <div className="knechtfehler" onClick={() => setFehler("")}>{fehler}</div>}
+      </div>
+      {leseInfo && <div className="knechtlese">{leseInfo}</div>}
+      <div className="knechteingabe">
+        <textarea value={eingabe} onChange={(e) => setEingabe(e.target.value)} rows={2}
+          placeholder="schreib dem knecht … (enter schickt, shift+enter neue zeile)"
+          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); senden(); } if (e.key === "Escape") e.stopPropagation(); }} />
+        <button className="btn" onClick={senden} disabled={denkt || !eingabe.trim()}>↵</button>
+      </div>
+    </div>
+  );
+}
+
 function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurueck, sag,
                        hand, setHand, laden, glocke, allesHolen,
                        abschnittHand, setAbschnittHand,
                        suche, setSuche, fern, suchtFern, springe, springZu, setSpringZu,
-                       alleProjekte, zumPrompter }) {
+                       alleProjekte, zumPrompter, zugang }) {
   const [zug, setZug] = useState(null);      // {ai, id, karte, dx, dy, x, y, laeuft}
   const [ziel, setZiel] = useState(null);   // worauf gerade gezeigt wird
   const zugRef = useRef(null);
@@ -835,6 +1019,9 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
   };
   const [klein, setKlein] = useState(false);   // pult eingeklappt?
+  // der knecht zum reden — sitzt links im pult, nur auf dem grossen bildschirm
+  const [knechtAuf, setKnechtAuf] = useState(() => { try { return localStorage.getItem("knecht:auf") === "1"; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem("knecht:auf", knechtAuf ? "1" : "0"); } catch {} }, [knechtAuf]);
   // Liegt das pult offen, bleibt am handy die seite darunter stehen —
   // sonst schiebt jeder wisch im pult die karten dahinter mit.
   useEffect(() => {
@@ -2323,13 +2510,20 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
                 : pult.length === 1 ? "eine karte — leg eine zweite dazu" : "zwei karten"}
             </span>
             <span className="fuellung" />
+            <button className={"klein knechtknopf" + (knechtAuf ? " an" : "")} onClick={() => setKnechtAuf((k) => !k)}
+              title={knechtAuf ? "knecht wegschicken" : "mit dem knecht reden"}>🕯 knecht</button>
             <button className="klein" onClick={neueImPult}
               title="neue karte rechts daneben · ⌘/strg + enter">+</button>
             <button className="klein" onClick={() => setKlein((k) => !k)}
               title={klein ? "pult aufklappen" : "pult einklappen"}>{klein ? "▲" : "▼"}</button>
             <button className="klein" onClick={() => setPult([])} title="pult schließen · esc">✕</button>
           </div>
-          <div className={"pultblatt" + (pult.length === 2 ? " zwei" : "")}>
+          <div className={"pultblatt" + (pult.length === 2 ? " zwei" : "") + (knechtAuf ? " mitknecht" : "")}>
+            {knechtAuf && (
+              <KnechtChat api={api} zugang={zugang} projekt={projekt}
+                karten={pult.map((id) => findeKarte(id)).filter(Boolean).map((f) => f.karte)}
+                weg={() => setKnechtAuf(false)} />
+            )}
             {pult.map((id) => {
               const f = findeKarte(id);
               if (!f) return null;
@@ -3538,6 +3732,7 @@ fortfahren?`
                   suche={suche} setSuche={setSuche} fern={fern} suchtFern={suchtFern}
                   springe={springe} springZu={springZu} setSpringZu={setSpringZu}
                   alleProjekte={projekte} zumPrompter={zumPrompter}
+                  zugang={() => sitzungRef.current}
                   glocke={
                     <div className={"glocke" + (laeutet ? " schwingt" : "")
                         + (heutGeschrieben >= ziel ? " voll" : "")}
@@ -3908,11 +4103,12 @@ function Stil() {
 .kachel.neu .plus{font-size:26px; color:var(--messing)}
 /* die tuer ins studio: oben rund wie ein torbogen, dunkles holz */
 .kachel.tuer{
-  width:150px; min-height:96px; padding:16px 10px; align-items:center; justify-content:center; text-align:center; gap:4px;
-  border-radius:65px 65px 4px 4px; border-color:rgba(224,139,60,.5);
+  width:150px; min-height:220px; padding:16px 10px; align-items:center; justify-content:center; text-align:center; gap:4px;
+  border-radius:75px 75px 4px 4px; border-color:rgba(224,139,60,.5);
   background:linear-gradient(180deg, rgba(117,65,26,.55), rgba(38,20,8,.75));
 }
 .kachel.tuer .kachelzeile{justify-content:center; white-space:nowrap; font-size:10px; letter-spacing:.04em}
+@media(max-width:700px){ .kachel.tuer{min-height:150px} }
 .tuerbogen{font-size:24px; line-height:1; filter:sepia(.45) saturate(.8)}
 .leerwort{color:var(--nebel); font-style:italic; margin-top:22px}
 .truhe{
@@ -4424,6 +4620,42 @@ function Stil() {
 .pultblatt{display:grid; grid-template-columns:1fr; gap:18px}
 .pultblatt.zwei{grid-template-columns:1fr 1fr}
 @media(max-width:820px){.pultblatt.zwei{grid-template-columns:1fr}}
+/* der knecht: links, ein drittel */
+.pultblatt.mitknecht{grid-template-columns:1fr 2fr}
+.pultblatt.mitknecht.zwei{grid-template-columns:1fr 1fr 1fr}
+.knecht{
+  position:sticky; top:0; align-self:start; height:calc(min(66vh, 620px) - 86px); min-height:300px;
+  display:flex; flex-direction:column; border-radius:12px; overflow:hidden;
+  background:linear-gradient(180deg, rgba(40,24,12,.92), rgba(16,11,7,.95));
+  border:1px solid rgba(168,135,79,.35); box-shadow:0 10px 26px rgba(0,0,0,.5);
+}
+.knechtkopf{display:flex; gap:10px; align-items:center; padding:10px; border-bottom:1px solid rgba(168,135,79,.25)}
+.knechtbild{width:52px; height:74px; padding:0; border:0; background:none; cursor:pointer; flex:none}
+.knechtbild img{width:100%; height:100%; object-fit:cover; border-radius:5px; box-shadow:0 4px 10px rgba(0,0,0,.6)}
+.knechtleiste{flex:1; min-width:0; display:flex; flex-direction:column; gap:5px}
+.knechtname{font-family:'IM Fell English SC', Georgia, serif; font-size:17px; letter-spacing:.12em; color:var(--kerze2)}
+.knechtmodell{width:100%; background:rgba(0,0,0,.35); color:var(--papier, #e6d9bb); border:1px solid rgba(168,135,79,.3); border-radius:4px; padding:3px 5px; font:11px 'Courier Prime', monospace}
+.knechtknoepfe{display:flex; gap:6px; justify-content:flex-end; align-items:center}
+.knechtganz{display:flex; align-items:center; gap:4px; font-size:11px; color:var(--nebel); margin-right:auto; cursor:pointer}
+.knechtganz input{accent-color:#b8452f}
+.knechtlese{font-size:10.5px; letter-spacing:.04em; color:var(--nebel); padding:3px 10px 0}
+.knechtverlauf{flex:1; overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:8px; overscroll-behavior:contain}
+.knechtleer{color:var(--nebel); font-style:italic; font-size:13px; margin:6px 2px}
+.knechtsatz{max-width:92%; padding:8px 10px; border-radius:10px; font:14px/1.45 Georgia, serif; white-space:pre-wrap; word-wrap:break-word}
+.knechtsatz.du{align-self:flex-end; background:rgba(224,139,60,.18); border:1px solid rgba(224,139,60,.35); color:#f3e6cc}
+.knechtsatz.er{align-self:flex-start; background:rgba(230,217,187,.07); border:1px solid rgba(168,135,79,.25); color:#e6d9bb}
+.knechtsatz.denkt{font-style:italic; opacity:.7}
+.knechtfehler{color:#e8a08c; font-size:12px; cursor:pointer}
+.knechteingabe{display:flex; gap:6px; padding:8px; border-top:1px solid rgba(168,135,79,.25)}
+.knechteingabe textarea{flex:1; resize:none; background:rgba(0,0,0,.35); color:#f3e6cc; border:1px solid rgba(168,135,79,.3); border-radius:6px; padding:6px 8px; font:14px/1.35 Georgia, serif}
+.knechtknopf.an{color:var(--kerze2); border-color:rgba(224,139,60,.6)}
+/* nur auf dem grossen bildschirm */
+@media(max-width:1100px){
+  .knechtknopf, .knecht{display:none !important}
+  .pultblatt.mitknecht{grid-template-columns:1fr}
+  .pultblatt.mitknecht.zwei{grid-template-columns:1fr 1fr}
+}
+@media(max-width:820px){ .pultblatt.mitknecht.zwei{grid-template-columns:1fr} }
 
 .bogen{
   display:flex; flex-direction:column; min-height:min(52vh, 440px); border-radius:12px; overflow:hidden;

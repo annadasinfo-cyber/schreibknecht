@@ -65,6 +65,46 @@ export default async function handler(req, res) {
       return;
     }
 
+    // ---- der Knecht im Pult: Sprachmodelle ----
+    if (body.aktion === "textmodelle") {
+      const r = await fetch(`${OR}/models`, { headers: kopf });
+      const j = await r.json();
+      const liste = (j.data || [])
+        .filter((m) => {
+          const a = m.architecture || {};
+          const aus = a.output_modalities || ["text"];
+          return aus.includes("text") && !aus.includes("image");
+        })
+        .map((m) => {
+          const p = m.pricing || {};
+          const frei = /:free$/.test(m.id) || (Number(p.prompt) === 0 && Number(p.completion) === 0);
+          return { id: m.id, name: m.name, frei };
+        })
+        .sort((a, b) => (a.frei === b.frei ? a.name.localeCompare(b.name) : a.frei ? -1 : 1));
+      res.status(200).json({ modelle: liste });
+      return;
+    }
+
+    if (body.aktion === "chat") {
+      const nachrichten = (Array.isArray(body.nachrichten) ? body.nachrichten : [])
+        .slice(-42).map((m) => ({ role: m.role, content: String(m.content || "").slice(0, 60000) }));
+      const r = await fetch(`${OR}/chat/completions`, {
+        method: "POST", headers: kopf,
+        body: JSON.stringify({ model: body.modell, messages: nachrichten, usage: { include: true } }),
+      });
+      let j = null; try { j = await r.json(); } catch (e) { j = {}; }
+      if (!r.ok || (j.error && !j.choices)) {
+        const e = j.error || {};
+        const m = e.metadata || {};
+        const genauer = (m.raw || m.provider_name) ? " (" + String(m.provider_name || "") + ": " + String(m.raw || "").slice(0, 300) + ")" : "";
+        res.status(r.ok ? 502 : r.status).json({ fehler: (e.message || "Der Knecht schweigt gerade") + genauer + " [Modell: " + body.modell + "]" });
+        return;
+      }
+      const antwort = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+      res.status(200).json({ antwort: String(antwort || ""), kosten: (j.usage && j.usage.cost) || null });
+      return;
+    }
+
     if (body.aktion === "bild") {
       // erst das Ausgangsbild (wird bearbeitet), dann die Referenzbilder (nur Stil/Aussehen)
       const bildTeile = [];

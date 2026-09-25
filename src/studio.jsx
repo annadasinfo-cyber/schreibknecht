@@ -263,7 +263,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
   // ---- helfer fuer den teleprompter ----
   const textHilfe = useCallback(() => ({
     holen: async () => ((await api("GET", "/rest/v1/studio_texte?select=id,name,text&order=created_at.asc")) || [])
-      .filter((t) => t.name !== ABSPANN && t.name !== ZAEHLER),
+      .filter((t) => t.name !== ABSPANN && t.name !== ZAEHLER && !String(t.name || "").startsWith("💬 ")),
     neu: async (name, text) => {
       const r = await api("POST", "/rest/v1/studio_texte", { name, text }, { Prefer: "return=representation" });
       return r && r[0];
