@@ -2493,10 +2493,24 @@ function aufnahmeStarten(root, hilfe) {
       mn[b] = lo; mx[b] = hi; if (hi > gross) gross = hi; if (-lo > gross) gross = -lo;
     }
     spitzen = { mn: mn, mx: mx };
-    // zum Probehoeren und Anzeigen immer auf volle Hoehe bringen,
-    // egal wie leise die Aufnahme ist
-    lautFaktor = gross > 0.00001 ? Math.min(300, 0.9 / gross) : 1;
-    bildFaktor = gross > 0.00001 ? 0.97 / gross : 1;
+    // Anzeige: nach der Stimme richten, nicht nach einzelnen Knacksern.
+    // Deshalb zaehlt nicht die allerhoechste Spitze, sondern die, ueber der
+    // nur noch ein halbes Promille liegt; ein Knackser ragt dann einfach oben raus.
+    var hoehen = new Float32Array(n);
+    for (var q = 0; q < n; q++) hoehen[q] = Math.max(mx[q], -mn[q]);
+    hoehen.sort();
+    var typisch = n ? hoehen[Math.min(n - 1, Math.floor(n * 0.995))] : gross;
+    bildFaktor = typisch > 0.00001 ? 0.97 / typisch : 1;
+    // Probehoeren: auf eine angenehme Sprechlautstaerke bringen (nach dem
+    // Durchschnitt der Stimme, nicht nach der lautesten Spitze)
+    var bl = Math.max(1, Math.round(0.05 * sr)), pw = [];
+    for (var s0 = 0; s0 + bl <= raw.length; s0 += bl) {
+      var m = 0; for (var k = s0; k < s0 + bl; k++) m += raw[k] * raw[k]; pw.push(m / bl);
+    }
+    pw.sort(function (a, b) { return b - a; });
+    var oben = pw.slice(0, Math.max(1, Math.floor(pw.length / 2))), mittel = 0;
+    oben.forEach(function (v) { mittel += v; }); mittel = Math.sqrt(mittel / Math.max(1, oben.length));
+    lautFaktor = mittel > 0.000001 ? Math.min(40, 0.07 / mittel) : 1;
   }
   function schnittNeu() {
     hoerStop(); rueck = []; wahlA = wahlB = null; kopf = 0;
@@ -2665,7 +2679,7 @@ function aufnahmeStarten(root, hilfe) {
       while (t0 + k * STUECK - ac.currentTime < 20) {
         var a = Math.floor((ab + k * STUECK) * sr); if (a >= raw.length) break;
         var b = Math.min(raw.length, a + STUECK * sr), buf = ac.createBuffer(1, b - a, sr), d = buf.getChannelData(0);
-        for (var i = 0; i < b - a; i++) d[i] = raw[a + i] * lautFaktor;
+        for (var i = 0; i < b - a; i++) { var v = raw[a + i] * lautFaktor; d[i] = v > 0.98 ? 0.98 : v < -0.98 ? -0.98 : v; }
         var q = ac.createBufferSource(); q.buffer = buf; q.connect(ac.destination); q.start(t0 + k * STUECK);
         quellen.push(q); k++;
       }
