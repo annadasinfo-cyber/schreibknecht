@@ -10,6 +10,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 
 const EIMER = "studiobilder";
 const ABSPANN = "🎬 Abspann";   // liegt als besonderer Text in studio_texte, gilt fuer alle Filme
+const ZAEHLER = "🎨 Bildzähler"; // ebenso: wie viele KI-Bilder in diesem Monat und was sie gekostet haben
 
 // Die BILDER, die zwischen den Filmen liegen. Bei jedem Oeffnen der
 // Filmliste werden drei davon gezogen. Sie stecken direkt hier drin,
@@ -166,8 +167,39 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
   // ---- helfer fuer die zoomloop ----
   const film = filme.find((f) => f.id === filmId) || null;
   const abspannId = useRef(null);
+  const zaehlerId = useRef(null);
   const laufend = useRef(Promise.resolve());   // noch nicht fertig gespeicherte Aenderungen
   const filmHilfe = useCallback((id) => ({
+    // Bildgenerator: laeuft ueber /api/bild bei Vercel, dort liegt der OpenRouter-Schluessel
+    ki: async (aktion, daten) => {
+      const s = await frisch();
+      const r = await fetch("/api/bild", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + s.access_token },
+        body: JSON.stringify({ aktion, ...(daten || {}) }),
+      });
+      let j = null;
+      try { j = await r.json(); } catch (e) { j = { fehler: "Antwort unlesbar (" + r.status + ")" }; }
+      if (!r.ok) throw new Error(j.fehler || "Fehler " + r.status);
+      return j;
+    },
+    vorlagen: () => filme.filter((x) => x.id !== id && x.daten && x.daten.G && x.daten.G.vorlage &&
+      ((x.daten.G.vorlage.stil || "").trim() || (x.daten.G.vorlage.figuren || "").trim()))
+      .map((x) => ({ id: x.id, name: x.name, vorlage: x.daten.G.vorlage })),
+    zaehlerHolen: async () => {
+      const l = await api("GET", `/rest/v1/studio_texte?select=id,text&name=eq.${encodeURIComponent(ZAEHLER)}&limit=1`);
+      if (!l || !l[0]) return null;
+      zaehlerId.current = l[0].id;
+      try { return JSON.parse(l[0].text || "null"); } catch (e) { return null; }
+    },
+    zaehlerSpeichern: async (z) => {
+      const text = JSON.stringify(z);
+      if (zaehlerId.current) await api("PATCH", `/rest/v1/studio_texte?id=eq.${zaehlerId.current}`, { text, updated_at: new Date().toISOString() });
+      else {
+        const r = await api("POST", "/rest/v1/studio_texte", { name: ZAEHLER, text }, { Prefer: "return=representation" });
+        if (r && r[0]) zaehlerId.current = r[0].id;
+      }
+    },
     abspannHolen: async () => {
       const l = await api("GET", `/rest/v1/studio_texte?select=id,text&name=eq.${encodeURIComponent(ABSPANN)}&limit=1`);
       if (!l || !l[0]) return { titel: "", namen: "" };
@@ -211,12 +243,12 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
         await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, { method: "DELETE", headers: kopf(s) });
       } catch (e) {}
     },
-  }), [api, frisch, kopf, URL_DB]);
+  }), [api, frisch, kopf, URL_DB, filme]);
 
   // ---- helfer fuer den teleprompter ----
   const textHilfe = useCallback(() => ({
     holen: async () => ((await api("GET", "/rest/v1/studio_texte?select=id,name,text&order=created_at.asc")) || [])
-      .filter((t) => t.name !== ABSPANN),
+      .filter((t) => t.name !== ABSPANN && t.name !== ZAEHLER),
     neu: async (name, text) => {
       const r = await api("POST", "/rest/v1/studio_texte", { name, text }, { Prefer: "return=representation" });
       return r && r[0];
@@ -389,8 +421,32 @@ const ZL_HTML = `
   <div class="zl-stage">
     <canvas id="zl_cv" width="1280" height="720"></canvas>
     <div id="zl_hint" class="zl-hint">Bilder laden oder hier reinziehen</div>
+    <div id="zl_kibild" class="zl-kibild" hidden>
+      <img id="zl_kiimg" alt="">
+      <div class="zl-row zl-kiknoepfe">
+        <button id="zl_kiueber" class="zl-kiueber">&#10003; &Uuml;bernehmen</button>
+        <button id="zl_kinochmal">&#8635; Nochmal</button>
+        <button id="zl_kiweg">&#10005; Verwerfen</button>
+      </div>
+    </div>
   </div>
   <div class="zl-side">
+    <h2>Bild erzeugen</h2>
+    <textarea id="zl_kiprompt" class="zl-txt" rows="3" placeholder="Was soll auf dem Bild zu sehen sein?"></textarea>
+    <button id="zl_kilos" class="zl-big" style="margin-top:2px">&#10024; Bild erzeugen</button>
+    <div id="zl_kistatus" class="zl-msg"></div>
+    <div id="zl_kizaehler" class="zl-kizaehler"></div>
+    <details class="zl-vorlage">
+      <summary>Stilvorlage dieses Films</summary>
+      <label>Grundstil</label>
+      <textarea id="zl_kistil" class="zl-txt" rows="3" placeholder="z. B. dunkel, filmisch, Kerzenlicht, viktorianisch &hellip;"></textarea>
+      <label>Figuren und Gegenst&auml;nde</label>
+      <textarea id="zl_kifig" class="zl-txt" rows="4" placeholder="z. B. Frau mit dunklen Locken im roten Samtkleid; bestickte Stiefel mit lila Steinen"></textarea>
+      <label>Vorlage &uuml;bernehmen von</label>
+      <select id="zl_kivon"><option value="">&ndash; Film w&auml;hlen &ndash;</option></select>
+      <label>Modell</label>
+      <select id="zl_kimodell"><option value="">wird geladen &hellip;</option></select>
+    </details>
     <h2>Ausschnitt</h2>
     <div id="zl_cpair" class="zl-pair">&ndash;</div>
     <canvas id="zl_cprev" class="zl-cprev" width="246" height="60"></canvas>
@@ -452,7 +508,8 @@ function zoomloopStarten(root, film, hilfe) {
   var $ = function (id) { return root.querySelector("#zl_" + id); };
   var DEF = { cx: 0, cy: 0, s: 0.08, r: 0, feather: 18, shape: "oval", br: 100, co: 100, sa: 100, hu: 0, pan: 0, text: "", tpos: "unten", tgr: 6 };
   var daten = film.daten || {};
-  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15 }, daten.G || {});
+  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "" }, daten.G || {});
+  if (!G.vorlage) G.vorlage = { stil: "", figuren: "" };
   var items = [];
   var sel = 0, u = 0, playing = false, exporting = false, cancelExport = false, dead = false;
   var cv = $("cv"), ctx = cv.getContext("2d", { alpha: false });
@@ -1494,6 +1551,106 @@ function zoomloopStarten(root, film, hilfe) {
     $("prog").style.display = "none"; draw();
     if (done && !dead) alert($("msg").textContent);
   }
+
+  /* ---------- Bildgenerator ---------- */
+  var kiLetzt = null, kiLaeuft = false, kiZ = null;
+  function kiStatus(t) { if (!dead) $("kistatus").textContent = t || ""; }
+  function geld(d) { return (Math.round(d * 100) / 100).toFixed(2).replace(".", ",") + " $"; }
+  var MONATE = ["Januar", "Februar", "M\u00e4rz", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+  function monatJetzt() { var d = new Date(); return d.getFullYear() + "-" + (d.getMonth() < 9 ? "0" : "") + (d.getMonth() + 1); }
+  var kiRest = null;
+  function zaehlerZeigen() {
+    if (dead) return;
+    var teile = [];
+    if (kiRest !== null) teile.push("Guthaben " + geld(kiRest));
+    if (kiZ) {
+      var m = MONATE[+kiZ.monat.slice(5) - 1] || "diesen Monat";
+      teile.push(m + ": " + kiZ.bilder + (kiZ.bilder === 1 ? " Bild" : " Bilder") + " f\u00fcr " + geld(kiZ.kosten || 0));
+    }
+    $("kizaehler").textContent = teile.join("  \u00b7  ");
+  }
+  function guthabenHolen() {
+    hilfe.ki("guthaben").then(function (g) { kiRest = (g.gesamt || 0) - (g.verbraucht || 0); zaehlerZeigen(); })
+      .catch(function (e) { kiStatus("Guthaben: " + (e.message || e)); });
+  }
+  hilfe.zaehlerHolen().then(function (z) {
+    kiZ = z && z.monat === monatJetzt() ? z : { monat: monatJetzt(), bilder: 0, kosten: 0 };
+    zaehlerZeigen();
+  }).catch(function () { kiZ = { monat: monatJetzt(), bilder: 0, kosten: 0 }; zaehlerZeigen(); });
+  guthabenHolen();
+
+  // Modelle holen; bevorzugt Googles Nano Banana
+  hilfe.ki("modelle").then(function (j) {
+    if (dead) return;
+    var l = (j.modelle || []).slice().sort(function (a, b) { return a.name.localeCompare(b.name); });
+    var sel = $("kimodell"); sel.innerHTML = "";
+    l.forEach(function (m) { var o = document.createElement("option"); o.value = m.id; o.textContent = m.name; sel.appendChild(o); });
+    var wunsch = G.kiModell && l.some(function (m) { return m.id === G.kiModell; }) ? G.kiModell : "";
+    if (!wunsch) {
+      var nb = l.filter(function (m) { return /gemini/i.test(m.id) && /image/i.test(m.id) && !/pro/i.test(m.id); });
+      nb.sort(function (a, b) { return b.id.localeCompare(a.id); });   // die neueste Fassung zuerst
+      wunsch = nb[0] ? nb[0].id : (l[0] && l[0].id) || "";
+    }
+    sel.value = wunsch; G.kiModell = wunsch;
+  }).catch(function (e) { $("kimodell").innerHTML = "<option value=\"\">Modelle gingen nicht</option>"; kiStatus(e.message || String(e)); });
+  $("kimodell").onchange = function () { G.kiModell = this.value; save(); };
+
+  // Stilvorlage je Film
+  $("kistil").value = G.vorlage.stil || ""; $("kifig").value = G.vorlage.figuren || "";
+  $("kistil").addEventListener("input", function () { G.vorlage.stil = this.value; save(); });
+  $("kifig").addEventListener("input", function () { G.vorlage.figuren = this.value; save(); });
+  (hilfe.vorlagen() || []).forEach(function (v) {
+    var o = document.createElement("option"); o.value = v.id; o.textContent = v.name; $("kivon").appendChild(o);
+  });
+  $("kivon").onchange = function () {
+    var v = (hilfe.vorlagen() || []).find(function (x) { return x.id === $("kivon").value; });
+    if (!v) return;
+    if ((G.vorlage.stil || G.vorlage.figuren) && !confirm("Die Vorlage dieses Films mit der von \u201e" + v.name + "\u201c ersetzen?")) { this.value = ""; return; }
+    G.vorlage = { stil: v.vorlage.stil || "", figuren: v.vorlage.figuren || "" };
+    $("kistil").value = G.vorlage.stil; $("kifig").value = G.vorlage.figuren; this.value = ""; save();
+  };
+
+  function kiFormat() { return G.W > G.H ? "16:9" : G.W < G.H ? "9:16" : "1:1"; }
+  function kiText() {
+    var t = [];
+    if ((G.vorlage.stil || "").trim()) t.push("Stil: " + G.vorlage.stil.trim());
+    if ((G.vorlage.figuren || "").trim()) t.push("Figuren und Gegenst\u00e4nde, die in diesem Film immer gleich aussehen: " + G.vorlage.figuren.trim());
+    t.push("Szene: " + $("kiprompt").value.trim());
+    return t.join("\n\n");
+  }
+  async function kiErzeugen() {
+    if (kiLaeuft) return;
+    if (!$("kiprompt").value.trim()) { kiStatus("Schreib erst, was auf dem Bild sein soll."); return; }
+    if (!G.kiModell) { kiStatus("Kein Modell gew\u00e4hlt."); return; }
+    kiLaeuft = true; $("kilos").disabled = true; $("kinochmal").disabled = true;
+    kiStatus("Bild wird gemalt \u2026 (das dauert meist 10 bis 30 Sekunden)");
+    try {
+      var j = await hilfe.ki("bild", { prompt: kiText(), modell: G.kiModell, format: kiFormat() });
+      if (dead) return;
+      kiLetzt = j.bild;
+      $("kiimg").src = j.bild; $("kibild").hidden = false;
+      if (!kiZ || kiZ.monat !== monatJetzt()) kiZ = { monat: monatJetzt(), bilder: 0, kosten: 0 };
+      kiZ.bilder += 1; kiZ.kosten = (kiZ.kosten || 0) + (j.kosten || 0);
+      hilfe.zaehlerSpeichern(kiZ).catch(function () {});
+      zaehlerZeigen(); guthabenHolen();
+      kiStatus(j.kosten ? "Dieses Bild hat " + geld(j.kosten) + " gekostet." : "");
+    } catch (e) { kiStatus("Das ging nicht: " + (e.message || e)); }
+    kiLaeuft = false;
+    if (!dead) { $("kilos").disabled = false; $("kinochmal").disabled = false; }
+  }
+  $("kilos").onclick = kiErzeugen;
+  $("kinochmal").onclick = kiErzeugen;
+  $("kiweg").onclick = function () { $("kibild").hidden = true; kiLetzt = null; };
+  $("kiueber").onclick = async function () {
+    if (!kiLetzt) return;
+    try {
+      var blob = await (await fetch(kiLetzt)).blob();
+      var datei = new File([blob], "ki-" + Date.now() + ".png", { type: blob.type || "image/png" });
+      $("kibild").hidden = true; kiLetzt = null;
+      await addFiles([datei]);
+      sel = items.length - 1; u = Math.min(sel, segs()); thumbs(); syncPanel(); draw();
+    } catch (e) { kiStatus("\u00dcbernehmen ging nicht: " + (e.message || e)); }
+  };
 
   /* ---------- Start: Bilder aus dem Ablagefach holen ---------- */
   function onResize() { draw(); }
@@ -2702,6 +2859,14 @@ function StudioStil() {
 .zl-txt{width:100%; background:#0b0907; color:#e6d9bb; border:1px solid var(--st-linie); border-radius:3px; padding:6px 8px; font:15px/1.35 "Grenze Gotisch", Georgia, serif; resize:vertical; margin-bottom:6px}
 .zl-abtitel{width:100%; background:#0b0907; color:#e6d9bb; border:1px solid var(--st-linie); border-radius:3px; padding:6px 8px; font:16px "Grenze Gotisch", Georgia, serif; text-align:center; margin:6px 0}
 .zl-abnamen{text-align:center}
+.zl-kibild{position:absolute; inset:10px; background:rgba(8,6,4,.94); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; z-index:5; border:1px solid var(--st-linie); border-radius:4px; padding:10px}
+.zl-kibild[hidden]{display:none}
+.zl-kibild img{max-width:100%; max-height:calc(100% - 56px); object-fit:contain; box-shadow:0 0 40px #000}
+.zl-kiknoepfe{gap:10px}
+.zl button.zl-kiueber{background:var(--st-rot); border-color:var(--st-rot); color:#fff}
+.zl-kizaehler{color:#e6d9bb; font-size:12px; margin:2px 0 6px}
+.zl-vorlage{margin:6px 0 4px; border:1px solid var(--st-linie); border-radius:3px; padding:4px 8px}
+.zl-vorlage summary{cursor:pointer; color:var(--st-gold); font-size:12px; padding:4px 0}
 .zl-tonname{color:#e6d9bb; font-size:12px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .zl-tonhinweis{color:var(--st-dim); font-size:11px; margin-top:4px; font-style:italic}
 .zl-tonhinweis[hidden]{display:none}
