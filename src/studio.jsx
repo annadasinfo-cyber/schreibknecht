@@ -433,6 +433,14 @@ const ZL_HTML = `
   <div class="zl-side">
     <h2>Bild erzeugen</h2>
     <textarea id="zl_kiprompt" class="zl-txt" rows="3" placeholder="Was soll auf dem Bild zu sehen sein?"></textarea>
+    <label>Ausgangsbild</label>
+    <select id="zl_kivor">
+      <option value="">keins &ndash; ganz neues Bild</option>
+      <option value="sel">das ausgew&auml;hlte Bild aus der Reihe</option>
+      <option value="datei">ein Bild von der Festplatte &hellip;</option>
+    </select>
+    <input id="zl_kivordatei" type="file" accept="image/*" hidden>
+    <img id="zl_kivorbild" class="zl-kivorbild" alt="" hidden>
     <button id="zl_kilos" class="zl-big" style="margin-top:2px">&#10024; Bild erzeugen</button>
     <div id="zl_kistatus" class="zl-msg"></div>
     <div id="zl_kizaehler" class="zl-kizaehler"></div>
@@ -987,6 +995,7 @@ function zoomloopStarten(root, film, hilfe) {
     } else { $("tpair").innerHTML = "&ndash;"; $("txt").value = ""; }
     $("txt").disabled = $("tpos").disabled = $("tgr").disabled = !it;
     drawCropPrev();
+    if ($("kivor").value === "sel") kiVorZeigen();
     PK.forEach(function (k) {
       var el = $(k); el.disabled = !ch; if (!ch) return;
       el.value = k === "s" ? ch.p.s * 100 : ch.p[k];
@@ -1553,7 +1562,7 @@ function zoomloopStarten(root, film, hilfe) {
   }
 
   /* ---------- Bildgenerator ---------- */
-  var kiLetzt = null, kiLaeuft = false, kiZ = null;
+  var kiLetzt = null, kiLetztPfad = null, kiLaeuft = false, kiZ = null, kiDatei = null;
   function kiStatus(t) { if (!dead) $("kistatus").textContent = t || ""; }
   function geld(d) { return (Math.round(d * 100) / 100).toFixed(2).replace(".", ",") + " $"; }
   var MONATE = ["Januar", "Februar", "M\u00e4rz", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
@@ -1610,9 +1619,52 @@ function zoomloopStarten(root, film, hilfe) {
     $("kistil").value = G.vorlage.stil; $("kifig").value = G.vorlage.figuren; this.value = ""; save();
   };
 
+  /* Ausgangsbild: das ausgewaehlte Bild der Reihe oder eines von der Festplatte */
+  function kiVorEl() {
+    var art = $("kivor").value;
+    if (art === "sel") return items[sel] ? items[sel].el : null;
+    if (art === "datei") return kiDatei;
+    return null;
+  }
+  function kiVorZeigen() {
+    if (dead) return;
+    var el = kiVorEl(), b = $("kivorbild");
+    if (el) { b.src = el.src; b.hidden = false; } else { b.hidden = true; b.removeAttribute("src"); }
+  }
+  $("kivor").onchange = function () {
+    if (this.value === "datei") { $("kivordatei").click(); if (!kiDatei) { /* erst nach der Auswahl zeigen */ } }
+    kiVorZeigen();
+  };
+  $("kivordatei").onchange = function () {
+    var f = this.files && this.files[0]; this.value = "";
+    if (!f) { if (!kiDatei) $("kivor").value = ""; kiVorZeigen(); return; }
+    var url = URL.createObjectURL(f); urls.push(url);
+    bildAus(url).then(function (el) { kiDatei = el; kiVorZeigen(); })
+      .catch(function () { kiStatus("Das Bild kann ich nicht lesen (HEIC? dann bitte als JPG)."); $("kivor").value = ""; kiVorZeigen(); });
+  };
+  // Ausgangsbild verkleinert als JPEG mitschicken (laengste Seite 1536 px)
+  function kiVorDaten() {
+    var el = kiVorEl(); if (!el) return null;
+    var w = el.naturalWidth, h = el.naturalHeight, k = Math.min(1, 1536 / Math.max(w, h));
+    var c = document.createElement("canvas"); c.width = Math.round(w * k); c.height = Math.round(h * k);
+    var x = c.getContext("2d"); x.imageSmoothingQuality = "high"; x.drawImage(el, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", 0.9);
+  }
+  function kiWeg() {
+    if (kiLetztPfad) { hilfe.entfernen(kiLetztPfad); kiLetztPfad = null; }
+    if (kiLetzt && /^blob:/.test(kiLetzt)) URL.revokeObjectURL(kiLetzt);
+    kiLetzt = null;
+  }
+
   function kiFormat() { return G.W > G.H ? "16:9" : G.W < G.H ? "9:16" : "1:1"; }
-  function kiText() {
+  function kiText(mitVorlage) {
     var t = [];
+    if (mitVorlage) {
+      t.push("Nimm das mitgeschickte Bild als Grundlage und ver\u00e4ndere nur, was hier steht: " + $("kiprompt").value.trim() +
+        "\nAlles andere \u2013 Bildausschnitt, Licht, Farben, Figuren und Gegenst\u00e4nde \u2013 bleibt genau so wie im mitgeschickten Bild.");
+      if ((G.vorlage.stil || "").trim()) t.push("Stil: " + G.vorlage.stil.trim());
+      return t.join("\n\n");
+    }
     if ((G.vorlage.stil || "").trim()) t.push("Stil: " + G.vorlage.stil.trim());
     if ((G.vorlage.figuren || "").trim()) t.push("Figuren und Gegenst\u00e4nde, die in diesem Film immer gleich aussehen: " + G.vorlage.figuren.trim());
     t.push("Szene: " + $("kiprompt").value.trim());
@@ -1625,10 +1677,15 @@ function zoomloopStarten(root, film, hilfe) {
     kiLaeuft = true; $("kilos").disabled = true; $("kinochmal").disabled = true;
     kiStatus("Bild wird gemalt \u2026 (das dauert meist 10 bis 30 Sekunden)");
     try {
-      var j = await hilfe.ki("bild", { prompt: kiText(), modell: G.kiModell, format: kiFormat() });
+      var vor = kiVorDaten();
+      var j = await hilfe.ki("bild", { prompt: kiText(!!vor), modell: G.kiModell, format: kiFormat(), vorlage: vor || undefined });
       if (dead) return;
-      kiLetzt = j.bild;
-      $("kiimg").src = j.bild; $("kibild").hidden = false;
+      kiWeg();   // ein vorheriges, nicht uebernommenes Bild wegraeumen
+      if (j.pfad) {
+        var blob = await hilfe.holen(j.pfad);
+        kiLetztPfad = j.pfad; kiLetzt = URL.createObjectURL(blob);
+      } else kiLetzt = j.bild;
+      $("kiimg").src = kiLetzt; $("kibild").hidden = false;
       if (!kiZ || kiZ.monat !== monatJetzt()) kiZ = { monat: monatJetzt(), bilder: 0, kosten: 0 };
       kiZ.bilder += 1; kiZ.kosten = (kiZ.kosten || 0) + (j.kosten || 0);
       hilfe.zaehlerSpeichern(kiZ).catch(function () {});
@@ -1640,14 +1697,15 @@ function zoomloopStarten(root, film, hilfe) {
   }
   $("kilos").onclick = kiErzeugen;
   $("kinochmal").onclick = kiErzeugen;
-  $("kiweg").onclick = function () { $("kibild").hidden = true; kiLetzt = null; };
+  $("kiweg").onclick = function () { $("kibild").hidden = true; kiWeg(); };
   $("kiueber").onclick = async function () {
     if (!kiLetzt) return;
     try {
       var blob = await (await fetch(kiLetzt)).blob();
       var datei = new File([blob], "ki-" + Date.now() + ".png", { type: blob.type || "image/png" });
-      $("kibild").hidden = true; kiLetzt = null;
+      $("kibild").hidden = true;
       await addFiles([datei]);
+      kiWeg();   // die Zwischenablage im Fach wird nicht mehr gebraucht, das Bild liegt jetzt im Film
       sel = items.length - 1; u = Math.min(sel, segs()); thumbs(); syncPanel(); draw();
     } catch (e) { kiStatus("\u00dcbernehmen ging nicht: " + (e.message || e)); }
   };
@@ -2864,6 +2922,7 @@ function StudioStil() {
 .zl-kibild img{max-width:100%; max-height:calc(100% - 56px); object-fit:contain; box-shadow:0 0 40px #000}
 .zl-kiknoepfe{gap:10px}
 .zl button.zl-kiueber{background:var(--st-rot); border-color:var(--st-rot); color:#fff}
+.zl-kivorbild{display:block; max-width:100%; max-height:110px; margin:6px auto 2px; border:1px solid var(--st-linie); border-radius:3px}
 .zl-kizaehler{color:#e6d9bb; font-size:12px; margin:2px 0 6px}
 .zl-vorlage{margin:6px 0 4px; border:1px solid var(--st-linie); border-radius:3px; padding:4px 8px}
 .zl-vorlage summary{cursor:pointer; color:var(--st-gold); font-size:12px; padding:4px 0}

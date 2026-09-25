@@ -10,15 +10,32 @@ const OR = "https://openrouter.ai/api/v1";
 
 async function angemeldet(req) {
   const auth = req.headers.authorization || "";
-  if (!auth.startsWith("Bearer ")) return false;
+  if (!auth.startsWith("Bearer ")) return null;
   const r = await fetch(`${SUPABASE}/auth/v1/user`, { headers: { Authorization: auth, apikey: SUPABASE_KEY } });
-  return r.ok;
+  if (!r.ok) return null;
+  return await r.json();
+}
+
+// Das fertige Bild direkt ins Ablagefach legen: ein 2K-Bild ist zu gross,
+// um es als Antwort durch Vercel zu schicken
+async function ablegen(auth, nutzer, datenUrl) {
+  const m = /^data:([^;]+);base64,(.*)$/s.exec(datenUrl || "");
+  if (!m) return null;
+  const typ = m[1], endung = /jpe?g/i.test(typ) ? "jpg" : /webp/i.test(typ) ? "webp" : "png";
+  const pfad = `${nutzer.id}/ki/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${endung}`;
+  const r = await fetch(`${SUPABASE}/storage/v1/object/studiobilder/${pfad}`, {
+    method: "POST",
+    headers: { Authorization: auth, apikey: SUPABASE_KEY, "Content-Type": typ, "x-upsert": "true" },
+    body: Buffer.from(m[2], "base64"),
+  });
+  return r.ok ? pfad : null;
 }
 
 export default async function handler(req, res) {
   try {
     if (req.method !== "POST") { res.status(405).json({ fehler: "nur POST" }); return; }
-    if (!(await angemeldet(req))) { res.status(401).json({ fehler: "nicht angemeldet" }); return; }
+    const nutzer = await angemeldet(req);
+    if (!nutzer) { res.status(401).json({ fehler: "nicht angemeldet" }); return; }
     const schluessel = process.env.OPENROUTER_API_KEY;
     if (!schluessel) { res.status(500).json({ fehler: "Der OpenRouter-Schluessel fehlt in Vercel (OPENROUTER_API_KEY)." }); return; }
     const kopf = {
@@ -51,7 +68,13 @@ export default async function handler(req, res) {
     if (body.aktion === "bild") {
       const anfrage = {
         model: body.modell,
-        messages: [{ role: "user", content: String(body.prompt || "").slice(0, 8000) }],
+        messages: [{
+          role: "user",
+          content: body.vorlage
+            ? [{ type: "text", text: String(body.prompt || "").slice(0, 8000) },
+               { type: "image_url", image_url: { url: body.vorlage } }]
+            : String(body.prompt || "").slice(0, 8000),
+        }],
         modalities: ["image", "text"],
         image_config: { aspect_ratio: body.format || "16:9", image_size: "2K" },
         usage: { include: true },
@@ -71,7 +94,11 @@ export default async function handler(req, res) {
         res.status(502).json({ fehler: "Das Modell hat kein Bild geschickt." + (nachricht && nachricht.content ? " Es schrieb: " + String(nachricht.content).slice(0, 300) : "") });
         return;
       }
-      res.status(200).json({ bild: erstes, kosten: (j.usage && j.usage.cost) || null });
+      const kosten = (j.usage && j.usage.cost) || null;
+      const pfad = await ablegen(req.headers.authorization, nutzer, erstes);
+      if (pfad) { res.status(200).json({ pfad, kosten }); return; }
+      if (erstes.length < 4000000) { res.status(200).json({ bild: erstes, kosten }); return; }
+      res.status(500).json({ fehler: "Das Bild ist fertig, liess sich aber nicht ablegen." });
       return;
     }
 
