@@ -78,7 +78,7 @@ export default async function handler(req, res) {
         .map((m) => {
           const p = m.pricing || {};
           const frei = /:free$/.test(m.id) || (Number(p.prompt) === 0 && Number(p.completion) === 0);
-          return { id: m.id, name: m.name, frei };
+          return { id: m.id, name: m.name, frei, ctx: m.context_length || null };
         })
         .sort((a, b) => (a.frei === b.frei ? a.name.localeCompare(b.name) : a.frei ? -1 : 1));
       res.status(200).json({ modelle: liste });
@@ -87,7 +87,7 @@ export default async function handler(req, res) {
 
     if (body.aktion === "chat") {
       const nachrichten = (Array.isArray(body.nachrichten) ? body.nachrichten : [])
-        .slice(-42).map((m) => ({ role: m.role, content: String(m.content || "").slice(0, 60000) }));
+        .slice(-42).map((m) => ({ role: m.role, content: String(m.content || "").slice(0, 3200000) }));
       const r = await fetch(`${OR}/chat/completions`, {
         method: "POST", headers: kopf,
         body: JSON.stringify({ model: body.modell, messages: nachrichten, usage: { include: true } }),
