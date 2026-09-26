@@ -791,6 +791,9 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
     fragen("textmodelle").then((j) => {
       const l = j.modelle || [];
       setModelle(l);
+      // Annis Liebling: NVIDIA Nemotron Ultra (kostenlos) ist beim Oeffnen immer eingehakt
+      const nemotron = l.find((m) => m.frei && /nemotron/i.test(m.id + " " + m.name) && /ultra/i.test(m.id + " " + m.name));
+      if (nemotron) { setModell(nemotron.id); return; }
       if (!modell || !l.some((m) => m.id === modell)) {
         const lieb = l.find((m) => m.frei && /deepseek|llama-3\.3|gemma|mistral|qwen/i.test(m.id)) || l.find((m) => m.frei) || l[0];
         if (lieb) setModell(lieb.id);
@@ -1019,6 +1022,22 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
     if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest", inline: "center", behavior: "smooth" });
   };
   const [klein, setKlein] = useState(false);   // pult eingeklappt?
+  // wie hoch das pult ist — oben am rand zum hochziehen, doppelklick = zurueck
+  const [pultHoehe, setPultHoehe] = useState(() => { try { return +(localStorage.getItem("pult:hoehe") || 0) || null; } catch { return null; } });
+  useEffect(() => { try { pultHoehe ? localStorage.setItem("pult:hoehe", String(Math.round(pultHoehe))) : localStorage.removeItem("pult:hoehe"); } catch {} }, [pultHoehe]);
+  const pultZug = useRef(null);
+  const pultZiehenStart = (e) => {
+    const pultEl = e.currentTarget.parentElement;
+    pultZug.current = { y: e.clientY, h: pultEl.getBoundingClientRect().height };
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const pultZiehen = (e) => {
+    if (!pultZug.current) return;
+    const h = pultZug.current.h + (pultZug.current.y - e.clientY);
+    setPultHoehe(Math.max(220, Math.min(window.innerHeight - 40, h)));
+  };
+  const pultZiehenEnde = () => { pultZug.current = null; };
   // der knecht zum reden — sitzt links im pult, nur auf dem grossen bildschirm
   const [knechtAuf, setKnechtAuf] = useState(() => { try { return localStorage.getItem("knecht:auf") === "1"; } catch { return false; } });
   useEffect(() => { try { localStorage.setItem("knecht:auf", knechtAuf ? "1" : "0"); } catch {} }, [knechtAuf]);
@@ -2455,7 +2474,8 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
         )}
 
         <button className="abschnittneu" onClick={abschnittZu}>+ trennstrich</button>
-        {pult.length > 0 && <div className={"pultplatz" + (klein ? " klein" : "")} />}
+        {pult.length > 0 && <div className={"pultplatz" + (klein ? " klein" : "")}
+          style={!klein && pultHoehe ? { height: pultHoehe } : undefined} />}
       </div>
 
       {/* DAS PULT — klappt unter der auslage auf, die karten oben bleiben sichtbar.
@@ -2498,7 +2518,12 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       )}
 
       {pult.length > 0 && (
-        <div className={"pult" + (klein ? " klein" : "")}>
+        <div className={"pult" + (klein ? " klein" : "")}
+          style={!klein && pultHoehe ? { height: pultHoehe, maxHeight: pultHoehe } : undefined}>
+          <div className="pultzug" title="pult hochziehen · doppelklick: normale höhe"
+            onPointerDown={pultZiehenStart} onPointerMove={pultZiehen}
+            onPointerUp={pultZiehenEnde} onPointerCancel={pultZiehenEnde}
+            onDoubleClick={() => setPultHoehe(null)} />
           <div className="pultkopf" onDoubleClick={() => setKlein((k) => !k)}>
             <span className="pultname">pult</span>
             <span className="pulthinweis">
@@ -4596,6 +4621,17 @@ function Stil() {
 
 /* der freie raum unten, damit die letzte reihe nicht verdeckt liegt */
 .pultplatz{height:min(66vh, 620px); transition:height .25s ease}
+/* oben am pult: zum hoeher- und niedrigerziehen */
+.pultzug{position:absolute; left:0; right:0; top:-5px; height:12px; cursor:ns-resize; z-index:2; touch-action:none}
+.pultzug::after{content:""; position:absolute; left:50%; top:4px; width:54px; height:4px; margin-left:-27px;
+  border-radius:3px; background:rgba(224,139,60,.35); transition:background .15s}
+.pultzug:hover::after{background:rgba(224,139,60,.8)}
+.pult.klein .pultzug{display:none}
+/* zieht man das pult hoeher, wachsen die karten mit — mehr platz zum schreiben */
+@media(hover:hover) and (min-width:821px){
+  .pultrumpf .pultblatt{grid-auto-rows:minmax(min(52vh, 440px), 1fr)}
+}
+@media(hover:none){ .pultzug{display:none} }
 .pultplatz.klein{height:66px}
 
 .pultkopf{
