@@ -1907,6 +1907,12 @@ const AU_HTML = `
         <button id="au_zraus" title="mehr Zeit auf einmal sehen">&minus;</button>
         <button id="au_zrein" title="genauer hinsehen, zum Schneiden">+</button>
       </div>
+      <div class="au-row au-pausen">
+        <button id="au_pausen" title="lange Pausen automatisch finden und k&uuml;rzen">&#9208; Pausen k&uuml;rzen</button>
+        <span class="au-klein">l&auml;nger als</span>
+        <input id="au_pmin" type="number" min="0.3" max="5" step="0.1" value="0.8"> <span class="au-klein">s &rarr; auf</span>
+        <input id="au_pziel" type="number" min="0" max="3" step="0.1" value="0.4"> <span class="au-klein">s</span>
+      </div>
       <div id="au_zeit" class="au-zeit"></div>
     </div>
     <div class="au-row">
@@ -1914,6 +1920,7 @@ const AU_HTML = `
       <button data-p="raw">Roh</button>
       <button data-p="normal">Normal</button>
       <button data-p="studio">Studio &#10024;</button>
+      <button data-p="podcast">Podcast &#128251;</button>
     </div>
     <audio id="au_player" controls></audio>
     <div class="au-row">
@@ -2344,7 +2351,9 @@ function aufnahmeStarten(root, hilfe) {
       var p = oc.startRendering(); if (p && p.then) p.then(res);
     });
   }
-  async function chain(x, fs, studio) {
+  async function chain(x, fs, art) {
+    if (art === "podcast") return podcastKette(x, fs);
+    var studio = art === "studio";
     var OC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
     var oc = new OC(1, x.length, fs), b = oc.createBuffer(1, x.length, fs);
     b.getChannelData(0).set(x);
@@ -2376,11 +2385,59 @@ function aufnahmeStarten(root, hilfe) {
     var r = await renderOffline(oc);
     return new Float32Array(r.getChannelData(0));
   }
-  function deess(x, fs) {
+  /* PODCAST — nach dem Vorbild der Rundfunk-Bearbeitung, wie Rode sie im
+     PodMic USB einsetzt: sattes Fundament mit zusaetzlichen Bass-Obertoenen,
+     aufgeraeumte Mitten, Glanz durch Obertoene oben, dazu eine zweistufige,
+     weiche Verdichtung (erst gleichmaessig machen, dann Spitzen fangen). */
+  async function podcastKette(x, fs) {
+    var OC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    var oc = new OC(1, x.length, fs), b = oc.createBuffer(1, x.length, fs);
+    b.getChannelData(0).set(x);
+    var s = oc.createBufferSource(); s.buffer = b;
+    function f(type, freq, Q, gain) {
+      var n = oc.createBiquadFilter(); n.type = type; n.frequency.value = freq; n.Q.value = Q;
+      if (gain !== undefined) n.gain.value = gain; return n;
+    }
+    function kette(von, liste) { var p = von; liste.forEach(function (n) { p.connect(n); p = n; }); return p; }
+    // Grund-EQ
+    var eq = kette(s, [
+      f("highpass", 70, 0.707),
+      f("lowshelf", 110, 0.7, 3.5),          // Waerme, Naehe
+      f("peaking", 300, 1.2, -3.5),          // Mulm und Pappkarton raus
+      f("peaking", 550, 1.4, -1.5),          // Nasales etwas weg
+      f("peaking", 3200, 0.9, 2.5),          // Praesenz, Verstaendlichkeit
+      f("highshelf", 11000, 0.7, 3),         // Luft
+    ]);
+    var summe = oc.createGain();
+    eq.connect(summe);
+    // Bass-Obertoene: tiefe Anteile leicht verzerren, das Ohr hoert "mehr Bass", ohne dass es droehnt
+    var tiefWeg = kette(eq, [f("lowpass", 160, 0.707)]);
+    var tiefSat = oc.createWaveShaper(); tiefSat.curve = satCurve(3); tiefSat.oversample = "4x";
+    tiefWeg.connect(tiefSat);
+    var tiefRein = kette(tiefSat, [f("highpass", 90, 0.707), f("lowpass", 700, 0.707)]);
+    var tiefG = oc.createGain(); tiefG.gain.value = 0.35; tiefRein.connect(tiefG); tiefG.connect(summe);
+    // Glanz-Obertoene: Hoehen leicht verzerren und fein beimischen
+    var hochWeg = kette(eq, [f("highpass", 3000, 0.707)]);
+    var hochSat = oc.createWaveShaper(); hochSat.curve = satCurve(4); hochSat.oversample = "4x";
+    hochWeg.connect(hochSat);
+    var hochRein = kette(hochSat, [f("highpass", 4500, 0.707)]);
+    var hochG = oc.createGain(); hochG.gain.value = 0.1; hochRein.connect(hochG); hochG.connect(summe);
+    // Stufe 1: gleichmaessig machen (langsam, sanft)
+    var c1 = oc.createDynamicsCompressor();
+    c1.threshold.value = -26; c1.ratio.value = 2.5; c1.attack.value = 0.02; c1.release.value = 0.25; c1.knee.value = 10;
+    // Stufe 2: Spitzen fangen (schnell)
+    var c2 = oc.createDynamicsCompressor();
+    c2.threshold.value = -14; c2.ratio.value = 4; c2.attack.value = 0.003; c2.release.value = 0.08; c2.knee.value = 4;
+    summe.connect(c1); c1.connect(c2); c2.connect(oc.destination);
+    s.start(0);
+    var r = await renderOffline(oc);
+    return new Float32Array(r.getChannelData(0));
+  }
+  function deess(x, fs, streng) {
     var n = x.length, hb = bq(x, coefHP(6000, 0.707, fs)), ms = 0;
     for (var i = 0; i < n; i++) ms += x[i] * x[i];
-    var thr = Math.sqrt(ms / n + 1e-12) * Math.pow(10, -10 / 20);
-    var at = 1 - Math.exp(-1 / (0.001 * fs)), rl = 1 - Math.exp(-1 / (0.05 * fs)), env = 0, minG = Math.pow(10, -9 / 20);
+    var thr = Math.sqrt(ms / n + 1e-12) * Math.pow(10, (streng ? -12 : -10) / 20);
+    var at = 1 - Math.exp(-1 / (0.001 * fs)), rl = 1 - Math.exp(-1 / (0.05 * fs)), env = 0, minG = Math.pow(10, (streng ? -11 : -9) / 20);
     var y = new Float32Array(n);
     for (var j = 0; j < n; j++) {
       var a = Math.abs(hb[j]); env += (a - env) * (a > env ? at : rl);
@@ -2422,7 +2479,7 @@ function aufnahmeStarten(root, hilfe) {
   async function processTake(x, fs, p) {
     if (p !== "raw") x = gate(x, fs);
     x = normRMS(x, fs, -20);
-    if (p !== "raw") { x = await chain(x, fs, p === "studio"); x = deess(x, fs); }
+    if (p !== "raw") { x = await chain(x, fs, p); x = deess(x, fs, p === "podcast"); }
     x = loudTo(x, fs, -14);
     return limit(x, fs, -1);
   }
@@ -2645,9 +2702,60 @@ function aufnahmeStarten(root, hilfe) {
     neu.set(raw.subarray(b + x), pos + x);
     raw = neu; nachSchnitt(a / sr);
   }
+  /* Pausen kuerzen: stille Stellen finden (gemessen am Grundrauschen dieser
+     Aufnahme), jede, die laenger ist als "laenger als", wird auf "auf" gekuerzt —
+     die Haelfte bleibt vorn, die Haelfte hinten, damit der Sprechfluss natuerlich
+     bleibt. Jede Naht wird kurz ueberblendet. Ein Zuruecknehmen holt alles wieder. */
+  function pausenKuerzen() {
+    if (!raw || state !== "idle") return;
+    var minS = Math.max(0.3, parseFloat(String($("pmin").value).replace(",", ".")) || 0.8);
+    var zielS = Math.max(0, Math.min(minS - 0.1, parseFloat(String($("pziel").value).replace(",", ".")) || 0));
+    hoerStop();
+    var bl = Math.max(1, Math.round(0.02 * sr)), nb = Math.floor(raw.length / bl), pw = new Float32Array(nb);
+    for (var b = 0; b < nb; b++) { var m = 0; for (var i = b * bl; i < (b + 1) * bl; i++) m += raw[i] * raw[i]; pw[b] = m / bl; }
+    if (nb < 10) return;
+    var so = Array.prototype.slice.call(pw).sort(function (a, c) { return a - c; });
+    var boden = so[Math.floor(nb * 0.1)] + 1e-12, laut = so[Math.floor(nb * 0.9)] + 1e-12;
+    var schwelle = Math.max(boden * Math.pow(10, 0.6), Math.min(boden * Math.pow(10, 1.0), laut * Math.pow(10, -2.0)));
+    // stille Laeufe finden
+    var weg = [], start = -1, minB = Math.ceil(minS * sr / bl);
+    for (var k = 0; k <= nb; k++) {
+      var still = k < nb && pw[k] < schwelle;
+      if (still && start < 0) start = k;
+      if (!still && start >= 0) {
+        if (k - start >= minB && start > 0 && k < nb) {   // Anfang und Ende der Aufnahme lassen wir in Ruhe
+          var a = start * bl, e = k * bl, halb = Math.round(zielS * sr / 2);
+          if (e - a > 2 * halb + Math.round(0.03 * sr)) weg.push([a + halb, e - halb]);
+        }
+        start = -1;
+      }
+    }
+    if (!weg.length) { status("Keine Pausen \u00fcber " + String(minS).replace(".", ",") + " s gefunden."); return; }
+    // in einem Durchgang zusammensetzen, mit 10 ms Ueberblendung an jeder Naht
+    var x = Math.round(0.01 * sr), stuecke = [], von = 0;
+    weg.forEach(function (w) { stuecke.push([von, w[0]]); von = w[1]; });
+    stuecke.push([von, raw.length]);
+    stuecke = stuecke.filter(function (st) { return st[1] - st[0] > 2 * x; });
+    var n = 0; stuecke.forEach(function (st, j) { n += (st[1] - st[0]) - (j ? x : 0); });
+    var neu = new Float32Array(n), pos = 0;
+    stuecke.forEach(function (st, j) {
+      var seg = raw.subarray(st[0], st[1]);
+      if (j === 0) { neu.set(seg, 0); pos = seg.length; return; }
+      for (var q = 0; q < x; q++) { var t = (q + 0.5) / x; neu[pos - x + q] = neu[pos - x + q] * (1 - t) + seg[q] * t; }
+      neu.set(seg.subarray(x), pos); pos += seg.length - x;
+    });
+    rueck.push({ voll: raw }); if (rueck.length > 30) rueck.shift();
+    var vorher = raw.length;
+    raw = neu; nachSchnitt(Math.min(kopf, raw.length / sr));
+    status(weg.length + (weg.length === 1 ? " Pause" : " Pausen") + " gek\u00fcrzt \u2013 " +
+      ((vorher - raw.length) / sr).toFixed(1).replace(".", ",") + " s k\u00fcrzer. Mit \u21b6 holst du alles zur\u00fcck.");
+  }
+  $("pausen").onclick = pausenKuerzen;
+
   function zuruecknehmen() {
     var u = rueck.pop(); if (!u) return;
     hoerStop();
+    if (u.voll) { raw = u.voll; nachSchnitt(kopf); status("Pausen wieder da."); return; }
     var neu = new Float32Array(raw.length - u.x + u.weg.length);
     neu.set(raw.subarray(0, u.pos), 0);
     neu.set(u.weg, u.pos);
@@ -3105,6 +3213,7 @@ function StudioStil() {
 .au-lauf{width:100%; margin:4px 0 0}
 .au-zeit{color:var(--st-dim); font-size:12px; font-variant-numeric:tabular-nums}
 .au-klein{color:var(--st-dim); font-size:12px}
+.au-pausen input{width:58px; background:#0b0907; color:#e6d9bb; border:1px solid var(--st-linie); border-radius:4px; padding:5px 6px; font:13px 'Courier Prime', monospace}
 .au-liste{padding:8px 12px; background:#110d09; border-top:1px solid var(--st-linie); max-height:40vh; overflow-y:auto}
 .au-liste[hidden]{display:none}
 .au-listkopf{font-family:'IM Fell English SC', Georgia, serif; font-weight:normal; color:var(--st-hell); font-size:16px}
