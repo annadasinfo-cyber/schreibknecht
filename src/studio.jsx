@@ -1916,11 +1916,7 @@ const AU_HTML = `
       <div id="au_zeit" class="au-zeit"></div>
     </div>
     <div class="au-row">
-      <span class="au-klein">fertige Fassung:</span>
-      <button data-p="raw">Roh</button>
-      <button data-p="normal">Normal</button>
-      <button data-p="studio">Studio &#10024;</button>
-      <button data-p="podcast">Podcast &#128251;</button>
+      <span class="au-klein">fertige Fassung &ndash; so wie beim H&ouml;ren oben, nur auf Podcast-Lautst&auml;rke:</span>
     </div>
     <audio id="au_player" controls></audio>
     <div class="au-row">
@@ -2476,12 +2472,12 @@ function aufnahmeStarten(root, hilfe) {
     }
     return y;
   }
-  async function processTake(x, fs, p) {
-    if (p !== "raw") x = gate(x, fs);
-    x = normRMS(x, fs, -20);
-    if (p !== "raw") { x = await chain(x, fs, p); x = deess(x, fs, p === "podcast"); }
-    x = loudTo(x, fs, -14);
-    return limit(x, fs, -1);
+  // Die fertige Fassung klingt genau wie die Aufnahme (das DJI bearbeitet schon
+  // selbst) — sie wird nur auf die empfohlene Podcast-Lautstaerke von -16 LUFS
+  // gebracht, und ein sanfter Begrenzer faengt einzelne Spitzen ab.
+  async function processTake(x, fs) {
+    x = loudTo(x, fs, -16);
+    return limit(x, fs, -1.5);
   }
   function wav24(x, fs) {
     var n = x.length, buf = new ArrayBuffer(44 + n * 3), v = new DataView(buf);
@@ -2501,20 +2497,22 @@ function aufnahmeStarten(root, hilfe) {
   function fmt(sec) { var m = Math.floor(sec / 60), s = Math.round(sec % 60); return m + ":" + (s < 10 ? "0" : "") + s; }
   function fname() {
     var d = new Date(), p = function (n) { return (n < 10 ? "0" : "") + n; };
-    return "aufnahme-" + d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + "-" + S.preset + ".wav";
+    return "aufnahme-" + d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "-" + p(d.getHours()) + p(d.getMinutes()) + ".wav";
   }
   function markPreset() { root.querySelectorAll("[data-p]").forEach(function (b) { b.classList.toggle("on", b.dataset.p === S.preset); }); }
-  async function renderPreset(p) {
+  async function renderPreset(p, leise) {
     if (!raw) return;
-    status("Wird veredelt \u2026"); await sleep(30);
+    p = "fertig";
+    if (!leise) status("Wird fertig gemacht \u2026");
+    await sleep(30);
     try {
-      if (!cache[p]) cache[p] = await processTake(raw.slice(), sr, p);
+      if (!cache[p]) cache[p] = await processTake(raw.slice(), sr);
       if (dead) return;
       lastBlob = wav24(cache[p], sr);
       if (curUrl) URL.revokeObjectURL(curUrl);
       curUrl = URL.createObjectURL(lastBlob); $("player").src = curUrl;
-      status("Fertig \u2013 h\u00f6r rein. L\u00e4nge " + fmt(raw.length / sr));
-    } catch (e) { status("Fehler beim Veredeln: " + (e.message || e)); }
+      if (!leise) status("Fertig \u2013 L\u00e4nge " + fmt(raw.length / sr));
+    } catch (e) { status("Fehler: " + (e.message || e)); }
   }
   // manche Mikros liefern eine kleine Gleichspannung mit: die ganze Welle
   // sitzt dann etwas neben der Mitte. Das hier zieht sie sanft auf null.
@@ -2575,7 +2573,7 @@ function aufnahmeStarten(root, hilfe) {
     knoepfe(); zeichneWelle(); kopieMerken();
   }
   // die Arbeitskopie im Browser: nach jeder Aenderung (kurz verzoegert)
-  var kopieUhr = 0, inApp = false;
+  var kopieUhr = 0, inApp = false, neuUhr = 0;
   function kopieMerken() {
     clearTimeout(kopieUhr);
     kopieUhr = setTimeout(function () {
@@ -2770,7 +2768,9 @@ function aufnahmeStarten(root, hilfe) {
     cache = {}; lastBlob = null; $("player").removeAttribute("src");
     if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
     knoepfe(); zeichneWelle();
-    status("Geschnitten. Die fertige Fassung wird beim Antippen von Roh/Normal/Studio oder beim Speichern neu gemacht.");
+    status("Geschnitten.");
+    // die fertige Fassung unten kurz nach dem letzten Schnitt still neu machen
+    clearTimeout(neuUhr); neuUhr = setTimeout(function () { renderPreset("fertig", true); }, 1500);
   }
   $("schnitt").onclick = schneiden;
   $("undo").onclick = zuruecknehmen;
