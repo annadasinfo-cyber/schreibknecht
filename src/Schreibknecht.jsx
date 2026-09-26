@@ -4713,6 +4713,10 @@ function Stil() {
   font-family:'Courier Prime', monospace; font-size:14.5px; line-height:1.85;
   white-space:pre-wrap; word-wrap:break-word; overflow-wrap:break-word;
   tab-size:4;
+  /* Windows zeigt im schreibfeld einen breiten rollbalken, die hinterlegte
+     ansicht hat keinen — dann bricht das feld frueher um und der cursor
+     sitzt daneben. Beide halten darum denselben platz dafuer frei. */
+  scrollbar-gutter:stable;
 }
 .bogenhinter{
   position:absolute; inset:0; overflow:hidden; pointer-events:none;
@@ -4727,7 +4731,10 @@ function Stil() {
 .bogenfeld{
   position:relative; z-index:1; resize:none; background:transparent;
   color:transparent; caret-color:var(--tinte);
+  -webkit-appearance:none; appearance:none; border-radius:0; box-shadow:none;
+  -webkit-text-size-adjust:100%; text-size-adjust:100%;
 }
+.bogenhinter{-webkit-text-size-adjust:100%; text-size-adjust:100%}
 .bogenfeld::selection{background:rgba(42,33,24,.22)}
 .bogenfeld::placeholder{color:rgba(42,33,24,.28)}
 .klein.marker{
@@ -5014,6 +5021,10 @@ function Stil() {
   .griff{display:none}
 }
 @media(hover:none) and (max-width:700px){
+  /* schreibfeld und hinterlegte ansicht MUESSEN gleich gross sein, sonst sitzt
+     der cursor woanders als der sichtbare text (vorher war das feld 14 px,
+     die ansicht 16 px, weil die schaerfere regel das feld festhielt) */
+  .bogenschreib .bogenfeld, .bogenschreib .bogenhinter{font-size:16px}
   .seite.text textarea, .bogenfeld, .bogenhinter, .ti, .kartentitel, .bogentitel,
   .strichtitel, .projektname{font-size:16px}
   .seite.text textarea{line-height:1.45; padding:10px 9px 4px}
