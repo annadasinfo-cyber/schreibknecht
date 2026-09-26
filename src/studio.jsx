@@ -182,9 +182,12 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
   // ---- helfer fuer die zoomloop ----
   const film = filme.find((f) => f.id === filmId) || null;
   const abspannId = useRef(null);
+  const aufnahmenFach = useRef(null);   // wird unten mit den Aufnahme-Helfern gefuellt
   const zaehlerId = useRef(null);
   const laufend = useRef(Promise.resolve());   // noch nicht fertig gespeicherte Aenderungen
   const filmHilfe = useCallback((id) => ({
+    aufnahmenListe: () => aufnahmenFach.current ? aufnahmenFach.current.aufnahmenListe() : Promise.resolve([]),
+    aufnahmeHolen: (pfad) => aufnahmenFach.current.aufnahmeHolen(pfad),
     // Bildgenerator: laeuft ueber /api/bild bei Vercel, dort liegt der OpenRouter-Schluessel
     ki: async (aktion, daten) => {
       const s = await frisch();
@@ -309,6 +312,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
       await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, { method: "DELETE", headers: kopf(s) });
     },
   }), [textHilfe, frisch, kopf, URL_DB]);
+  aufnahmenFach.current = aufnHilfe();
 
   return (
     <div className="studio">
@@ -511,10 +515,15 @@ const ZL_HTML = `
     <label class="zl-row" style="margin-top:10px"><input type="checkbox" id="zl_loop" checked> Endlos (letztes Bild zoomt zur&uuml;ck in Bild 1)</label>
     <label>Ton dazu</label>
     <div class="zl-row">
-      <button id="zl_tonwahl">Ton w&auml;hlen &hellip;</button>
+      <button id="zl_tonapp" title="eine Aufnahme, die du mit &#9729; in die App gelegt hast">&#9729; aus der App</button>
+      <button id="zl_tonwahl" title="eine Datei von deinem Rechner">&#128194; Datei</button>
+    </div>
+    <div id="zl_tonliste" class="zl-tonliste" hidden></div>
+    <div class="zl-row">
       <span id="zl_tonname" class="zl-tonname">kein Ton</span>
       <button id="zl_tonweg" hidden title="Ton wieder weg">&#10005;</button>
     </div>
+    <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
     <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
     <div id="zl_tonhinweis" class="zl-tonhinweis" hidden>Mit Ton l&auml;uft der Film endlos weiter, bis die Sprache aufh&ouml;rt, und blendet dann aus.</div>
     <h2>Abspann</h2>
@@ -930,7 +939,7 @@ function zoomloopStarten(root, film, hilfe) {
 
   function draw() {
     if (dead) return;
-    if (abVor) return;   // waehrend der Abspann-Vorschau nicht dazwischenmalen
+    if (abVor || vor) return;   // waehrend einer Vorschau nicht dazwischenmalen
     render(ctx, cv.width, cv.height, u, false, editing() && $("frame").checked, editing());
     var S = segs();
     $("scrub").max = Math.max(S, 0.001); $("scrub").value = u;
@@ -1288,7 +1297,7 @@ function zoomloopStarten(root, film, hilfe) {
   var ton = null;   // { file, name }
   function tonAnzeigen(extra) {
     $("tonname").textContent = ton ? ton.name + (extra ? " \u2013 " + extra : "") : "kein Ton";
-    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton;
+    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton; $("tonvor").hidden = !ton;
     $("exp").textContent = ton ? "MP4 mit Ton exportieren" : "MP4 exportieren";
   }
   function dauerText(sec) {
@@ -1296,17 +1305,95 @@ function zoomloopStarten(root, film, hilfe) {
     if (s === 60) { s = 0; m++; }
     return (h ? h + ":" + (m < 10 ? "0" : "") : "") + m + ":" + (s < 10 ? "0" : "") + s;
   }
-  $("tonwahl").onclick = function () { if (!exporting) $("ton").click(); };
+  $("tonwahl").onclick = function () { if (!exporting) { $("tonliste").hidden = true; $("ton").click(); } };
   $("ton").onchange = async function () {
     var f = this.files && this.files[0]; this.value = "";
     if (!f) return;
-    ton = { file: f, name: f.name }; tonAnzeigen();
+    vorStop(); ton = { file: f, name: f.name }; tonAnzeigen();
     try {
       var k = wavKopf(new DataView(await f.slice(0, Math.min(f.size, 1 << 20)).arrayBuffer()), f.size);
       if (k && ton && ton.file === f) tonAnzeigen(dauerText(k.frames / k.sr));
     } catch (e) {}
   };
-  $("tonweg").onclick = function () { if (exporting) return; ton = null; tonAnzeigen(); };
+  $("tonweg").onclick = function () { if (exporting) return; vorStop(); ton = null; tonAnzeigen(); };
+
+  // Ton aus der App: die Aufnahmen, die in der Aufnahme mit "in die App" abgelegt wurden
+  function tonNameSchoen(datei) {
+    var m = datei.replace(/\.m4a$/, "").split("__");
+    var d = m[0].match(/^(\d{4})-(\d\d)-(\d\d)-(\d\d)(\d\d)/);
+    return (m[1] || "Aufnahme").replace(/-/g, " ") + (d ? " \u00b7 " + d[3] + "." + d[2] + "., " + d[4] + ":" + d[5] : "");
+  }
+  $("tonapp").onclick = async function () {
+    if (exporting) return;
+    var box = $("tonliste");
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false; box.textContent = "wird geholt \u2026";
+    try {
+      var l = await hilfe.aufnahmenListe();
+      box.innerHTML = "";
+      if (!l.length) { box.textContent = "Noch keine Aufnahme in der App. In der Aufnahme mit \u2601 in die App ablegen."; return; }
+      l.forEach(function (a) {
+        var b = document.createElement("button"); b.className = "zl-toneintrag"; b.textContent = tonNameSchoen(a.name);
+        b.onclick = async function () {
+          box.textContent = "wird geladen \u2026";
+          try {
+            var blob = await hilfe.aufnahmeHolen(a.pfad);
+            var f = new File([blob], a.name, { type: blob.type || "audio/mp4" });
+            vorStop(); ton = { file: f, name: tonNameSchoen(a.name) }; tonAnzeigen();
+            box.hidden = true;
+            // Laenge anzeigen
+            var au = new Audio(); au.preload = "metadata"; au.src = URL.createObjectURL(f);
+            au.onloadedmetadata = function () { if (ton && ton.file === f && isFinite(au.duration)) tonAnzeigen(dauerText(au.duration)); URL.revokeObjectURL(au.src); };
+          } catch (e) { box.textContent = "Laden ging nicht: " + (e.message || e); }
+        };
+        box.appendChild(b);
+      });
+    } catch (e) { box.textContent = "Liste ging nicht: " + (e.message || e); }
+  };
+
+  /* ---------- Vorschau mit Ton: der ganze Film so, wie er exportiert wird ---------- */
+  var vor = null;   // { audio, url, start, T, altLoop }
+  function vorStop() {
+    if (!vor) return;
+    try { vor.audio.pause(); } catch (e) {}
+    URL.revokeObjectURL(vor.url);
+    G.loop = vor.altLoop;
+    vor = null;
+    if (!dead) { $("tonvor").innerHTML = "&#9654; Vorschau mit Ton"; draw(); }
+  }
+  $("tonvor").onclick = function () {
+    if (vor) { vorStop(); return; }
+    if (!ton || items.length < 2 || exporting) { if (items.length < 2) msg("Mindestens zwei Bilder."); return; }
+    stop();
+    var url = URL.createObjectURL(ton.file), au = new Audio(url);
+    vor = { audio: au, url: url, T: 0, altLoop: G.loop, ende: null };
+    G.loop = true;   // wie beim Export: mit Ton laeuft der Film endlos
+    au.onloadedmetadata = function () { if (vor) vor.T = au.duration; };
+    au.onended = function () { if (vor) vor.ende = performance.now(); };
+    au.play().then(function () {
+      $("tonvor").innerHTML = "&#9632; Vorschau beenden";
+      requestAnimationFrame(vorLauf);
+    }).catch(function (e) { msg("Abspielen ging nicht: " + (e.message || e)); vorStop(); });
+  };
+  function vorLauf() {
+    if (!vor || dead) return;
+    var au = vor.audio, T = vor.T || au.duration || 0;
+    var t = vor.ende ? T + (performance.now() - vor.ende) / 1000 : au.currentTime;
+    var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
+    var gesamt = T + (abDa ? G.abDauer : 0);
+    if (T && t >= gesamt) { vorStop(); return; }
+    var S = segs(), dauerLoop = S * G.sec;
+    var uu = dauerLoop ? (t % dauerLoop) / dauerLoop * S : 0;
+    var W = cv.width, H = cv.height;
+    render(ctx, W, H, uu, false, false, false);
+    if (abDa && t >= T) abspannUeber(ctx, W, H, t - T, G.abDauer);
+    if (T && t > gesamt - 2) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillStyle = "rgba(0,0,0," + Math.min(1, (t - (gesamt - 2)) / 2) + ")"; ctx.fillRect(0, 0, W, H);
+    }
+    $("tt").textContent = dauerText(t) + " / " + dauerText(gesamt);
+    requestAnimationFrame(vorLauf);
+  }
 
   function wavKopf(dv, size) {
     function str(o, n) { var t = ""; for (var i = 0; i < n; i++) t += String.fromCharCode(dv.getUint8(o + i)); return t; }
@@ -1364,6 +1451,7 @@ function zoomloopStarten(root, film, hilfe) {
 
   /* ---------- Export mit Ton: einen Durchlauf rechnen, dann aneinanderhaengen ---------- */
   async function exportMitTon(knopf) {
+    vorStop();
     if (items.length < 2) { msg("Mindestens zwei Bilder."); return; }
     if (!("VideoEncoder" in window) || !("AudioEncoder" in window)) { msg("Dein Browser kann keinen Film mit Ton bauen \u2013 bitte Safari aktualisieren (ab Version 26)."); return; }
     try { await mp4Baustein(); } catch (e) { msg(e.message); return; }
@@ -1844,6 +1932,7 @@ function zoomloopStarten(root, film, hilfe) {
   })();
 
   return function aufraeumen() {
+    if (vor) { try { vor.audio.pause(); } catch (e) {} }
     dead = true; playing = false; cancelExport = true;
     window.removeEventListener("resize", onResize);
     clearTimeout(saveT); jetztSpeichern();
@@ -3154,6 +3243,9 @@ function StudioStil() {
 .zl-kizaehler{color:#e6d9bb; font-size:12px; margin:2px 0 6px}
 .zl-vorlage{margin:6px 0 4px; border:1px solid var(--st-linie); border-radius:3px; padding:4px 8px}
 .zl-vorlage summary{cursor:pointer; color:var(--st-gold); font-size:12px; padding:4px 0}
+.zl-tonliste{margin:4px 0 6px; border:1px solid var(--st-linie); border-radius:3px; max-height:180px; overflow-y:auto; font-size:12px; color:var(--st-dim); padding:4px}
+.zl-tonliste[hidden]{display:none}
+.zl button.zl-toneintrag{display:block; width:100%; text-align:left; margin:2px 0; font-size:12px}
 .zl-tonname{color:#e6d9bb; font-size:12px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
 .zl-tonhinweis{color:var(--st-dim); font-size:11px; margin-top:4px; font-style:italic}
 .zl-tonhinweis[hidden]{display:none}
