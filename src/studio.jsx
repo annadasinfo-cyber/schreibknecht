@@ -340,7 +340,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 18 Uhr</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 19 Uhr</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -528,6 +528,11 @@ const ZL_HTML = `
       <span class="zl-klein">Stimme setzt ein nach</span>
       <input id="zl_tonab" type="number" min="0" max="60" step="0.5"> <span class="zl-klein">s, sanft eingeblendet</span>
     </div>
+    <div class="zl-row zl-tonab" id="zl_nachzeile" hidden>
+      <span class="zl-klein">nach der Stimme noch</span>
+      <input id="zl_nachlauf" type="number" min="0" max="30" step="0.5"> <span class="zl-klein">s stehen lassen</span>
+    </div>
+    <label class="zl-chk" id="zl_rahmenzeile" hidden><input type="checkbox" id="zl_rahmen"> erstes und letztes Bild stehen f&uuml;r sich: Anfang mit Bild 1, dazwischen l&auml;uft der Rest im Kreis, zum Schluss kommt das letzte Bild</label>
     <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
     <div id="zl_tonvormsg" class="zl-tonhinweis"></div>
     <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
@@ -553,7 +558,7 @@ function zoomloopStarten(root, film, hilfe) {
   var $ = function (id) { return root.querySelector("#zl_" + id); };
   var DEF = { cx: 0, cy: 0, s: 0.08, r: 0, feather: 18, shape: "oval", br: 100, co: 100, sa: 100, hu: 0, pan: 0, text: "", tpos: "unten", tgr: 6 };
   var daten = film.daten || {};
-  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "", tonAb: 6 }, daten.G || {});
+  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "", tonAb: 6, rahmen: false, nachlauf: 3.5 }, daten.G || {});
   if (!G.vorlage) G.vorlage = { stil: "", figuren: "" };
   if (!G.vorlage.bilder) G.vorlage.bilder = [];
   var items = [];
@@ -652,10 +657,10 @@ function zoomloopStarten(root, film, hilfe) {
   function getBake(idx, big) {
     var it = items[idx], p = it.p;
     var key = [it.id, G.W, G.H, p.br, p.co, p.sa, p.hu, p.pan || 0].join("|");
-    var cache = big ? bigCache : smallCache, e = cache.get(idx);
-    if (e && e.key === key) { if (big) { cache.delete(idx); cache.set(idx, e); } return e.mips; }
+    var cache = big ? bigCache : smallCache, ck = it.id, e = cache.get(ck);
+    if (e && e.key === key) { if (big) { cache.delete(ck); cache.set(ck, e); } return e.mips; }
     e = { key: key, mips: bake(it, big ? 3840 : 1600) };
-    cache.delete(idx); cache.set(idx, e);
+    cache.delete(ck); cache.set(ck, e);
     if (big) while (cache.size > 8) cache.delete(cache.keys().next().value);
     return e.mips;
   }
@@ -1303,7 +1308,7 @@ function zoomloopStarten(root, film, hilfe) {
   var ton = null;   // { file, name }
   function tonAnzeigen(extra) {
     $("tonname").textContent = ton ? ton.name + (extra ? " \u2013 " + extra : "") : "kein Ton";
-    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton; $("tonvor").hidden = !ton; $("tonabzeile").hidden = !ton;
+    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton; $("tonvor").hidden = !ton; $("tonabzeile").hidden = !ton; $("nachzeile").hidden = !ton; $("rahmenzeile").hidden = !ton;
     $("exp").textContent = ton ? "MP4 mit Ton exportieren" : "MP4 exportieren";
   }
   function dauerText(sec) {
@@ -1324,6 +1329,50 @@ function zoomloopStarten(root, film, hilfe) {
   $("tonweg").onclick = function () { if (exporting) return; vorStop(); ton = null; tonAnzeigen(); };
   function tonAbSek() { var v = parseFloat(String(G.tonAb).replace(",", ".")); return isFinite(v) ? Math.max(0, Math.min(60, v)) : 6; }
   $("tonab").value = String(tonAbSek()).replace(".", ",");
+  function nachSek() { var v = parseFloat(String(G.nachlauf).replace(",", ".")); return isFinite(v) ? Math.max(0, Math.min(30, v)) : 3.5; }
+  $("nachlauf").value = String(nachSek()).replace(".", ",");
+  $("nachlauf").addEventListener("input", function () {
+    var v = parseFloat(String(this.value).replace(",", "."));
+    if (isFinite(v)) { G.nachlauf = Math.max(0, Math.min(30, v)); save(); }
+  });
+  $("rahmen").checked = !!G.rahmen;
+  $("rahmen").onchange = function () { G.rahmen = this.checked; save(); };
+
+  /* ---------- Zeitplan fuer Filme mit Ton ----------
+     normal: alle Bilder laufen im Kreis.
+     "rahmen": Bild 1 nur am Anfang, dazwischen laufen die mittleren Bilder
+     im Kreis, und genau zum Ende der Stimme kommt das letzte Bild an und bleibt stehen.
+     Liefert fuer jedes Bild g (auch mit Kommastellen) die Ansicht und die Stelle. */
+  function zeitplan(stimmeSek, fps) {
+    var n = items.length;
+    if (G.rahmen && n >= 4) {
+      var M = n - 2;
+      var k = Math.max(1, Math.round((stimmeSek / G.sec - 1) / M));
+      var secV = stimmeSek / (k * M + 1);
+      var loopF = Math.max(2, Math.round(M * secV * fps)), segF = loopF / M;
+      var A = Math.max(1, Math.round(segF));
+      var midEnde = A + (k * M - 1) * segF, schluss = midEnde + segF;
+      var anf = { items: [items[0], items[1]], loop: false };
+      var mitte = { items: items.slice(1, n - 1), loop: true };
+      var ende = { items: [items[n - 2], items[n - 1]], loop: false };
+      return {
+        A: A, loopF: loopF, periodischBis: Math.floor(midEnde),
+        an: function (g) {
+          if (g < A) return { sicht: anf, u: g / A };
+          if (g < midEnde) return { sicht: mitte, u: ((g - A) / segF) % M };
+          if (g < schluss) return { sicht: ende, u: (g - midEnde) / segF };
+          return { sicht: ende, u: 1 };
+        }
+      };
+    }
+    var S = n, fpl = Math.max(2, Math.round(S * G.sec * fps)), alle = { items: items, loop: true };
+    return { A: 0, loopF: fpl, periodischBis: Infinity, an: function (g) { return { sicht: alle, u: (g % fpl) / fpl * S }; } };
+  }
+  function mitSicht(sicht, fn) {
+    var ai = items, al = G.loop;
+    items = sicht.items; G.loop = sicht.loop;
+    try { fn(); } finally { items = ai; G.loop = al; }
+  }
   $("tonab").addEventListener("input", function () {
     var v = parseFloat(String(this.value).replace(",", "."));
     if (isFinite(v)) { G.tonAb = Math.max(0, Math.min(60, v)); save(); }
@@ -1410,12 +1459,12 @@ function zoomloopStarten(root, film, hilfe) {
     if (!vor || dead) return;
     var T = vor.T, t = Math.max(0, vorAc.currentTime - vor.t0);
     var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
-    var gesamt = T + (abDa ? G.abDauer : 0);
+    var gesamt = T + (abDa ? G.abDauer : nachSek());
     if (T && t >= gesamt) { vorStop(); return; }
-    var S = segs(), dauerLoop = S * G.sec;
-    var uu = dauerLoop ? (t % dauerLoop) / dauerLoop * S : 0;
+    if (!vor.plan) vor.plan = zeitplan(T, 60);   // wie beim Export, gemessen in 1/60 s
+    var pa = vor.plan.an(t * 60);
     var W = cv.width, H = cv.height;
-    render(ctx, W, H, uu, false, false, false);
+    mitSicht(pa.sicht, function () { render(ctx, W, H, pa.u, false, false, false); });
     if (abDa && t >= T) abspannUeber(ctx, W, H, t - T, G.abDauer);
     if (T && t > gesamt - 2) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1569,7 +1618,7 @@ function zoomloopStarten(root, film, hilfe) {
         function (e) { if (!err) err = new Error("Ton ins MP4: " + (e && e.message || e)); });
       aenc = new AudioEncoder({ output: function (c, m) { tonStuecke++; aacRein(c, m); }, error: function (e) { err = e; } });
       aenc.configure(acfg);
-      var aPos = 0, fadeA = Math.min(aFrames, 2 * sr);
+      var aPos = 0, fadeA = Math.min(aFrames, Math.round(0.15 * sr));
       async function tonBis(ziel) {
         ziel = Math.min(aFrames, Math.floor(ziel));
         while (aPos < ziel && !err) {
@@ -1593,17 +1642,19 @@ function zoomloopStarten(root, film, hilfe) {
       }
 
       // Bild-Kodierer
-      var S = segs(), framesPerLoop = Math.max(2, Math.round(S * G.sec * fps));
-      // nach der Stimme laeuft der Film unter dem Abspann weiter; erst danach wird ausgeblendet
-      var totalV = Math.ceil(T * fps);
+      var plan = zeitplan(T, fps), A = plan.A, framesPerLoop = plan.loopF;
+      // nach der Stimme: entweder der Abspann oder noch ein paar Sekunden stehen lassen; dann ausblenden
+      var stimmeF = Math.ceil(T * fps);
       var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
       var abFrames = abDa ? Math.round(G.abDauer * fps) : 0;
-      var total = totalV + abFrames, fadeV = Math.min(total, 2 * fps);
+      var totalV = stimmeF;
+      var total = stimmeF + (abFrames || Math.round(nachSek() * fps)), fadeV = Math.min(total, 2 * fps);
       // (eigener Name: "ziel" ist schon die Datei, in die geschrieben wird)
-      var endeBild = Math.min(totalV, total - fadeV);
-      var c0 = Math.floor(endeBild / framesPerLoop), r0 = endeBild - c0 * framesPerLoop;
-      var start = c0 * framesPerLoop + Math.floor(r0 / K) * K;   // hier beginnt das frisch gerechnete ende
-      var kopieren = start > framesPerLoop;
+      var endeBild = Math.min(plan.periodischBis, abFrames ? totalV : Infinity, total - fadeV);
+      var rel = Math.max(0, endeBild - A), c0 = Math.floor(rel / framesPerLoop), r0 = rel - c0 * framesPerLoop;
+      var start = A + c0 * framesPerLoop + Math.floor(r0 / K) * K;   // hier beginnt das frisch gerechnete ende
+      var kopieren = start > A + framesPerLoop;
+      function schluesselBild(g) { return g < A ? g % K === 0 : (g - A) % K === 0; }
 
       // der erste Durchlauf wird zwischengelagert (auf der Festplatte des Browsers)
       var sammeln = kopieren, stuecke = [], lagerOff = 0, lagerW = null, lagerDir = null, lagerSchreib = Promise.resolve(), imSpeicher = false;
@@ -1620,7 +1671,7 @@ function zoomloopStarten(root, film, hilfe) {
       var ox = oc.getContext("2d", { alpha: false });
       enc = new VideoEncoder({
         output: function (c, m) {
-          if (sammeln) {
+          if (sammeln && Math.round(c.timestamp / frameUs) >= A) {
             var buf = new Uint8Array(c.byteLength); c.copyTo(buf);
             var st = { idx: Math.round(c.timestamp / frameUs), type: c.type, len: buf.length };
             if (imSpeicher) st.data = buf;
@@ -1636,7 +1687,8 @@ function zoomloopStarten(root, film, hilfe) {
       enc.configure(cfg);
 
       async function bildRechnen(g, schluessel) {
-        render(ox, W, H, (g % framesPerLoop) / framesPerLoop * S, true, false, false);
+        var pa = plan.an(g);
+        mitSicht(pa.sicht, function () { render(ox, W, H, pa.u, true, false, false); });
         if (abFrames && g >= totalV) abspannUeber(ox, W, H, (g - totalV) / fps, G.abDauer);
         if (g >= total - fadeV) {
           ox.setTransform(1, 0, 0, 1, 0, 0);
@@ -1653,10 +1705,10 @@ function zoomloopStarten(root, film, hilfe) {
       }
 
       // 1) frisch rechnen: entweder alles (kurzer Ton) oder genau einen Durchlauf
-      var ersteBis = kopieren ? framesPerLoop : total;
+      var ersteBis = kopieren ? A + framesPerLoop : total;
       for (var g = 0; g < ersteBis; g++) {
         if (cancelExport || err || dead) break;
-        await bildRechnen(g, g % K === 0);
+        await bildRechnen(g, schluesselBild(g));
         if (g % K === 0) await tonBis((g + K) / fps * sr);
         if (g % 8 === 0) {
           var left = Math.ceil((performance.now() - t0) / (g + 1) * (ersteBis - g) / 1000);
@@ -1712,8 +1764,8 @@ function zoomloopStarten(root, film, hilfe) {
       if (err) throw err;
       if (!cancelExport && !dead) {
         await tonBis(aFrames);
-        if (abFrames) {
-          // Stille fuer die Dauer des Abspanns
+        {
+          // Stille fuer den Nachlauf bzw. den Abspann
           var stilleBis = Math.round(total / fps * sr);
           while (aPos < stilleBis && !err) {
             var sl = Math.min(sr, stilleBis - aPos), leer = new Float32Array(sl * ausKanaele);
@@ -3365,6 +3417,9 @@ function StudioStil() {
 .zl-vorlage{margin:6px 0 4px; border:1px solid var(--st-linie); border-radius:3px; padding:4px 8px}
 .zl-vorlage summary{cursor:pointer; color:var(--st-gold); font-size:12px; padding:4px 0}
 .zl-tonab input{width:58px}
+.zl-chk{display:flex; gap:6px; align-items:flex-start; font-size:12px; line-height:1.35; color:var(--st-dim); margin:6px 0; cursor:pointer}
+.zl-chk[hidden]{display:none}
+.zl-chk input{margin-top:2px}
 .zl-tonab[hidden]{display:none}
 .zl-tonliste{margin:4px 0 6px; border:1px solid var(--st-linie); border-radius:3px; max-height:180px; overflow-y:auto; font-size:12px; color:var(--st-dim); padding:4px}
 .zl-tonliste[hidden]{display:none}
