@@ -340,7 +340,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 20 Uhr</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 21 Uhr</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -571,7 +571,7 @@ function zoomloopStarten(root, film, hilfe) {
   /* ---------- Speichern: 0,8 s nach der letzten Aenderung ---------- */
   var saveT = 0, saveOffen = false;
   function paket() {
-    return JSON.parse(JSON.stringify({ G: G, items: items.map(function (it) { return { id: it.id, name: it.name, pfad: it.pfad, p: it.p }; }) }));
+    return JSON.parse(JSON.stringify({ G: G, items: items.map(function (it) { return { id: it.id, name: it.name, pfad: it.pfad, p: it.p, aus: it.aus ? true : undefined }; }) }));
   }
   function jetztSpeichern() {
     if (!saveOffen) return;
@@ -687,8 +687,15 @@ function zoomloopStarten(root, film, hilfe) {
   }
 
   /* ---------- Zeichnen ---------- */
-  function segs() { return items.length < 2 ? 0 : (G.loop ? items.length : items.length - 1); }
+  // ausgeschaltete Bilder bleiben im Film liegen, laufen aber nicht mit
+  function aktiv() { return items.filter(function (it) { return !it.aus; }); }
+  function aktivIndex(i) { var z = 0; for (var q = 0; q < i && q < items.length; q++) if (!items[q].aus) z++; return z; }
+  function segs() { var n = aktiv().length; return n < 2 ? 0 : (G.loop ? n : n - 1); }
   function render(c, W, H, uu, big, overlay, noFade) {
+    var voll = items; items = aktiv();
+    try { return renderRoh(c, W, H, uu, big, overlay, noFade); } finally { items = voll; }
+  }
+  function renderRoh(c, W, H, uu, big, overlay, noFade) {
     var n = items.length;
     c.setTransform(1, 0, 0, 1, 0, 0); c.fillStyle = "#000"; c.fillRect(0, 0, W, H);
     if (!n) return;
@@ -987,10 +994,10 @@ function zoomloopStarten(root, film, hilfe) {
     if (ch) keepOnMotif(it, ch, ar, old, ar, v);
     it.p.pan = v;
   }
-  function afterPan() { stop(); u = Math.min(sel, segs()); syncPanel(); draw(); }
+  function afterPan() { stop(); u = Math.min(aktivIndex(sel), segs()); syncPanel(); draw(); }
   $("pan").addEventListener("input", function () { setPan(this.value / 100); afterPan(); });
   $("pan").addEventListener("change", function () { thumbs(); save(); });
-  function aufsBild() { stop(); u = Math.min(sel, segs()); draw(); }
+  function aufsBild() { stop(); u = Math.min(aktivIndex(sel), segs()); draw(); }
   $("txt").addEventListener("input", function () { var it = items[sel]; if (!it) return; it.p.text = this.value; aufsBild(); save(); });
   $("tpos").addEventListener("change", function () { var it = items[sel]; if (!it) return; it.p.tpos = this.value; aufsBild(); save(); });
   $("tgr").addEventListener("input", function () {
@@ -1097,8 +1104,15 @@ function zoomloopStarten(root, film, hilfe) {
     if (dead) return;
     var box = $("thumbs"); box.innerHTML = "";
     items.forEach(function (it, i) {
-      var d = document.createElement("div"); d.className = "zl-th" + (i === sel ? " sel" : "");
+      var d = document.createElement("div"); d.className = "zl-th" + (i === sel ? " sel" : "") + (it.aus ? " aus" : "");
       var n = document.createElement("span"); n.className = "zl-n"; n.textContent = i + 1;
+      var an = document.createElement("button"); an.className = "zl-an"; an.textContent = it.aus ? "\u25cc" : "\u25c9";
+      an.title = it.aus ? "Bild einschalten (l\u00e4uft wieder mit)" : "Bild ausschalten (bleibt liegen, l\u00e4uft aber nicht mit)";
+      an.onclick = function (ev) {
+        ev.stopPropagation(); stop();
+        it.aus = !it.aus;
+        u = Math.min(aktivIndex(sel), segs()); thumbs(); syncPanel(); draw(); save();
+      };
       var c = document.createElement("canvas"); c.width = 160; c.height = Math.round(160 * G.H / G.W);
       var R = cropRect(it.el, G.W / G.H, it.p.pan);
       c.getContext("2d").drawImage(it.el, R[0], R[1], R[2], R[3], 0, 0, c.width, c.height);
@@ -1113,12 +1127,12 @@ function zoomloopStarten(root, film, hilfe) {
             var weg = items.splice(i, 1)[0]; if (weg && weg.pfad) hilfe.entfernen(weg.pfad);
             sel = Math.max(0, Math.min(sel, items.length - 1));
           } else { var j = i + o[1]; if (j < 0 || j >= items.length) return; var t = items[i]; items[i] = items[j]; items[j] = t; sel = j; }
-          smallCache.clear(); bigCache.clear(); u = Math.min(sel, segs()); stop(); thumbs(); syncPanel(); draw(); save();
+          smallCache.clear(); bigCache.clear(); u = Math.min(aktivIndex(sel), segs()); stop(); thumbs(); syncPanel(); draw(); save();
         };
         b.appendChild(bt);
       });
-      d.appendChild(n); d.appendChild(c); d.appendChild(b);
-      d.onclick = function () { stop(); sel = i; u = Math.min(i, segs()); thumbs(); syncPanel(); draw(); };
+      d.appendChild(n); d.appendChild(an); d.appendChild(c); d.appendChild(b);
+      d.onclick = function () { stop(); sel = i; u = Math.min(aktivIndex(i), segs()); thumbs(); syncPanel(); draw(); };
       box.appendChild(d);
     });
   }
@@ -1344,6 +1358,7 @@ function zoomloopStarten(root, film, hilfe) {
      im Kreis, und genau zum Ende der Stimme kommt das letzte Bild an und bleibt stehen.
      Liefert fuer jedes Bild g (auch mit Kommastellen) die Ansicht und die Stelle. */
   function zeitplan(stimmeSek, fps) {
+    var items = aktiv();   // nur eingeschaltete Bilder (bewusst verdeckt)
     var abJa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
     var haltSek = Math.max(1, abJa ? G.abDauer : nachSek());
     var n = items.length;
@@ -1441,7 +1456,7 @@ function zoomloopStarten(root, film, hilfe) {
   $("tonvor").onclick = async function () {
     if (vor) { vorStop(); return; }
     if (!ton || exporting) return;
-    if (items.length < 2) { vorMsg("Mindestens zwei Bilder."); return; }
+    if (aktiv().length < 2) { vorMsg("Mindestens zwei eingeschaltete Bilder."); return; }
     // den Klang-Kontext sofort im Klick anlegen, sonst sperrt Safari den Ton
     if (!vorAc) vorAc = new (window.AudioContext || window.webkitAudioContext)();
     vorAc.resume();
@@ -1545,7 +1560,7 @@ function zoomloopStarten(root, film, hilfe) {
   /* ---------- Export mit Ton: einen Durchlauf rechnen, dann aneinanderhaengen ---------- */
   async function exportMitTon(knopf) {
     vorStop();
-    if (items.length < 2) { msg("Mindestens zwei Bilder."); return; }
+    if (aktiv().length < 2) { msg("Mindestens zwei eingeschaltete Bilder."); return; }
     if (!("VideoEncoder" in window) || !("AudioEncoder" in window)) { msg("Dein Browser kann keinen Film mit Ton bauen \u2013 bitte Safari aktualisieren (ab Version 26)."); return; }
     try { await mp4Baustein(); } catch (e) { msg(e.message); return; }
     await schriftBereit();
@@ -2028,7 +2043,7 @@ function zoomloopStarten(root, film, hilfe) {
       var nach = items.length ? sel + 1 : 0;   // direkt hinter das ausgewaehlte Bild
       await addFiles([datei], nach);
       kiWeg();   // die Zwischenablage im Fach wird nicht mehr gebraucht, das Bild liegt jetzt im Film
-      sel = Math.min(nach, items.length - 1); u = Math.min(sel, segs()); thumbs(); syncPanel(); draw();
+      sel = Math.min(nach, items.length - 1); u = Math.min(aktivIndex(sel), segs()); thumbs(); syncPanel(); draw();
     } catch (e) { kiStatus("\u00dcbernehmen ging nicht: " + (e.message || e)); }
   };
 
@@ -2049,7 +2064,7 @@ function zoomloopStarten(root, film, hilfe) {
           var blob = await hilfe.holen(x.pfad);
           var url = URL.createObjectURL(blob); urls.push(url);
           var el = await bildAus(url);
-          raus[i] = { id: x.id, name: x.name, pfad: x.pfad, el: el, p: Object.assign({}, DEF, x.p || {}) };
+          raus[i] = { id: x.id, name: x.name, pfad: x.pfad, el: el, p: Object.assign({}, DEF, x.p || {}), aus: !!x.aus };
         } catch (e) { fehlt++; }
         fertig++;
         if (!dead) msg("Hole Bilder: " + fertig + " von " + liste.length + " \u2026");
@@ -3430,6 +3445,10 @@ function StudioStil() {
 .zl-vorlage{margin:6px 0 4px; border:1px solid var(--st-linie); border-radius:3px; padding:4px 8px}
 .zl-vorlage summary{cursor:pointer; color:var(--st-gold); font-size:12px; padding:4px 0}
 .zl-tonab input{width:58px}
+.zl-th{position:relative}
+.zl-th.aus canvas{opacity:.28; filter:grayscale(1)}
+.zl button.zl-an{position:absolute; left:4px; bottom:4px; z-index:2; width:22px; height:22px; padding:0; border-radius:50%; font-size:12px; line-height:20px; background:rgba(0,0,0,.6)}
+.zl-th.aus .zl-an{color:var(--st-dim)}
 .zl-chk{display:flex; gap:6px; align-items:flex-start; font-size:12px; line-height:1.35; color:var(--st-dim); margin:6px 0; cursor:pointer}
 .zl-chk[hidden]{display:none}
 .zl-chk input{margin-top:2px}

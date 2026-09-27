@@ -2586,7 +2586,7 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
       )}
 
       {pult.length > 0 && (
-        <div className={"pult" + (klein ? " klein" : "")}
+        <div className={"pult" + (klein ? " klein" : "") + (knechtAuf ? " mitknecht" : "")}
           style={!klein && pultHoehe ? { height: pultHoehe, maxHeight: pultHoehe } : undefined}>
           <div className="pultzug" title="pult hochziehen · doppelklick: normale höhe"
             onPointerDown={pultZiehenStart} onPointerMove={pultZiehen}
@@ -2604,7 +2604,10 @@ function ProjektSeite({ projekt, api, bilder, holBild, hochladen, aendere, zurue
             </span>
             <span className="fuellung" />
             <button className={"klein knechtknopf" + (knechtAuf ? " an" : "")} onClick={() => setKnechtAuf((k) => !k)}
-              title={knechtAuf ? "schreibknecht wegschicken" : "mit dem schreibknecht reden"}>🕯 schreibknecht</button>
+              title={knechtAuf ? "schreibknecht wegschicken" : "mit dem schreibknecht reden"}>
+              <span className="kgross">🕯 schreibknecht</span>
+              <span className="kklein">{knechtAuf ? "🃏 karten" : "🕯 knecht"}</span>
+            </button>
             <button className="klein" onClick={neueImPult}
               title="neue karte rechts daneben · ⌘/strg + enter">+</button>
             <button className="klein" onClick={() => setKlein((k) => !k)}
@@ -4763,8 +4766,18 @@ function Stil() {
 .knechteingabe textarea{flex:1; resize:none; background:rgba(0,0,0,.35); color:#f3e6cc; border:1px solid rgba(168,135,79,.3); border-radius:6px; padding:6px 8px; font:14px/1.35 Georgia, serif}
 .knechtknopf.an{color:var(--kerze2); border-color:rgba(224,139,60,.6)}
 /* nur auf dem grossen bildschirm */
+.kklein{display:none}
+@media(min-width:701px) and (max-width:1100px){ .pult.mitknecht{height:min(82vh, 720px)} }
+.knechtknoepfe{flex-wrap:wrap}
+/* kleiner bildschirm: statt nebeneinander wird umgeschaltet — karten ODER schreibknecht */
 @media(max-width:1100px){
-  .knechtknopf, .knecht{display:none !important}
+  .kgross{display:none}
+  .kklein{display:inline}
+  .pultrumpf.mitknecht .pultblatt{display:none}
+  .pultrumpf.mitknecht{display:flex}
+  .knecht{margin:0 0 4px 0; min-width:0; flex:1; height:auto}
+  .knechtbild{width:52px; height:74px}
+  .knechteingabe textarea, .knechtged textarea, .knechtmodell{font-size:16px}
 }
 
 .bogen{
