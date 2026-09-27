@@ -340,7 +340,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 19 Uhr</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 20 Uhr</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1344,6 +1344,8 @@ function zoomloopStarten(root, film, hilfe) {
      im Kreis, und genau zum Ende der Stimme kommt das letzte Bild an und bleibt stehen.
      Liefert fuer jedes Bild g (auch mit Kommastellen) die Ansicht und die Stelle. */
   function zeitplan(stimmeSek, fps) {
+    var abJa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
+    var haltSek = Math.max(1, abJa ? G.abDauer : nachSek());
     var n = items.length;
     if (G.rahmen && n >= 4) {
       var M = n - 2;
@@ -1361,12 +1363,24 @@ function zoomloopStarten(root, film, hilfe) {
           if (g < A) return { sicht: anf, u: g / A };
           if (g < midEnde) return { sicht: mitte, u: ((g - A) / segF) % M };
           if (g < schluss) return { sicht: ende, u: (g - midEnde) / segF };
-          return { sicht: ende, u: 1 };
+          // das letzte Bild steht, zoomt aber ganz langsam weiter hinein, damit es lebendig bleibt
+          // (sanft anlaufend, bis zum Ausblenden insgesamt etwa 6 % naeher)
+          var x = Math.min(1.2, (g - schluss) / fps / haltSek);
+          return { sicht: ende, u: 1, extra: 1 + 0.06 * (1.3 * x * x / (x + 0.3)) };
         }
       };
     }
     var S = n, fpl = Math.max(2, Math.round(S * G.sec * fps)), alle = { items: items, loop: true };
     return { A: 0, loopF: fpl, periodischBis: Infinity, an: function (g) { return { sicht: alle, u: (g % fpl) / fpl * S }; } };
+  }
+  var driftC = document.createElement("canvas"), driftX = driftC.getContext("2d");
+  function planZeichnen(c, W, H, pa, big) {
+    if (!pa.extra || pa.extra <= 1.0001) { mitSicht(pa.sicht, function () { render(c, W, H, pa.u, big, false, false); }); return; }
+    if (driftC.width !== W || driftC.height !== H) { driftC.width = W; driftC.height = H; }
+    mitSicht(pa.sicht, function () { render(driftX, W, H, pa.u, big, false, false); });
+    var z = pa.extra, w = W * z, h = H * z;
+    c.setTransform(1, 0, 0, 1, 0, 0); c.imageSmoothingEnabled = true; c.imageSmoothingQuality = "high";
+    c.drawImage(driftC, (W - w) / 2, (H - h) / 2, w, h);
   }
   function mitSicht(sicht, fn) {
     var ai = items, al = G.loop;
@@ -1464,7 +1478,7 @@ function zoomloopStarten(root, film, hilfe) {
     if (!vor.plan) vor.plan = zeitplan(T, 60);   // wie beim Export, gemessen in 1/60 s
     var pa = vor.plan.an(t * 60);
     var W = cv.width, H = cv.height;
-    mitSicht(pa.sicht, function () { render(ctx, W, H, pa.u, false, false, false); });
+    planZeichnen(ctx, W, H, pa, false);
     if (abDa && t >= T) abspannUeber(ctx, W, H, t - T, G.abDauer);
     if (T && t > gesamt - 2) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1687,8 +1701,7 @@ function zoomloopStarten(root, film, hilfe) {
       enc.configure(cfg);
 
       async function bildRechnen(g, schluessel) {
-        var pa = plan.an(g);
-        mitSicht(pa.sicht, function () { render(ox, W, H, pa.u, true, false, false); });
+        planZeichnen(ox, W, H, plan.an(g), true);
         if (abFrames && g >= totalV) abspannUeber(ox, W, H, (g - totalV) / fps, G.abDauer);
         if (g >= total - fadeV) {
           ox.setTransform(1, 0, 0, 1, 0, 0);
