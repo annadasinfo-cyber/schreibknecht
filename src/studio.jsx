@@ -340,7 +340,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 16 Uhr</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 17 Uhr</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2135,9 +2135,23 @@ function aacWeiche(sr, ch, hinzu, fehler) {
     var m = meta;
     if (ersterMeta) {
       var dc = (meta && meta.decoderConfig) || {};
-      var hatBeschr = dc.description && (dc.description.byteLength || dc.description.length);
+      var beschr = null;
+      if (dc.description && !adts) {
+        var bb = dc.description instanceof ArrayBuffer ? new Uint8Array(dc.description)
+          : new Uint8Array(dc.description.buffer, dc.description.byteOffset || 0, dc.description.byteLength);
+        // Safari schickt hier eine ganze esds-Beschreibung statt der zwei Bytes,
+        // die ein MP4 erwartet -> die eigentliche Angabe (Kennung 5) herausholen
+        if (bb.length > 5 && bb[0] === 0x03) {
+          for (var z = 1; z < bb.length - 2; z++) {
+            if (bb[z] !== 0x05) continue;
+            var q = z + 1, len = 0, n = 0;
+            while (q < bb.length && n < 4) { var by = bb[q++]; len = (len << 7) | (by & 0x7F); n++; if (!(by & 0x80)) break; }
+            if (len >= 2 && len <= 16 && q + len <= bb.length) { beschr = bb.slice(q, q + len); break; }
+          }
+        } else if (bb.length >= 2 && bb.length <= 16) beschr = bb.slice();
+      }
       m = { decoderConfig: { codec: dc.codec || "mp4a.40.2", sampleRate: dc.sampleRate || sr, numberOfChannels: dc.numberOfChannels || ch,
-        description: hatBeschr && !adts ? dc.description : asc } };
+        description: beschr || asc } };
       ersterMeta = false;
     } else m = undefined;
     var neu = (adts || !(chunk instanceof EncodedAudioChunk))
