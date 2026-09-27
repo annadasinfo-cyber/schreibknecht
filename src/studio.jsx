@@ -340,7 +340,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 10 Uhr</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 14 Uhr</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1498,14 +1498,18 @@ function zoomloopStarten(root, film, hilfe) {
       // rss.com (Max) nimmt Videos bis 5 GB: die Datenrate so waehlen, dass
       // der ganze Film unter 4,6 GB bleibt. Bei ruhigen Zoomfahrten reicht das locker.
       rate = Math.max(2e6, Math.min(rate, 4.6e9 * 8 / T - 256000));
-      var ausKanaele = 2;   // immer Stereo, wie Apple es empfiehlt — Mono wird verdoppelt
+      var ausKanaele = 2;   // am liebsten Stereo, wie Apple es empfiehlt — Mono wird verdoppelt
 
-      // Ton-Kodierer: AAC, sonst Opus
-      var acfg = { codec: "mp4a.40.2", sampleRate: sr, numberOfChannels: ausKanaele, bitrate: 192000 }, amux = "aac";
-      if (!(await AudioEncoder.isConfigSupported(acfg)).supported) {
-        acfg = { codec: "opus", sampleRate: sr, numberOfChannels: ausKanaele, bitrate: 160000 }; amux = "opus";
-        if (!(await AudioEncoder.isConfigSupported(acfg)).supported) throw new Error("Dieses Tonformat kann ich nicht einbauen \u2013 nimm eine WAV mit 44,1 oder 48 kHz.");
+      // Ton-Kodierer: nur AAC — Opus in MP4 spielen Apple-Geraete stumm ab
+      var acfg = null, amux = "aac";
+      var versuche = [[2, 192000], [2, 128000], [1, 128000], [1, 96000]];
+      for (var vi = 0; vi < versuche.length && !acfg; vi++) {
+        var probe = { codec: "mp4a.40.2", sampleRate: sr, numberOfChannels: versuche[vi][0], bitrate: versuche[vi][1] };
+        try { if ((await AudioEncoder.isConfigSupported(probe)).supported) acfg = probe; } catch (e) {}
       }
+      if (!acfg) throw new Error("Diesen Ton kann ich nicht als AAC einbauen (" + sr + " Hz) \u2013 nimm eine WAV mit 44,1 oder 48 kHz.");
+      ausKanaele = acfg.numberOfChannels;
+      var tonStuecke = 0, tonSpitze = 0;
 
       var writes = Promise.resolve();
       var target = new window.Mp4Muxer.StreamTarget({
@@ -1522,7 +1526,7 @@ function zoomloopStarten(root, film, hilfe) {
         fastStart: false
       });
 
-      aenc = new AudioEncoder({ output: function (c, m) { muxer.addAudioChunk(c, m); }, error: function (e) { err = e; } });
+      aenc = new AudioEncoder({ output: function (c, m) { tonStuecke++; muxer.addAudioChunk(c, m); }, error: function (e) { err = e; } });
       aenc.configure(acfg);
       var aPos = 0, fadeA = Math.min(aFrames, 2 * sr);
       async function tonBis(ziel) {
@@ -1537,6 +1541,7 @@ function zoomloopStarten(root, film, hilfe) {
             for (var j = 0; j < len; j++) {
               var k = aPos + j, g = k > aFrames - fadeA ? Math.max(0, (aFrames - k) / fadeA) : 1;
               data[c * len + j] = pl[j] * g;
+              if (c === 0) { var av = pl[j] < 0 ? -pl[j] : pl[j]; if (av > tonSpitze) tonSpitze = av; }
             }
           }
           var ad = new AudioData({ format: "f32-planar", sampleRate: sr, numberOfFrames: len, numberOfChannels: ausKanaele, timestamp: Math.round(aPos * 1e6 / sr), data: data });
@@ -1680,7 +1685,8 @@ function zoomloopStarten(root, film, hilfe) {
         muxer.finalize();
         await writes; var wo = await ziel.fertig(); stream = null;
         done = true;
-        msg("Fertig (" + dauerText(total / fps) + ") \u2013 " + wo + ".");
+        msg("Fertig (" + dauerText(total / fps) + ") \u2013 " + wo + ". Ton: AAC \u00b7 " + (sr / 1000).toFixed(1).replace(".", ",") + " kHz \u00b7 " +
+          (ausKanaele === 2 ? "Stereo" : "Mono") + " \u00b7 " + tonStuecke + " Tonst\u00fccke \u00b7 Spitze " + Math.round(tonSpitze * 100) + " %");
       } else msg("Abgebrochen.");
     } catch (e) {
       msg("Fehler: " + (e.message || e));
