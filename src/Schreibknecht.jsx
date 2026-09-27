@@ -735,6 +735,12 @@ const KNECHT_ANWEISUNG = `Du bist der Schreibknecht, der Gesprächspartner von A
 So redest du: Deutsch, locker und warm, eher kurz. Du bist ein Sparringspartner, kein Lehrer.
 Du hilfst beim Weiterdenken, beim Wortfinden und mit Denkanstößen. Stell gern eine Frage, die etwas öffnet, statt Lösungen vorzugeben.
 Bitte nicht: keine Beat-Pläne oder Handlungsgerüste bauen, keine Schreibratgeber-Weisheiten erklären, ihre Texte nicht ungefragt bewerten oder umschreiben. Wenn sie nach etwas fragt, antworte genau darauf.
+Du hast ein Gedächtnis: Unten stehen dein MERKZETTEL über Anni (gilt für alle Projekte) und deine NOTIZEN zu diesem Projekt.
+Wenn Anni dich bittet, dir etwas zu merken, oder wenn du etwas Wichtiges über sie oder ihre Arbeitsweise erfährst, schreib am Ende deiner Antwort eine eigene Zeile:
+[[MERKEN: kurzer Satz]]  — für Dinge über Anni, ihre Vorlieben und ihre Arbeitsweise (gilt überall)
+[[PROJEKT: kurzer Satz]] — für Dinge, die nur dieses Projekt betreffen (Figuren, Entscheidungen, offene Fäden)
+Bittet sie dich, das Gespräch zusammenzufassen und zu merken, schreib die Zusammenfassung als [[PROJEKT: ...]]-Zeilen, knapp, ein Punkt je Zeile.
+Diese Zeilen sieht sie nicht als Text, sie werden abgelegt. Nutze sie sparsam und nur für Dauerhaftes.
 Unten steht ihr Text: entweder die Karten, die gerade auf ihrem Pult liegen, oder ihr ganzes Projekt. Wenn der Text gekürzt werden musste, steht das dabei — sag es ihr dann, wenn es für ihre Frage eine Rolle spielt (zum Beispiel wenn sie nach allen Figuren fragt).`;
 
 function KnechtChat({ api, zugang, projekt, karten, weg }) {
@@ -751,6 +757,32 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
   const eintragId = useRef(null);
   const unten = useRef(null);
   const [leseInfo, setLeseInfo] = useState("");
+  // gedaechtnis: merkzettel ueber anni (fuer alle projekte) + notizen zu diesem projekt
+  const [merk, setMerk] = useState("");
+  const [pnotiz, setPnotiz] = useState("");
+  const [gedAuf, setGedAuf] = useState(false);
+  const merkId = useRef(null), pnotizId = useRef(null);
+  const MERK = "🧠 merkzettel", PNOTIZ = "🧠 projekt " + projekt.id;
+  useEffect(() => {
+    (async () => {
+      try {
+        const l = await api("GET", `/rest/v1/studio_texte?select=id,name,text&name=in.(${encodeURIComponent('"' + MERK + '"')},${encodeURIComponent('"' + PNOTIZ + '"')})`);
+        (l || []).forEach((e) => {
+          if (e.name === MERK) { merkId.current = e.id; setMerk(e.text || ""); }
+          if (e.name === PNOTIZ) { pnotizId.current = e.id; setPnotiz(e.text || ""); }
+        });
+      } catch {}
+    })();
+  }, [api, PNOTIZ]);
+  const ablegen = async (name, idRef, text) => {
+    try {
+      if (idRef.current) await api("PATCH", `/rest/v1/studio_texte?id=eq.${idRef.current}`, { text, updated_at: new Date().toISOString() });
+      else {
+        const r = await api("POST", "/rest/v1/studio_texte", { name, text }, { Prefer: "return=representation" });
+        if (r && r[0]) idRef.current = r[0].id;
+      }
+    } catch (e) { setFehler("gedächtnis ging nicht: " + (e.message || e)); }
+  };
   const stapel = stapelHolen();
 
   const frisch = useCallback(async () => {
@@ -856,16 +888,40 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
       const stoff = lesestoff(verlaufZeichen);
       setLeseInfo(stoff.info);
       const nachrichten = [
-        { role: "system", content: KNECHT_ANWEISUNG + `\n\nProjekt: ${projekt.name || ""}\n\n` + stoff.text },
-        ...neu.slice(-40).map((m) => ({ role: m.rolle === "du" ? "user" : "assistant", content: m.text })),
+        { role: "system", content: KNECHT_ANWEISUNG +
+          `\n\nMERKZETTEL über Anni:\n${merk.trim() || "(noch leer)"}` +
+          `\n\nNOTIZEN zu diesem Projekt:\n${pnotiz.trim() || "(noch leer)"}` +
+          `\n\nProjekt: ${projekt.name || ""}\n\n` + stoff.text },
+        ...neu.filter((m) => m.rolle !== "notiz").slice(-40).map((m) => ({ role: m.rolle === "du" ? "user" : "assistant", content: m.text })),
       ];
       const j = await fragen("chat", { modell, nachrichten });
-      const fertig = [...neu, { rolle: "knecht", text: j.antwort || "…" }];
+      let antwort = String(j.antwort || "");
+      const neuMerk = [], neuProj = [];
+      antwort = antwort.replace(/\[\[\s*(MERKEN|PROJEKT)\s*:\s*([\s\S]*?)\]\]/gi, (_, art, inhalt) => {
+        const t = inhalt.trim(); if (t) (art.toUpperCase() === "MERKEN" ? neuMerk : neuProj).push(t); return "";
+      }).trim();
+      let vermerk = "";
+      if (neuMerk.length) {
+        const m2 = (merk.trim() ? merk.trim() + "\n" : "") + neuMerk.map((x) => "- " + x).join("\n");
+        setMerk(m2); ablegen(MERK, merkId, m2);
+        vermerk += "✎ gemerkt: " + neuMerk.join(" · ");
+      }
+      if (neuProj.length) {
+        const p2 = (pnotiz.trim() ? pnotiz.trim() + "\n" : "") + neuProj.map((x) => "- " + x).join("\n");
+        setPnotiz(p2); ablegen(PNOTIZ, pnotizId, p2);
+        vermerk += (vermerk ? "\n" : "") + "✎ zum projekt notiert: " + (neuProj.length > 2 ? neuProj.length + " punkte" : neuProj.join(" · "));
+      }
+      const fertig = [...neu, { rolle: "knecht", text: antwort || "…" }, ...(vermerk ? [{ rolle: "notiz", text: vermerk }] : [])];
       setVerlauf(fertig); merken(fertig);
     } catch (e) {
       setFehler(String(e.message || e)); merken(neu);
     }
     setDenkt(false);
+  };
+  const zusammenfassen = () => {
+    if (denkt) return;
+    setEingabe("Fass bitte unser bisheriges Gespräch in diesem Projekt knapp zusammen und merk es dir als Projektnotizen: Entscheidungen, Figuren, Ideen, offene Fäden.");
+    setTimeout(() => { const b = document.querySelector(".knechteingabe .btn"); if (b) b.click(); }, 30);
   };
   const leeren = () => {
     if (!verlauf.length || !confirm("das gespräch mit dem schreibknecht für dieses projekt leeren?")) return;
@@ -888,14 +944,26 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
             <label className="knechtganz" title="soll er alle karten des projekts lesen oder nur die auf dem pult?">
               <input type="checkbox" checked={ganz} onChange={(e) => setGanz(e.target.checked)} /> ganzes projekt
             </label>
+            <button className="klein" onClick={zusammenfassen} title="gespräch zusammenfassen und als projektnotiz merken">📝</button>
+            <button className={"klein" + (gedAuf ? " an" : "")} onClick={() => setGedAuf((g) => !g)} title="was der schreibknecht sich gemerkt hat">🧠</button>
             <button className="klein" onClick={leeren} title="gespräch leeren">🗑</button>
             <button className="klein" onClick={weg} title="schreibknecht wegschicken">✕</button>
           </div>
         </div>
       </div>
+      {gedAuf && (
+        <div className="knechtged">
+          <label>über dich <span>(gilt in allen projekten)</span></label>
+          <textarea value={merk} onChange={(e) => setMerk(e.target.value)} onBlur={() => ablegen(MERK, merkId, merk)} rows={5}
+            placeholder="hier notiert er, was er über dich weiß — du kannst alles ändern oder streichen" />
+          <label>zu diesem projekt</label>
+          <textarea value={pnotiz} onChange={(e) => setPnotiz(e.target.value)} onBlur={() => ablegen(PNOTIZ, pnotizId, pnotiz)} rows={5}
+            placeholder="figuren, entscheidungen, offene fäden …" />
+        </div>
+      )}
       <div className="knechtverlauf" ref={unten}>
         {!verlauf.length && <p className="knechtleer">{karten.length ? "ich hab deine karte vor mir. worüber reden wir?" : "leg eine karte aufs pult, dann können wir darüber reden."}</p>}
-        {verlauf.map((m, i) => <div key={i} className={"knechtsatz " + (m.rolle === "du" ? "du" : "er")}>{m.text}</div>)}
+        {verlauf.map((m, i) => <div key={i} className={"knechtsatz " + (m.rolle === "du" ? "du" : m.rolle === "notiz" ? "notiz" : "er")}>{m.text}</div>)}
         {denkt && <div className="knechtsatz er denkt">… überlegt …</div>}
         {fehler && <div className="knechtfehler" onClick={() => setFehler("")}>{fehler}</div>}
       </div>
@@ -4685,6 +4753,11 @@ function Stil() {
 .knechtsatz.du{align-self:flex-end; background:rgba(224,139,60,.18); border:1px solid rgba(224,139,60,.35); color:#f3e6cc}
 .knechtsatz.er{align-self:flex-start; background:rgba(230,217,187,.07); border:1px solid rgba(168,135,79,.25); color:#e6d9bb}
 .knechtsatz.denkt{font-style:italic; opacity:.7}
+.knechtsatz.notiz{align-self:center; font:11px 'Courier Prime', monospace; color:var(--nebel); background:none; border:0; padding:0 6px}
+.knechtged{padding:8px 10px; border-bottom:1px solid rgba(168,135,79,.25); display:flex; flex-direction:column; gap:4px; max-height:45%; overflow-y:auto}
+.knechtged label{font-size:11px; letter-spacing:.06em; color:var(--kerze2)}
+.knechtged label span{color:var(--nebel)}
+.knechtged textarea{resize:vertical; background:rgba(0,0,0,.35); color:#f3e6cc; border:1px solid rgba(168,135,79,.3); border-radius:6px; padding:6px 8px; font:12.5px/1.4 Georgia, serif}
 .knechtfehler{color:#e8a08c; font-size:12px; cursor:pointer}
 .knechteingabe{display:flex; gap:6px; padding:8px; border-top:1px solid rgba(168,135,79,.25)}
 .knechteingabe textarea{flex:1; resize:none; background:rgba(0,0,0,.35); color:#f3e6cc; border:1px solid rgba(168,135,79,.3); border-radius:6px; padding:6px 8px; font:14px/1.35 Georgia, serif}

@@ -266,7 +266,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
   // ---- helfer fuer den teleprompter ----
   const textHilfe = useCallback(() => ({
     holen: async () => ((await api("GET", "/rest/v1/studio_texte?select=id,name,text&order=created_at.asc")) || [])
-      .filter((t) => t.name !== ABSPANN && t.name !== ZAEHLER && !String(t.name || "").startsWith("💬 ")),
+      .filter((t) => t.name !== ABSPANN && t.name !== ZAEHLER && !/^(💬|🧠) /.test(String(t.name || ""))),
     neu: async (name, text) => {
       const r = await api("POST", "/rest/v1/studio_texte", { name, text }, { Prefer: "return=representation" });
       return r && r[0];
@@ -340,6 +340,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 10 Uhr</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -524,6 +525,7 @@ const ZL_HTML = `
       <button id="zl_tonweg" hidden title="Ton wieder weg">&#10005;</button>
     </div>
     <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
+    <div id="zl_tonvormsg" class="zl-tonhinweis"></div>
     <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
     <div id="zl_tonhinweis" class="zl-tonhinweis" hidden>Mit Ton l&auml;uft der Film endlos weiter, bis die Sprache aufh&ouml;rt, und blendet dann aus.</div>
     <h2>Abspann</h2>
@@ -1352,33 +1354,49 @@ function zoomloopStarten(root, film, hilfe) {
   };
 
   /* ---------- Vorschau mit Ton: der ganze Film so, wie er exportiert wird ---------- */
-  var vor = null;   // { audio, url, start, T, altLoop }
+  // Die Vorschau spielt den Ton ueber Web Audio ab (das kann jedes Format,
+  // das der Browser entschluesseln kann) und laesst den Film danach laufen.
+  var vor = null, vorAc = null, vorPuffer = null, vorPufferDatei = null;
+  function vorMsg(t) { if (!dead) $("tonvormsg").textContent = t || ""; }
   function vorStop() {
     if (!vor) return;
-    try { vor.audio.pause(); } catch (e) {}
-    URL.revokeObjectURL(vor.url);
+    try { vor.quelle.stop(); } catch (e) {}
     G.loop = vor.altLoop;
     vor = null;
     if (!dead) { $("tonvor").innerHTML = "&#9654; Vorschau mit Ton"; draw(); }
   }
-  $("tonvor").onclick = function () {
+  $("tonvor").onclick = async function () {
     if (vor) { vorStop(); return; }
-    if (!ton || items.length < 2 || exporting) { if (items.length < 2) msg("Mindestens zwei Bilder."); return; }
+    if (!ton || exporting) return;
+    if (items.length < 2) { vorMsg("Mindestens zwei Bilder."); return; }
+    // den Klang-Kontext sofort im Klick anlegen, sonst sperrt Safari den Ton
+    if (!vorAc) vorAc = new (window.AudioContext || window.webkitAudioContext)();
+    vorAc.resume();
     stop();
-    var url = URL.createObjectURL(ton.file), au = new Audio(url);
-    vor = { audio: au, url: url, T: 0, altLoop: G.loop, ende: null };
-    G.loop = true;   // wie beim Export: mit Ton laeuft der Film endlos
-    au.onloadedmetadata = function () { if (vor) vor.T = au.duration; };
-    au.onended = function () { if (vor) vor.ende = performance.now(); };
-    au.play().then(function () {
-      $("tonvor").innerHTML = "&#9632; Vorschau beenden";
+    var knopf = this;
+    try {
+      if (vorPufferDatei !== ton.file) {
+        knopf.textContent = "\u2026 Ton wird geladen";
+        vorMsg("");
+        vorPuffer = await vorAc.decodeAudioData(await ton.file.arrayBuffer());
+        vorPufferDatei = ton.file;
+      }
+      if (dead) return;
+      var q = vorAc.createBufferSource(); q.buffer = vorPuffer; q.connect(vorAc.destination);
+      var t0 = vorAc.currentTime + 0.05;
+      q.start(t0);
+      vor = { quelle: q, t0: t0, T: vorPuffer.duration, altLoop: G.loop };
+      G.loop = true;   // wie beim Export: mit Ton laeuft der Film endlos
+      knopf.innerHTML = "&#9632; Vorschau beenden";
       requestAnimationFrame(vorLauf);
-    }).catch(function (e) { msg("Abspielen ging nicht: " + (e.message || e)); vorStop(); });
+    } catch (e) {
+      knopf.innerHTML = "&#9654; Vorschau mit Ton";
+      vorMsg("Die Vorschau ging nicht: " + (e && e.message || e));
+    }
   };
   function vorLauf() {
     if (!vor || dead) return;
-    var au = vor.audio, T = vor.T || au.duration || 0;
-    var t = vor.ende ? T + (performance.now() - vor.ende) / 1000 : au.currentTime;
+    var T = vor.T, t = Math.max(0, vorAc.currentTime - vor.t0);
     var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
     var gesamt = T + (abDa ? G.abDauer : 0);
     if (T && t >= gesamt) { vorStop(); return; }
@@ -1535,8 +1553,9 @@ function zoomloopStarten(root, film, hilfe) {
       var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
       var abFrames = abDa ? Math.round(G.abDauer * fps) : 0;
       var total = totalV + abFrames, fadeV = Math.min(total, 2 * fps);
-      var ziel = Math.min(totalV, total - fadeV);
-      var c0 = Math.floor(ziel / framesPerLoop), r0 = ziel - c0 * framesPerLoop;
+      // (eigener Name: "ziel" ist schon die Datei, in die geschrieben wird)
+      var endeBild = Math.min(totalV, total - fadeV);
+      var c0 = Math.floor(endeBild / framesPerLoop), r0 = endeBild - c0 * framesPerLoop;
       var start = c0 * framesPerLoop + Math.floor(r0 / K) * K;   // hier beginnt das frisch gerechnete ende
       var kopieren = start > framesPerLoop;
 
@@ -1932,7 +1951,8 @@ function zoomloopStarten(root, film, hilfe) {
   })();
 
   return function aufraeumen() {
-    if (vor) { try { vor.audio.pause(); } catch (e) {} }
+    if (vor) { try { vor.quelle.stop(); } catch (e) {} }
+    if (vorAc) { try { vorAc.close(); } catch (e) {} }
     dead = true; playing = false; cancelExport = true;
     window.removeEventListener("resize", onResize);
     clearTimeout(saveT); jetztSpeichern();
@@ -3151,6 +3171,7 @@ function StudioStil() {
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 /* unten: die leiste mit den tueren */
+.st-stand{font-size:10px; letter-spacing:.06em; color:var(--st-dim); opacity:.7; margin-right:6px}
 .st-leiste{flex:none; display:flex; gap:8px; align-items:center; padding:8px 12px; border-top:1px solid var(--st-linie); background:#110d09}
 .st-luft{flex:1}
 .st-knopf{background:var(--st-feld); color:#e6d9bb; border:1px solid var(--st-linie); border-radius:4px; padding:7px 12px; cursor:pointer; font-size:13px}
