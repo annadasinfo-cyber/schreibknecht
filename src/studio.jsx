@@ -340,7 +340,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 17 Uhr</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 18 Uhr</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -524,6 +524,10 @@ const ZL_HTML = `
       <span id="zl_tonname" class="zl-tonname">kein Ton</span>
       <button id="zl_tonweg" hidden title="Ton wieder weg">&#10005;</button>
     </div>
+    <div class="zl-row zl-tonab" id="zl_tonabzeile" hidden>
+      <span class="zl-klein">Stimme setzt ein nach</span>
+      <input id="zl_tonab" type="number" min="0" max="60" step="0.5"> <span class="zl-klein">s, sanft eingeblendet</span>
+    </div>
     <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
     <div id="zl_tonvormsg" class="zl-tonhinweis"></div>
     <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
@@ -549,7 +553,7 @@ function zoomloopStarten(root, film, hilfe) {
   var $ = function (id) { return root.querySelector("#zl_" + id); };
   var DEF = { cx: 0, cy: 0, s: 0.08, r: 0, feather: 18, shape: "oval", br: 100, co: 100, sa: 100, hu: 0, pan: 0, text: "", tpos: "unten", tgr: 6 };
   var daten = film.daten || {};
-  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "" }, daten.G || {});
+  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "", tonAb: 6 }, daten.G || {});
   if (!G.vorlage) G.vorlage = { stil: "", figuren: "" };
   if (!G.vorlage.bilder) G.vorlage.bilder = [];
   var items = [];
@@ -1299,7 +1303,7 @@ function zoomloopStarten(root, film, hilfe) {
   var ton = null;   // { file, name }
   function tonAnzeigen(extra) {
     $("tonname").textContent = ton ? ton.name + (extra ? " \u2013 " + extra : "") : "kein Ton";
-    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton; $("tonvor").hidden = !ton;
+    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton; $("tonvor").hidden = !ton; $("tonabzeile").hidden = !ton;
     $("exp").textContent = ton ? "MP4 mit Ton exportieren" : "MP4 exportieren";
   }
   function dauerText(sec) {
@@ -1318,6 +1322,12 @@ function zoomloopStarten(root, film, hilfe) {
     } catch (e) {}
   };
   $("tonweg").onclick = function () { if (exporting) return; vorStop(); ton = null; tonAnzeigen(); };
+  function tonAbSek() { var v = parseFloat(String(G.tonAb).replace(",", ".")); return isFinite(v) ? Math.max(0, Math.min(60, v)) : 6; }
+  $("tonab").value = String(tonAbSek()).replace(".", ",");
+  $("tonab").addEventListener("input", function () {
+    var v = parseFloat(String(this.value).replace(",", "."));
+    if (isFinite(v)) { G.tonAb = Math.max(0, Math.min(60, v)); save(); }
+  });
 
   // Ton aus der App: die Aufnahmen, die in der Aufnahme mit "in die App" abgelegt wurden
   function tonNameSchoen(datei) {
@@ -1382,10 +1392,12 @@ function zoomloopStarten(root, film, hilfe) {
         vorPufferDatei = ton.file;
       }
       if (dead) return;
-      var q = vorAc.createBufferSource(); q.buffer = vorPuffer; q.connect(vorAc.destination);
-      var t0 = vorAc.currentTime + 0.05;
-      q.start(t0);
-      vor = { quelle: q, t0: t0, T: vorPuffer.duration, altLoop: G.loop };
+      var q = vorAc.createBufferSource(); q.buffer = vorPuffer;
+      var gg = vorAc.createGain(); q.connect(gg); gg.connect(vorAc.destination);
+      var t0 = vorAc.currentTime + 0.05, ein = t0 + tonAbSek();
+      gg.gain.setValueAtTime(0, ein); gg.gain.linearRampToValueAtTime(1, ein + 0.5);
+      q.start(ein);
+      vor = { quelle: q, t0: t0, T: tonAbSek() + vorPuffer.duration, altLoop: G.loop };
       G.loop = true;   // wie beim Export: mit Ton laeuft der Film endlos
       knopf.innerHTML = "&#9632; Vorschau beenden";
       requestAnimationFrame(vorLauf);
@@ -1493,6 +1505,29 @@ function zoomloopStarten(root, film, hilfe) {
 
     try {
       var t = await tonOeffnen(ton.file);
+      // die Stimme setzt erst nach ein paar Sekunden ein und wird sanft eingeblendet
+      (function () {
+        var roh = t, vorS = Math.round(tonAbSek() * roh.sr), einF = Math.round(0.5 * roh.sr);
+        if (!vorS) return;
+        t = {
+          sr: roh.sr, ch: roh.ch, frames: roh.frames + vorS,
+          lies: async function (a, b) {
+            var n = b - a, planes = [];
+            for (var c = 0; c < roh.ch; c++) planes.push(new Float32Array(n));
+            if (b > vorS) {
+              var s0 = Math.max(a, vorS), teil = await roh.lies(s0 - vorS, b - vorS);
+              for (var c2 = 0; c2 < roh.ch; c2++) {
+                var src = teil[Math.min(c2, teil.length - 1)], ziel2 = planes[c2], ab0 = s0 - a;
+                for (var i = 0; i < src.length && ab0 + i < n; i++) {
+                  var fp = s0 - vorS + i;   // Position in der Aufnahme
+                  ziel2[ab0 + i] = src[i] * (fp < einF ? fp / einF : 1);
+                }
+              }
+            }
+            return planes;
+          }
+        };
+      })();
       var sr = t.sr, aFrames = t.frames, T = aFrames / sr;
       if (T < 1) throw new Error("Der Ton ist zu kurz.");
       // rss.com (Max) nimmt Videos bis 5 GB: die Datenrate so waehlen, dass
@@ -3329,6 +3364,8 @@ function StudioStil() {
 .zl-kizaehler{color:#e6d9bb; font-size:12px; margin:2px 0 6px}
 .zl-vorlage{margin:6px 0 4px; border:1px solid var(--st-linie); border-radius:3px; padding:4px 8px}
 .zl-vorlage summary{cursor:pointer; color:var(--st-gold); font-size:12px; padding:4px 0}
+.zl-tonab input{width:58px}
+.zl-tonab[hidden]{display:none}
 .zl-tonliste{margin:4px 0 6px; border:1px solid var(--st-linie); border-radius:3px; max-height:180px; overflow-y:auto; font-size:12px; color:var(--st-dim); padding:4px}
 .zl-tonliste[hidden]{display:none}
 .zl button.zl-toneintrag{display:block; width:100%; text-align:left; margin:2px 0; font-size:12px}
