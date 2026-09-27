@@ -340,7 +340,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 15 Uhr</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 16 Uhr</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1523,10 +1523,15 @@ function zoomloopStarten(root, film, hilfe) {
         target: target,
         video: { codec: "avc", width: W, height: H, frameRate: fps },
         audio: { codec: amux, sampleRate: sr, numberOfChannels: ausKanaele },
-        fastStart: false
+        fastStart: false,
+        // Safari beginnt den Ton mit einem kleinen Vorlauf (negative Zeit).
+        // "strict" wuerde dann jedes Tonstueck ablehnen -> stummer Film.
+        firstTimestampBehavior: "offset"
       });
 
-      var aacRein = aacWeiche(sr, ausKanaele, function (c, m) { muxer.addAudioChunk(c, m); });
+      var tonDrin = 0;
+      var aacRein = aacWeiche(sr, ausKanaele, function (c, m) { muxer.addAudioChunk(c, m); tonDrin++; },
+        function (e) { if (!err) err = new Error("Ton ins MP4: " + (e && e.message || e)); });
       aenc = new AudioEncoder({ output: function (c, m) { tonStuecke++; aacRein(c, m); }, error: function (e) { err = e; } });
       aenc.configure(acfg);
       var aPos = 0, fadeA = Math.min(aFrames, 2 * sr);
@@ -1683,11 +1688,12 @@ function zoomloopStarten(root, film, hilfe) {
           }
         }
         await enc.flush(); await aenc.flush();
+        if (err) throw err;
         muxer.finalize();
         await writes; var wo = await ziel.fertig(); stream = null;
         done = true;
         msg("Fertig (" + dauerText(total / fps) + ") \u2013 " + wo + ". Ton: AAC \u00b7 " + (sr / 1000).toFixed(1).replace(".", ",") + " kHz \u00b7 " +
-          (ausKanaele === 2 ? "Stereo" : "Mono") + " \u00b7 " + tonStuecke + " Tonst\u00fccke \u00b7 Spitze " + Math.round(tonSpitze * 100) + " %");
+          (ausKanaele === 2 ? "Stereo" : "Mono") + " \u00b7 " + tonStuecke + " Tonst\u00fccke, " + tonDrin + " im Film \u00b7 Spitze " + Math.round(tonSpitze * 100) + " %");
       } else msg("Abgebrochen.");
     } catch (e) {
       msg("Fehler: " + (e.message || e));
@@ -2110,7 +2116,7 @@ function auspacken(teile) {
    ADTS-Kopf und ohne die kleine Beschreibung (AudioSpecificConfig), die ein
    MP4 braucht. Dann spielt QuickTime die Datei gar nicht ab. Hier wird der
    Kopf entfernt und die Beschreibung notfalls selbst gebaut. */
-function aacWeiche(sr, ch, hinzu) {
+function aacWeiche(sr, ch, hinzu, fehler) {
   var FREQ = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
   var fi = FREQ.indexOf(sr); if (fi < 0) fi = 3;
   var asc = new Uint8Array([(2 << 3) | (fi >> 1), ((fi & 1) << 7) | (ch << 3)]);
@@ -2137,7 +2143,8 @@ function aacWeiche(sr, ch, hinzu) {
     var neu = (adts || !(chunk instanceof EncodedAudioChunk))
       ? new EncodedAudioChunk({ type: "key", timestamp: chunk.timestamp, duration: chunk.duration || undefined, data: daten })
       : chunk;
-    hinzu(neu, m);
+    try { hinzu(neu, m); }
+    catch (e) { if (fehler) fehler(e); }
   };
 }
 
@@ -3056,8 +3063,8 @@ function aufnahmeStarten(root, hilfe) {
     var pk = 0; for (var i = 0; i < x.length; i++) { var a = Math.abs(x[i]); if (a > pk) pk = a; }
     var g = pk > 1e-6 ? Math.min(30, 0.9 / pk) : 1;
     var target = new window.Mp4Muxer.ArrayBufferTarget(), err = null;
-    var mux = new window.Mp4Muxer.Muxer({ target: target, audio: { codec: "aac", sampleRate: rate, numberOfChannels: 1 }, fastStart: "in-memory" });
-    var aacRein = aacWeiche(rate, 1, function (c, m) { mux.addAudioChunk(c, m); });
+    var mux = new window.Mp4Muxer.Muxer({ target: target, audio: { codec: "aac", sampleRate: rate, numberOfChannels: 1 }, fastStart: "in-memory", firstTimestampBehavior: "offset" });
+    var aacRein = aacWeiche(rate, 1, function (c, m) { mux.addAudioChunk(c, m); }, function (e) { if (!err) err = e; });
     var enc = new AudioEncoder({ output: function (c, m) { aacRein(c, m); }, error: function (e) { err = e; } });
     enc.configure(cfg);
     for (var s0 = 0; s0 < x.length && !err; s0 += rate) {
