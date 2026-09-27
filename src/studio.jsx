@@ -340,7 +340,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 14 Uhr</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 15 Uhr</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1504,7 +1504,7 @@ function zoomloopStarten(root, film, hilfe) {
       var acfg = null, amux = "aac";
       var versuche = [[2, 192000], [2, 128000], [1, 128000], [1, 96000]];
       for (var vi = 0; vi < versuche.length && !acfg; vi++) {
-        var probe = { codec: "mp4a.40.2", sampleRate: sr, numberOfChannels: versuche[vi][0], bitrate: versuche[vi][1] };
+        var probe = { codec: "mp4a.40.2", sampleRate: sr, numberOfChannels: versuche[vi][0], bitrate: versuche[vi][1], aac: { format: "aac" } };
         try { if ((await AudioEncoder.isConfigSupported(probe)).supported) acfg = probe; } catch (e) {}
       }
       if (!acfg) throw new Error("Diesen Ton kann ich nicht als AAC einbauen (" + sr + " Hz) \u2013 nimm eine WAV mit 44,1 oder 48 kHz.");
@@ -1526,7 +1526,8 @@ function zoomloopStarten(root, film, hilfe) {
         fastStart: false
       });
 
-      aenc = new AudioEncoder({ output: function (c, m) { tonStuecke++; muxer.addAudioChunk(c, m); }, error: function (e) { err = e; } });
+      var aacRein = aacWeiche(sr, ausKanaele, function (c, m) { muxer.addAudioChunk(c, m); });
+      aenc = new AudioEncoder({ output: function (c, m) { tonStuecke++; aacRein(c, m); }, error: function (e) { err = e; } });
       aenc.configure(acfg);
       var aPos = 0, fadeA = Math.min(aFrames, 2 * sr);
       async function tonBis(ziel) {
@@ -2104,6 +2105,42 @@ function auspacken(teile) {
 // Chrome fragt nach dem Speicherort; Safari (ab 26) schreibt erst in den
 // eigenen Speicher des Browsers und laedt die Datei dann herunter.
 // So passt auch ein Film von einer Stunde, ohne den Arbeitsspeicher zu sprengen.
+
+/* AAC sauber ins MP4: Safari liefert die Ton-Stuecke je nach Fassung mit
+   ADTS-Kopf und ohne die kleine Beschreibung (AudioSpecificConfig), die ein
+   MP4 braucht. Dann spielt QuickTime die Datei gar nicht ab. Hier wird der
+   Kopf entfernt und die Beschreibung notfalls selbst gebaut. */
+function aacWeiche(sr, ch, hinzu) {
+  var FREQ = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
+  var fi = FREQ.indexOf(sr); if (fi < 0) fi = 3;
+  var asc = new Uint8Array([(2 << 3) | (fi >> 1), ((fi & 1) << 7) | (ch << 3)]);
+  var ersterMeta = true;
+  return function (chunk, meta) {
+    var roh = new Uint8Array(chunk.byteLength); chunk.copyTo(roh);
+    var adts = roh.length > 7 && roh[0] === 0xFF && (roh[1] & 0xF6) === 0xF0;
+    var daten = roh;
+    if (adts) {
+      var kopf = (roh[1] & 1) ? 7 : 9;
+      daten = roh.subarray(kopf);
+      // Beschreibung aus dem ADTS-Kopf ablesen
+      var prof = ((roh[2] >> 6) & 3) + 1, f2 = (roh[2] >> 2) & 15, k2 = ((roh[2] & 1) << 2) | ((roh[3] >> 6) & 3);
+      asc = new Uint8Array([(prof << 3) | (f2 >> 1), ((f2 & 1) << 7) | (k2 << 3)]);
+    }
+    var m = meta;
+    if (ersterMeta) {
+      var dc = (meta && meta.decoderConfig) || {};
+      var hatBeschr = dc.description && (dc.description.byteLength || dc.description.length);
+      m = { decoderConfig: { codec: dc.codec || "mp4a.40.2", sampleRate: dc.sampleRate || sr, numberOfChannels: dc.numberOfChannels || ch,
+        description: hatBeschr && !adts ? dc.description : asc } };
+      ersterMeta = false;
+    } else m = undefined;
+    var neu = (adts || !(chunk instanceof EncodedAudioChunk))
+      ? new EncodedAudioChunk({ type: "key", timestamp: chunk.timestamp, duration: chunk.duration || undefined, data: daten })
+      : chunk;
+    hinzu(neu, m);
+  };
+}
+
 async function exportZiel(name) {
   if (window.showSaveFilePicker) {
     const handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: "Video", accept: { "video/mp4": [".mp4"] } }] });
@@ -3014,13 +3051,14 @@ function aufnahmeStarten(root, hilfe) {
   async function alsM4a(x, rate) {
     if (!("AudioEncoder" in window)) throw new Error("In die App speichern geht in diesem Browser nicht \u2013 bitte Safari aktualisieren (ab Version 26), sonst Teilen/AirDrop.");
     await mp4BausteinLaden();
-    var cfg = { codec: "mp4a.40.2", sampleRate: rate, numberOfChannels: 1, bitrate: 96000 };
+    var cfg = { codec: "mp4a.40.2", sampleRate: rate, numberOfChannels: 1, bitrate: 96000, aac: { format: "aac" } };
     if (!(await AudioEncoder.isConfigSupported(cfg)).supported) throw new Error("Dieser Browser kann den Ton nicht verkleinern \u2013 nimm Teilen/AirDrop.");
     var pk = 0; for (var i = 0; i < x.length; i++) { var a = Math.abs(x[i]); if (a > pk) pk = a; }
     var g = pk > 1e-6 ? Math.min(30, 0.9 / pk) : 1;
     var target = new window.Mp4Muxer.ArrayBufferTarget(), err = null;
     var mux = new window.Mp4Muxer.Muxer({ target: target, audio: { codec: "aac", sampleRate: rate, numberOfChannels: 1 }, fastStart: "in-memory" });
-    var enc = new AudioEncoder({ output: function (c, m) { mux.addAudioChunk(c, m); }, error: function (e) { err = e; } });
+    var aacRein = aacWeiche(rate, 1, function (c, m) { mux.addAudioChunk(c, m); });
+    var enc = new AudioEncoder({ output: function (c, m) { aacRein(c, m); }, error: function (e) { err = e; } });
     enc.configure(cfg);
     for (var s0 = 0; s0 < x.length && !err; s0 += rate) {
       var s1 = Math.min(x.length, s0 + rate), d = new Float32Array(s1 - s0);
