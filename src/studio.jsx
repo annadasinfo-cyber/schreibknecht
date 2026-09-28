@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 28.9. · Intro</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 28.9. · Liste</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -525,7 +525,7 @@ const ZL_HTML = `
     <label>Drehung <b id="zl_v_r"></b></label><input type="range" id="zl_r" min="-180" max="180" step="1">
     <label>Weicher Rand <b id="zl_v_feather"></b></label><input type="range" id="zl_feather" min="0" max="30" step="1">
     <label>Form</label><select id="zl_shape"><option value="rect">Rechteck</option><option value="oval">Oval</option></select>
-    <h2>Angleichen</h2>
+    <h2>Angleichen (Farbe)</h2>
     <label>Helligkeit <b id="zl_v_br"></b></label><input type="range" id="zl_br" min="40" max="160" step="1">
     <label>Kontrast <b id="zl_v_co"></b></label><input type="range" id="zl_co" min="40" max="160" step="1">
     <label>S&auml;ttigung <b id="zl_v_sa"></b></label><input type="range" id="zl_sa" min="0" max="200" step="1">
@@ -540,7 +540,7 @@ const ZL_HTML = `
     <label>N&auml;chstes Bild einblenden <b id="zl_v_fade"></b></label><input type="range" id="zl_fade" min="0" max="100" step="5">
     <label>Bilder pro Sekunde</label><select id="zl_fps"><option>60</option><option>30</option><option>25</option></select>
     <label class="zl-row" style="margin-top:10px"><input type="checkbox" id="zl_loop" checked> Endlos (letztes Bild zoomt zur&uuml;ck in Bild 1)</label>
-    <label>Ton dazu</label>
+    <h2>Ton dazu</h2>
     <div class="zl-row">
       <button id="zl_tonapp" title="eine Aufnahme, die du mit &#9729; in die App gelegt hast">&#9729; aus der App</button>
       <button id="zl_tonwahl" title="eine Datei von deinem Rechner">&#128194; Datei</button>
@@ -559,7 +559,12 @@ const ZL_HTML = `
       <input id="zl_nachlauf" type="number" min="0" max="30" step="0.5"> <span class="zl-klein">s stehen lassen</span>
     </div>
     <label class="zl-chk" id="zl_rahmenzeile" hidden><input type="checkbox" id="zl_rahmen"> erstes und letztes Bild stehen f&uuml;r sich: Anfang mit Bild 1, dazwischen l&auml;uft der Rest im Kreis, zum Schluss kommt das letzte Bild</label>
-    <div id="zl_bstzeile" hidden>
+    <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
+    <div id="zl_tonvormsg" class="zl-tonhinweis"></div>
+    <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
+    <div id="zl_tonhinweis" class="zl-tonhinweis" hidden>Mit Ton l&auml;uft der Film endlos weiter, bis die Sprache aufh&ouml;rt, und blendet dann aus.</div>
+    <h2>Intro &amp; Outro</h2>
+    <div id="zl_bstzeile">
       <label class="zl-chk"><input type="checkbox" id="zl_mitintro"> Intro: Musik mit Titel &uuml;ber Bild 1 (BÄHM!)</label>
       <label class="zl-chk"><input type="checkbox" id="zl_mitoutro"> Outro: Musik nach der Stimme</label>
       <button id="zl_bstauf" style="width:100%">&#127898; Intro &amp; Outro einrichten &hellip;</button>
@@ -568,7 +573,14 @@ const ZL_HTML = `
           <b>Intro-Musik</b>
           <div class="zl-row"><button id="zl_bstintro">Datei &hellip;</button><span id="zl_bstintroname" class="zl-klein"></span></div>
           <canvas id="zl_bstwelle" class="zl-bstwelle" width="600" height="80"></canvas>
-          <div class="zl-row"><button id="zl_bstspiel">&#9654; anh&ouml;ren</button><span id="zl_bstknall" class="zl-klein">Tippe auf der Welle auf den BÄHM.</span></div>
+          <div class="zl-row"><button id="zl_bstspiel">&#9654; anh&ouml;ren</button><span id="zl_bstknall" class="zl-klein"></span></div>
+          <div class="zl-klein">Tippe auf der Welle auf jeden BÄHM (roter Strich). Nochmal tippen nimmt ihn wieder weg.</div>
+          <div class="zl-bstzeiten">
+            <label>Bilder laufen los bei</label><input id="zl_bstzoom" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
+            <label>Musik blendet aus ab</label><input id="zl_bstaus" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
+            <label>Stimme setzt ein bei</label><input id="zl_bststimme" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
+          </div>
+          <div class="zl-klein zl-bstlegende"><i style="background:#e0453a"></i>BÄHM <i style="background:#e0b44a"></i>Bilder los <i style="background:#8a8a8a"></i>Ausblenden <i style="background:#6fb36f"></i>Stimme</div>
         </div>
         <div class="zl-bstteil">
           <b>Outro-Musik</b>
@@ -585,19 +597,15 @@ const ZL_HTML = `
         <input type="file" id="zl_bstdatei" hidden>
       </div>
     </div>
-    <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
-    <div id="zl_tonvormsg" class="zl-tonhinweis"></div>
-    <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
-    <div id="zl_tonhinweis" class="zl-tonhinweis" hidden>Mit Ton l&auml;uft der Film endlos weiter, bis die Sprache aufh&ouml;rt, und blendet dann aus.</div>
     <h2>Abspann</h2>
     <label class="zl-row"><input type="checkbox" id="zl_abspann"> nach der Stimme anh&auml;ngen</label>
     <input id="zl_abtitel" class="zl-abtitel" placeholder="&Uuml;berschrift">
     <textarea id="zl_abnamen" class="zl-txt zl-abnamen" rows="6" placeholder="ein Name pro Zeile"></textarea>
     <label>Dauer <b id="zl_v_abdauer"></b></label><input type="range" id="zl_abdauer" min="8" max="40" step="1">
     <button id="zl_abvor" style="width:100%">Abspann ansehen</button>
-    <button class="zl-big" id="zl_exp">MP4 exportieren</button>
-    <div id="zl_prog" class="zl-prog"><i></i></div>
-    <div id="zl_msg" class="zl-msg"></div>
+    <button class="zl-big zl-fest" id="zl_exp">MP4 exportieren</button>
+    <div id="zl_prog" class="zl-prog zl-fest"><i></i></div>
+    <div id="zl_msg" class="zl-msg zl-fest"></div>
   </div>
   <div class="zl-bar">
     <button id="zl_play">&#9654;</button>
@@ -615,6 +623,31 @@ function zoomloopStarten(root, film, hilfe) {
   if (!G.vorlage.bilder) G.vorlage.bilder = [];
   var items = [];
   var sel = 0, u = 0, playing = false, exporting = false, cancelExport = false, dead = false;
+
+  /* Alle Bereiche der rechten Seite zum Einklappen: die Ueberschrift ist die Klappe.
+     Was auf- und zugeklappt ist, merkt sich das Studio auf diesem Geraet. */
+  (function klappenBauen() {
+    var seite = root.querySelector(".zl-side"); if (!seite) return;
+    var zu = {}; try { zu = JSON.parse(localStorage.getItem("studio:klappen") || "null") || { "Angleichen (Farbe)": true }; } catch (e) {}
+    var kinder = Array.prototype.slice.call(seite.children), aktuell = null;
+    kinder.forEach(function (el) {
+      if (el.classList.contains("zl-fest")) { aktuell = null; return; }
+      if (el.tagName === "H2") {
+        var name = el.textContent.trim();
+        var sek = document.createElement("div"); sek.className = "zl-sek" + (zu[name] ? " zu" : "");
+        var koerper = document.createElement("div"); koerper.className = "zl-sekinhalt";
+        seite.insertBefore(sek, el); sek.appendChild(el); sek.appendChild(koerper);
+        el.classList.add("zl-klappe");
+        el.onclick = function () {
+          sek.classList.toggle("zu");
+          zu[name] = sek.classList.contains("zu");
+          try { localStorage.setItem("studio:klappen", JSON.stringify(zu)); } catch (e) {}
+        };
+        aktuell = koerper; return;
+      }
+      if (aktuell) aktuell.appendChild(el);
+    });
+  })();
   var cv = $("cv"), ctx = cv.getContext("2d", { alpha: false });
   var smallCache = new Map(), bigCache = new Map(), urls = [];
 
@@ -1374,7 +1407,7 @@ function zoomloopStarten(root, film, hilfe) {
   var ton = null;   // { file, name }
   function tonAnzeigen(extra) {
     $("tonname").textContent = ton ? ton.name + (extra ? " \u2013 " + extra : "") : "kein Ton";
-    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton; $("tonvor").hidden = !ton; $("tonabzeile").hidden = !ton; $("nachzeile").hidden = !ton; $("rahmenzeile").hidden = !ton; $("bstzeile").hidden = !ton;
+    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton; $("tonvor").hidden = !ton; $("tonabzeile").hidden = !ton; $("nachzeile").hidden = !ton; $("rahmenzeile").hidden = !ton;
     $("exp").textContent = ton ? "MP4 mit Ton exportieren" : "MP4 exportieren";
   }
   function dauerText(sec) {
@@ -1412,7 +1445,11 @@ function zoomloopStarten(root, film, hilfe) {
     if (dead) return;
     $("bstintroname").textContent = bst.intro ? bst.intro.name : "noch keine";
     $("bstoutroname").textContent = bst.outro ? bst.outro.name : "noch keine";
-    $("bstknall").textContent = bst.intro ? (bst.intro.knall != null ? "BÄHM bei " + bst.intro.knall.toFixed(2).replace(".", ",") + " s \u2013 zum \u00c4ndern auf die Welle tippen" : "Tippe auf der Welle auf den BÄHM.") : "";
+    var kn = bstKnalle();
+    $("bstknall").textContent = bst.intro ? (kn.length ? "BÄHM bei " + kn.map(function (t) { return t.toFixed(1).replace(".", ",") + " s"; }).join(" \u00b7 ") : "noch kein BÄHM markiert") : "";
+    var it = bst.intro || {}, zp = introZeiten(welle ? welle.dauer : 0);
+    function feld(id, eigen, auto) { var e = $(id); if (document.activeElement !== e) e.value = eigen != null && eigen !== "" ? String(eigen).replace(".", ",") : ""; e.placeholder = "auto: " + auto.toFixed(1).replace(".", ","); }
+    feld("bstzoom", it.zoom, zp.zoom); feld("bstaus", it.aus, zp.aus); feld("bststimme", it.stimme, zp.stimme);
     var tb = $("bsttitelbild");
     if (titelEl) { tb.src = titelEl.src; tb.hidden = false; } else tb.hidden = true;
     var t = bst.titel || {};
@@ -1441,9 +1478,9 @@ function zoomloopStarten(root, film, hilfe) {
       var t = await bausteinTon(bst.intro, 48000), n = 600, pro = Math.max(1, Math.floor(t.frames / n)), sp = new Float32Array(n);
       for (var i = 0; i < n; i++) { var m = 0; for (var k = i * pro; k < Math.min(t.frames, (i + 1) * pro); k += 4) { var v = Math.abs(t.planes[0][k]); if (v > m) m = v; } sp[i] = m; }
       welle = { spitzen: sp, dauer: t.frames / 48000 };
-      if (bst.intro.knall == null) {   // Vorschlag: die lauteste Stelle ist meist der BÄHM
+      if (!bstKnalle().length) {   // Vorschlag: die lauteste Stelle ist meist der BÄHM
         var best = 0; for (var q = 1; q < n; q++) if (sp[q] > sp[best]) best = q;
-        bst.intro.knall = best / n * welle.dauer; bstSpeichern();
+        bst.intro.knalle = [best / n * welle.dauer]; bstSpeichern();
       }
     } catch (e) { bstMsg("Die Intro-Musik kann ich nicht lesen: " + (e.message || e)); }
     bstAnzeigen();
@@ -1455,17 +1492,32 @@ function zoomloopStarten(root, film, hilfe) {
     var mx = 0; welle.spitzen.forEach(function (v) { if (v > mx) mx = v; }); mx = mx || 1;
     x.fillStyle = "#c9a15c";
     for (var i = 0; i < welle.spitzen.length; i++) { var a = welle.spitzen[i] / mx * (h / 2 - 2); x.fillRect(i * w / welle.spitzen.length, h / 2 - a, Math.max(1, w / welle.spitzen.length), a * 2); }
-    if (bst.intro && bst.intro.knall != null) {
-      var kx = bst.intro.knall / welle.dauer * w;
-      x.fillStyle = "#e0453a"; x.fillRect(kx - 1, 0, 3, h);
-    }
+    var zp = introZeiten(welle.dauer);
+    function strich(t, farbe, breit) { var kx = t / welle.dauer * w; x.fillStyle = farbe; x.fillRect(kx - breit / 2, 0, breit, h); }
+    if (zp.aus < zp.ausEnde) { x.fillStyle = "rgba(0,0,0,.45)"; x.fillRect(zp.aus / welle.dauer * w, 0, w, h); }
+    strich(zp.aus, "#8a8a8a", 2);
+    strich(zp.zoom, "#e0b44a", 2);
+    strich(zp.stimme, "#6fb36f", 3);
+    zp.knalle.forEach(function (t) { strich(t, "#e0453a", 3); });
   }
   $("bstwelle").onclick = function (ev) {
     if (!welle || !bst.intro) return;
-    var r = this.getBoundingClientRect();
-    bst.intro.knall = Math.max(0, Math.min(welle.dauer, (ev.clientX - r.left) / r.width * welle.dauer));
+    var r = this.getBoundingClientRect(), t = Math.max(0, Math.min(welle.dauer, (ev.clientX - r.left) / r.width * welle.dauer));
+    var kn = bstKnalle(), nah = welle.dauer * 0.015;
+    var treffer = kn.filter(function (k) { return Math.abs(k - t) <= nah; });
+    bst.intro.knalle = treffer.length ? kn.filter(function (k) { return Math.abs(k - t) > nah; }) : kn.concat([t]);
+    delete bst.intro.knall;
     bstSpeichern(); bstAnzeigen();
   };
+  ["bstzoom", "bstaus", "bststimme"].forEach(function (id) {
+    var schluessel = { bstzoom: "zoom", bstaus: "aus", bststimme: "stimme" }[id];
+    $(id).addEventListener("change", function () {
+      if (!bst.intro) return;
+      var v = zahl(this.value);
+      if (v == null) delete bst.intro[schluessel]; else bst.intro[schluessel] = Math.max(0, v);
+      bstSpeichern(); bstAnzeigen();
+    });
+  });
   var bstWas = null;
   $("bstauf").onclick = function () { $("bst").hidden = !$("bst").hidden; };
   $("bstintro").onclick = function () { bstWas = "intro"; $("bstdatei").accept = "audio/*,.m4a,.mp3,.wav,.aac"; $("bstdatei").click(); };
@@ -1511,14 +1563,15 @@ function zoomloopStarten(root, film, hilfe) {
   function titelProbe(abSek) {
     if (!titelEl) return;
     cancelAnimationFrame(probeUhr);
-    var start = performance.now(), iz = { knall: 1, ende: 4.5 };
+    var kn0 = bstKnalle(), kz = kn0.length ? kn0.map(function (k, i) { return 1 + i * 2.5; }) : [1];
+    var start = performance.now(), iz = { knalle: kz, ende: kz[kz.length - 1] + 3 };
     (function lauf() {
       if (dead || vor) return;
       var t = (abSek != null ? abSek : 0) + (performance.now() - start) / 1000;
       var W = cv.width, H = cv.height, liste = aktiv();
       if (liste.length) mitSicht({ items: liste, loop: G.loop }, function () { render(ctx, W, H, 0, false, false, false); });
       introUeber(ctx, W, H, t, iz);
-      if (abSek == null && t < 5.8) probeUhr = requestAnimationFrame(lauf); else if (abSek != null) {} else draw();
+      if (abSek == null && t < iz.ende + 1.4) probeUhr = requestAnimationFrame(lauf); else if (abSek == null) draw();
     })();
   }
   $("bstprobe").onclick = function () { titelProbe(null); };
@@ -1528,9 +1581,10 @@ function zoomloopStarten(root, film, hilfe) {
      und glueht blutrot nach. Nach dem Einsatz der Stimme verblasst er. */
   function introUeber(c, W, H, t, iz) {
     if (!iz || !titelEl) return;
-    var K = iz.knall, E = iz.ende;
+    var kn = iz.knalle || [], E = iz.ende;
     if (t > E + 1.2) return;
-    var aus = t > E ? Math.max(0, 1 - (t - E) / 1.2) : 1, d = t - K;
+    var K = null; for (var qi = 0; qi < kn.length; qi++) if (kn[qi] <= t) K = kn[qi];
+    var aus = t > E ? Math.max(0, 1 - (t - E) / 1.2) : 1, d = K == null ? -1 : t - K;
     var alpha, scale = 1, glow = 0, shx = 0, shy = 0, blitz = 0;
     if (d < 0) alpha = 0.08 + 0.05 * (0.5 + 0.5 * Math.sin(t * 6.1) * Math.sin(t * 2.3));
     else {
@@ -1558,26 +1612,46 @@ function zoomloopStarten(root, film, hilfe) {
     }
   }
 
+  function bstKnalle() {
+    if (!bst.intro) return [];
+    if (!bst.intro.knalle && bst.intro.knall != null) bst.intro.knalle = [bst.intro.knall];
+    return (bst.intro.knalle || []).slice().sort(function (a, b) { return a - b; });
+  }
+  function zahl(v) { var x = parseFloat(String(v == null ? "" : v).replace(",", ".")); return isFinite(x) ? x : null; }
+  // wann was im Intro passiert — eigene Angaben gehen vor, sonst sinnvolle Vorgaben
+  function introZeiten(musikSek) {
+    var kn = bstKnalle(), letzter = kn.length ? kn[kn.length - 1] : 0, it = bst.intro || {};
+    var stimme = zahl(it.stimme);
+    if (stimme == null) stimme = Math.max(letzter + 1.5, Math.min((musikSek || 99) - 3, letzter + 6));
+    var zoom = zahl(it.zoom); if (zoom == null) zoom = Math.min(stimme, letzter + 1.5);
+    var aus = zahl(it.aus), ausEnde;
+    if (aus == null || aus >= stimme) { aus = stimme; ausEnde = stimme + 3; } else ausEnde = stimme;
+    return { knalle: kn, stimme: Math.max(0, stimme), zoom: Math.max(0, Math.min(zoom, stimme)), aus: aus, ausEnde: ausEnde };
+  }
+
   /* Alles, was man hoert, in einer Spur: Intro-Musik, die Stimme, Outro-Musik.
      Ohne Intro setzt die Stimme wie bisher nach "Stimme setzt ein nach" sanft ein. */
   async function mischQuelle(roh) {
     var sr = roh.sr;
     var intro = G.mitIntro && bst.intro ? await bausteinTon(bst.intro, sr) : null;
     var outro = G.mitOutro && bst.outro ? await bausteinTon(bst.outro, sr) : null;
-    var introSek = intro ? intro.frames / sr : 0;
-    var knall = intro ? Math.min(introSek, bst.intro.knall != null ? bst.intro.knall : 0) : 0;
-    // die Stimme kommt nach dem BÄHM, frühestens gut eine Sekunde danach, spätestens 3 s vor Musikende
-    var start = intro ? Math.max(knall + 1.5, Math.min(introSek - 3, knall + 6)) : tonAbSek();
+    var zp = introZeiten(intro ? intro.frames / sr : 0);
+    var start = intro ? zp.stimme : tonAbSek();
     start = Math.max(0, start);
     var sS = Math.round(start * sr), sE = sS + roh.frames;
-    var fI0 = sS, fI1 = intro ? Math.min(intro.frames, sS + Math.round(3 * sr)) : 0;   // Musik klingt unter der Stimme aus
-    var oS = outro ? sE + Math.round(0.4 * sr) : 0, oE = outro ? oS + outro.frames : 0, oEin = Math.round(0.3 * sr);
+    // Musik: ab "blendet aus ab" bis zum Einsatz der Stimme ausblenden (ohne Angabe: 3 s unter der Stimme)
+    var fI0 = intro ? Math.round(zp.aus * sr) : 0, fI1 = intro ? Math.min(intro.frames, Math.round(zp.ausEnde * sr)) : 0;
+    // Outro: nur so lange wie der Abspann (ohne Abspann: "nach der Stimme noch ... s"), am Ende sanft ausgeblendet
+    var abJa2 = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
+    var endPhase = Math.max(1, abJa2 ? G.abDauer : nachSek());
+    var oS = outro ? sE + Math.round(0.4 * sr) : 0, oLen = outro ? Math.min(outro.frames, Math.round((endPhase - 0.4) * sr)) : 0;
+    var oE = oS + oLen, oEin = Math.round(0.3 * sr), oAus = Math.max(1, Math.min(Math.round(2.5 * sr), Math.floor(oLen / 3)));
     var ch = Math.min(2, Math.max(roh.ch, intro ? intro.ch : 1, outro ? outro.ch : 1));
     var einF = intro ? Math.round(0.05 * sr) : Math.round(0.5 * sr);
     var frames = Math.max(sE, oE);
     return {
       sr: sr, ch: ch, frames: frames, stimmeStart: start, stimmeEnde: sE / sr,
-      intro: intro ? { knall: knall, ende: start } : null,
+      intro: intro ? { knalle: zp.knalle, ende: zp.zoom } : null,
       lies: async function (a, b) {
         var n = b - a, planes = [];
         for (var c = 0; c < ch; c++) planes.push(new Float32Array(n));
@@ -1602,7 +1676,10 @@ function zoomloopStarten(root, film, hilfe) {
           var o0 = Math.max(a, oS), o1 = Math.min(b, oE);
           for (var c3 = 0; c3 < ch; c3++) {
             var op = outro.planes[Math.min(c3, outro.ch - 1)], z3 = planes[c3];
-            for (var k2 = o0; k2 < o1; k2++) { var q = k2 - oS; z3[k2 - a] += op[q] * 0.9 * (q < oEin ? q / oEin : 1); }
+            for (var k2 = o0; k2 < o1; k2++) {
+              var q = k2 - oS, gAus = q > oLen - oAus ? Math.max(0, (oLen - q) / oAus) : 1;
+              z3[k2 - a] += op[q] * 0.9 * (q < oEin ? q / oEin : 1) * gAus;
+            }
           }
         }
         for (var c4 = 0; c4 < ch; c4++) { var z4 = planes[c4]; for (var j = 0; j < n; j++) { var v = z4[j]; if (v > 0.99) z4[j] = 0.99; else if (v < -0.99) z4[j] = -0.99; } }
@@ -2378,7 +2455,7 @@ const AU_HTML = `
     </div>
     <div>
       <label>Laufen</label>
-      <select id="au_mode"><option value="voice">Text folgt meiner Stimme</option><option value="tempo">Gleichm&auml;&szlig;iges Tempo</option></select>
+      <select id="au_mode"><option value="voice">Text folgt meiner Stimme</option><option value="tempo">Gleichm&auml;&szlig;iges Tempo</option><option value="selbst">Selbst scrollen (Trackpad, Mausrad, Pfeiltasten)</option></select>
       <label class="au-chk"><input type="checkbox" id="au_mirror"> Spiegeln (f&uuml;r Glasaufsatz)</label>
       <label class="au-chk"><input type="checkbox" id="au_ns"> Rauschfilter vom Browser</label>
     </div>
@@ -2716,6 +2793,7 @@ function aufnahmeStarten(root, hilfe) {
     if (!active || dead) return;
     var dt = Math.min(0.1, (t - lastT) / 1000); lastT = t;
     var sc = $("scroller"), max = sc.scrollHeight - sc.clientHeight;
+    if (runMode === "selbst") { requestAnimationFrame(loop); return; }   // du schiebst selbst
     if (!paused) {
       if (runMode === "tempo") curY += S.speed * (S.size / 44) * dt;
       else curY += (tgtY - curY) * Math.min(1, dt * 3);
@@ -2728,7 +2806,7 @@ function aufnahmeStarten(root, hilfe) {
     var sc = $("scroller");
     markDone(0); pos = posAtMark(); markDone(pos);
     curY = sc.scrollTop; tgtY = curY; paused = false; runMode = S.mode; active = true;
-    sc.classList.add("run");
+    if (runMode !== "selbst") sc.classList.add("run");
     if (runMode === "voice") startFollow();
     lastT = performance.now(); requestAnimationFrame(loop);
   }
@@ -2738,8 +2816,17 @@ function aufnahmeStarten(root, hilfe) {
     paused = !paused;
     status(paused ? "Text angehalten \u2013 Aufnahme l\u00e4uft weiter. Nochmal tippen zum Weiterlaufen." : "Aufnahme l\u00e4uft");
   }
-  $("stage").addEventListener("click", function (e) { if (e.target !== $("ta")) togglePause(); });
-  function onKey(e) { if (e.code === "Space" && document.activeElement !== $("ta") && active) { e.preventDefault(); togglePause(); } }
+  $("stage").addEventListener("click", function (e) { if (e.target !== $("ta") && runMode !== "selbst") togglePause(); });
+  function onKey(e) {
+    if (document.activeElement === $("ta") || !active) return;
+    if (runMode === "selbst") {
+      var sc = $("scroller"), zeile = S.size * 1.5, h = sc.clientHeight * 0.8;
+      var weg = { ArrowDown: zeile, ArrowUp: -zeile, PageDown: h, PageUp: -h, Space: h * 0.5 }[e.code];
+      if (weg) { e.preventDefault(); sc.scrollBy({ top: weg, behavior: "smooth" }); }
+      return;
+    }
+    if (e.code === "Space") { e.preventDefault(); togglePause(); }
+  }
   document.addEventListener("keydown", onKey);
 
   /* ---------- Aufnahme ---------- */
@@ -3704,6 +3791,15 @@ function StudioStil() {
 .zl-vorlage{margin:6px 0 4px; border:1px solid var(--st-linie); border-radius:3px; padding:4px 8px}
 .zl-vorlage summary{cursor:pointer; color:var(--st-gold); font-size:12px; padding:4px 0}
 .zl-tonab input{width:58px}
+.zl-sek{border-bottom:1px solid rgba(168,135,79,.18); padding-bottom:4px; margin-bottom:4px}
+.zl h2.zl-klappe{cursor:pointer; user-select:none; position:relative; padding-right:18px}
+.zl h2.zl-klappe::after{content:"▾"; position:absolute; right:2px; top:50%; transform:translateY(-50%); font-size:11px; opacity:.7; transition:transform .15s}
+.zl-sek.zu h2.zl-klappe::after{transform:translateY(-50%) rotate(-90deg)}
+.zl-sek.zu .zl-sekinhalt{display:none}
+.zl-bstzeiten{display:grid; grid-template-columns:auto 64px auto; gap:4px 6px; align-items:center; margin:6px 0}
+.zl-bstzeiten label{margin:0; font-size:12px}
+.zl-bstzeiten input{width:64px; background:#0b0907; color:#e6d9bb; border:1px solid var(--st-linie); border-radius:4px; padding:4px 6px; font:13px 'Courier Prime', monospace}
+.zl-bstlegende i{display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 3px 0 8px; vertical-align:-1px}
 .zl-bst{border:1px solid var(--st-linie); border-radius:4px; padding:8px; margin:6px 0}
 .zl-bst[hidden], #zl_bstzeile[hidden]{display:none}
 .zl-bstteil{margin-bottom:10px}
