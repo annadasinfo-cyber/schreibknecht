@@ -937,9 +937,11 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
   return (
     <div className="knecht">
       <div className="knechtkopf">
-        <button className="knechtbild" title="anderes bild" onClick={() => setBildNr((n) => (n + 1) % Math.max(1, stapel.length))}>
-          {stapel.length ? <img src={stapel[bildNr % stapel.length]} alt="" /> : <span>🕯</span>}
-        </button>
+        {/* immer die schreibknecht-karte (die erste im stapel) — nicht mehr zum durchblaettern,
+            damit sie am handy nicht aus versehen weiterspringt */}
+        <div className="knechtbild">
+          {stapel.length ? <img src={stapel[0]} alt="schreibknecht" /> : <span>🕯</span>}
+        </div>
         <div className="knechtleiste">
           <span className="knechtname">schreibknecht</span>
           <select className="knechtmodell" value={modell} onChange={(e) => setModell(e.target.value)} title="wer spricht">
@@ -4783,6 +4785,8 @@ function Stil() {
   .pultrumpf.mitknecht{display:flex}
   .knecht{margin:0 0 4px 0; min-width:0; flex:1; height:auto}
   .knechtbild{width:96px; height:136px}
+  /* rechts unten schweben die knoepfe der app (nach oben, raus) — platz lassen */
+  .knechteingabe{padding-right:70px}
   .knechteingabe textarea, .knechtged textarea, .knechtmodell{font-size:16px}
 }
 
