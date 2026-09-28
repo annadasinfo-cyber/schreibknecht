@@ -733,6 +733,7 @@ const Karte = React.memo(function Karte({ karte, bildUrl, onText, onTitel, onBil
 // ============================================================
 const KNECHT_ANWEISUNG = `Du bist der Schreibknecht, der Gesprächspartner von Anni beim Schreiben. Anni ist Autorin (Horror, Urban Fantasy, Schauergeschichten) und denkt am liebsten im Gespräch — so erschließen sich ihr Ideen.
 So redest du: Deutsch, locker und warm, eher kurz. Du bist ein Sparringspartner, kein Lehrer.
+Schreib schlichten Text ohne Markdown: keine Sternchen, keine Rauten, keine Formatierungszeichen. Absätze sind in Ordnung.
 Du hilfst beim Weiterdenken, beim Wortfinden und mit Denkanstößen. Stell gern eine Frage, die etwas öffnet, statt Lösungen vorzugeben.
 Bitte nicht: keine Beat-Pläne oder Handlungsgerüste bauen, keine Schreibratgeber-Weisheiten erklären, ihre Texte nicht ungefragt bewerten oder umschreiben. Wenn sie nach etwas fragt, antworte genau darauf.
 Du hast ein Gedächtnis: Unten stehen dein MERKZETTEL über Anni (gilt für alle Projekte) und deine NOTIZEN zu diesem Projekt.
@@ -801,6 +802,7 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
       body: JSON.stringify({ aktion, ...(daten || {}) }),
     });
     let j = null; try { j = await r.json(); } catch { j = { fehler: "Antwort unlesbar (" + r.status + ")" }; }
+    if (r.status === 504) throw new Error("Das hat zu lange gedauert. Versuch es nochmal, ohne „ganzes projekt“ oder mit einem schnelleren Modell.");
     if (!r.ok) throw new Error(j.fehler || "Fehler " + r.status);
     return j;
   }, [frisch]);
@@ -909,8 +911,12 @@ function KnechtChat({ api, zugang, projekt, karten, weg }) {
       if (neuProj.length) {
         const p2 = (pnotiz.trim() ? pnotiz.trim() + "\n" : "") + neuProj.map((x) => "- " + x).join("\n");
         setPnotiz(p2); ablegen(PNOTIZ, pnotizId, p2);
-        vermerk += (vermerk ? "\n" : "") + "✎ zum projekt notiert: " + (neuProj.length > 2 ? neuProj.length + " punkte" : neuProj.join(" · "));
+        vermerk += (vermerk ? "\n" : "") + "✎ zum projekt notiert:\n" + neuProj.map((x) => "– " + x).join("\n");
       }
+      // Markdown-Reste entfernen, falls das Modell trotzdem welche schreibt
+      antwort = antwort.replace(/\*\*(.+?)\*\*/g, "$1").replace(/__(.+?)__/g, "$1")
+        .replace(/(^|[\s(])\*(\S[^*\n]*?)\*/g, "$1$2").replace(/^#{1,6}\s*/gm, "").replace(/^\s*[-*]\s+/gm, "– ");
+      if (!antwort && vermerk) antwort = "Hab ich mir notiert.";
       const fertig = [...neu, { rolle: "knecht", text: antwort || "…" }, ...(vermerk ? [{ rolle: "notiz", text: vermerk }] : [])];
       setVerlauf(fertig); merken(fertig);
     } catch (e) {
@@ -4756,7 +4762,7 @@ function Stil() {
 .knechtsatz.du{align-self:flex-end; background:rgba(224,139,60,.18); border:1px solid rgba(224,139,60,.35); color:#f3e6cc}
 .knechtsatz.er{align-self:flex-start; background:rgba(230,217,187,.07); border:1px solid rgba(168,135,79,.25); color:#e6d9bb}
 .knechtsatz.denkt{font-style:italic; opacity:.7}
-.knechtsatz.notiz{align-self:center; font:11px 'Courier Prime', monospace; color:var(--nebel); background:none; border:0; padding:0 6px}
+.knechtsatz.notiz{align-self:stretch; font:11.5px/1.5 'Courier Prime', monospace; color:var(--nebel); background:rgba(230,217,187,.04); border:1px dashed rgba(168,135,79,.25); border-radius:8px; padding:6px 10px; max-width:100%}
 .knechtged{padding:8px 10px; border-bottom:1px solid rgba(168,135,79,.25); display:flex; flex-direction:column; gap:4px; max-height:45%; overflow-y:auto}
 .knechtged label{font-size:11px; letter-spacing:.06em; color:var(--kerze2)}
 .knechtged label span{color:var(--nebel)}
@@ -4776,7 +4782,7 @@ function Stil() {
   .pultrumpf.mitknecht .pultblatt{display:none}
   .pultrumpf.mitknecht{display:flex}
   .knecht{margin:0 0 4px 0; min-width:0; flex:1; height:auto}
-  .knechtbild{width:52px; height:74px}
+  .knechtbild{width:96px; height:136px}
   .knechteingabe textarea, .knechtged textarea, .knechtmodell{font-size:16px}
 }
 

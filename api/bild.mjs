@@ -2,7 +2,7 @@
 // Laeuft bei Vercel, haelt den OpenRouter-Schluessel versteckt
 // und laesst nur die angemeldete Schreibknecht-Nutzerin durch.
 
-export const config = { maxDuration: 60 };
+export const config = { maxDuration: 300 };
 
 const SUPABASE = "https://nafscbugauslcajtwixl.supabase.co";
 const SUPABASE_KEY = "sb_publishable_32DoPNbrEB9ne7Iw-O4Jgg_FzNaLJYw";
