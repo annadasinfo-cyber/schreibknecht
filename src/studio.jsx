@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 28.9. · Liste</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 29.9. · Titel</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -551,12 +551,12 @@ const ZL_HTML = `
       <button id="zl_tonweg" hidden title="Ton wieder weg">&#10005;</button>
     </div>
     <div class="zl-row zl-tonab" id="zl_tonabzeile" hidden>
-      <span class="zl-klein">Stimme setzt ein nach</span>
-      <input id="zl_tonab" type="number" min="0" max="60" step="0.5"> <span class="zl-klein">s, sanft eingeblendet</span>
+      <span class="zl-klein">Stimme setzt ein bei</span>
+      <input id="zl_tonab" type="text" inputmode="decimal"> <span class="zl-klein">s (mit Intro: in der Intro-Musik gerechnet)</span>
     </div>
     <div class="zl-row zl-tonab" id="zl_nachzeile" hidden>
       <span class="zl-klein">nach der Stimme noch</span>
-      <input id="zl_nachlauf" type="number" min="0" max="30" step="0.5"> <span class="zl-klein">s stehen lassen</span>
+      <input id="zl_nachlauf" type="text" inputmode="decimal"> <span class="zl-klein">s stehen lassen</span>
     </div>
     <label class="zl-chk" id="zl_rahmenzeile" hidden><input type="checkbox" id="zl_rahmen"> erstes und letztes Bild stehen f&uuml;r sich: Anfang mit Bild 1, dazwischen l&auml;uft der Rest im Kreis, zum Schluss kommt das letzte Bild</label>
     <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
@@ -578,9 +578,9 @@ const ZL_HTML = `
           <div class="zl-bstzeiten">
             <label>Bilder laufen los bei</label><input id="zl_bstzoom" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
             <label>Musik blendet aus ab</label><input id="zl_bstaus" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
-            <label>Stimme setzt ein bei</label><input id="zl_bststimme" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
+            <label>Titel bleibt stehen bis</label><input id="zl_bsttitelbis" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
           </div>
-          <div class="zl-klein zl-bstlegende"><i style="background:#e0453a"></i>BÄHM <i style="background:#e0b44a"></i>Bilder los <i style="background:#8a8a8a"></i>Ausblenden <i style="background:#6fb36f"></i>Stimme</div>
+          <div class="zl-klein zl-bstlegende"><i style="background:#e0453a"></i>BÄHM <i style="background:#e0b44a"></i>Bilder los <i style="background:#8a8a8a"></i>Ausblenden <i style="background:#6fb36f"></i>Stimme <i style="background:#d8c9a8"></i>Titel bis</div>
         </div>
         <div class="zl-bstteil">
           <b>Outro-Musik</b>
@@ -1449,7 +1449,7 @@ function zoomloopStarten(root, film, hilfe) {
     $("bstknall").textContent = bst.intro ? (kn.length ? "BÄHM bei " + kn.map(function (t) { return t.toFixed(1).replace(".", ",") + " s"; }).join(" \u00b7 ") : "noch kein BÄHM markiert") : "";
     var it = bst.intro || {}, zp = introZeiten(welle ? welle.dauer : 0);
     function feld(id, eigen, auto) { var e = $(id); if (document.activeElement !== e) e.value = eigen != null && eigen !== "" ? String(eigen).replace(".", ",") : ""; e.placeholder = "auto: " + auto.toFixed(1).replace(".", ","); }
-    feld("bstzoom", it.zoom, zp.zoom); feld("bstaus", it.aus, zp.aus); feld("bststimme", it.stimme, zp.stimme);
+    feld("bstzoom", it.zoom, zp.zoom); feld("bstaus", it.aus, zp.aus); feld("bsttitelbis", it.titelBis, zp.titelBis);
     var tb = $("bsttitelbild");
     if (titelEl) { tb.src = titelEl.src; tb.hidden = false; } else tb.hidden = true;
     var t = bst.titel || {};
@@ -1498,6 +1498,7 @@ function zoomloopStarten(root, film, hilfe) {
     strich(zp.aus, "#8a8a8a", 2);
     strich(zp.zoom, "#e0b44a", 2);
     strich(zp.stimme, "#6fb36f", 3);
+    strich(zp.titelBis, "#d8c9a8", 1);
     zp.knalle.forEach(function (t) { strich(t, "#e0453a", 3); });
   }
   $("bstwelle").onclick = function (ev) {
@@ -1509,8 +1510,8 @@ function zoomloopStarten(root, film, hilfe) {
     delete bst.intro.knall;
     bstSpeichern(); bstAnzeigen();
   };
-  ["bstzoom", "bstaus", "bststimme"].forEach(function (id) {
-    var schluessel = { bstzoom: "zoom", bstaus: "aus", bststimme: "stimme" }[id];
+  ["bstzoom", "bstaus", "bsttitelbis"].forEach(function (id) {
+    var schluessel = { bstzoom: "zoom", bstaus: "aus", bsttitelbis: "titelBis" }[id];
     $(id).addEventListener("change", function () {
       if (!bst.intro) return;
       var v = zahl(this.value);
@@ -1564,7 +1565,8 @@ function zoomloopStarten(root, film, hilfe) {
     if (!titelEl) return;
     cancelAnimationFrame(probeUhr);
     var kn0 = bstKnalle(), kz = kn0.length ? kn0.map(function (k, i) { return 1 + i * 2.5; }) : [1];
-    var start = performance.now(), iz = { knalle: kz, ende: kz[kz.length - 1] + 3 };
+    var zpP = introZeiten(welle ? welle.dauer : 0), steh = kn0.length ? Math.max(1.5, Math.min(8, zpP.titelBis - kn0[kn0.length - 1])) : 3;
+    var start = performance.now(), iz = { knalle: kz, ende: kz[kz.length - 1] + steh };
     (function lauf() {
       if (dead || vor) return;
       var t = (abSek != null ? abSek : 0) + (performance.now() - start) / 1000;
@@ -1621,12 +1623,13 @@ function zoomloopStarten(root, film, hilfe) {
   // wann was im Intro passiert — eigene Angaben gehen vor, sonst sinnvolle Vorgaben
   function introZeiten(musikSek) {
     var kn = bstKnalle(), letzter = kn.length ? kn[kn.length - 1] : 0, it = bst.intro || {};
-    var stimme = zahl(it.stimme);
-    if (stimme == null) stimme = Math.max(letzter + 1.5, Math.min((musikSek || 99) - 3, letzter + 6));
+    var stimme = tonAbSek();   // ein Feld fuer alles: "Stimme setzt ein bei" unter "Ton dazu"
     var zoom = zahl(it.zoom); if (zoom == null) zoom = Math.min(stimme, letzter + 1.5);
     var aus = zahl(it.aus), ausEnde;
     if (aus == null || aus >= stimme) { aus = stimme; ausEnde = stimme + 3; } else ausEnde = stimme;
-    return { knalle: kn, stimme: Math.max(0, stimme), zoom: Math.max(0, Math.min(zoom, stimme)), aus: aus, ausEnde: ausEnde };
+    zoom = Math.max(0, Math.min(zoom, stimme));
+    var titelBis = zahl(it.titelBis); if (titelBis == null) titelBis = zoom;
+    return { knalle: kn, stimme: Math.max(0, stimme), zoom: zoom, aus: aus, ausEnde: ausEnde, titelBis: Math.max(0, titelBis) };
   }
 
   /* Alles, was man hoert, in einer Spur: Intro-Musik, die Stimme, Outro-Musik.
@@ -1651,7 +1654,7 @@ function zoomloopStarten(root, film, hilfe) {
     var frames = Math.max(sE, oE);
     return {
       sr: sr, ch: ch, frames: frames, stimmeStart: start, stimmeEnde: sE / sr,
-      intro: intro ? { knalle: zp.knalle, ende: zp.zoom } : null,
+      intro: intro ? { knalle: zp.knalle, ende: zp.titelBis, zoom: zp.zoom } : null,
       lies: async function (a, b) {
         var n = b - a, planes = [];
         for (var c = 0; c < ch; c++) planes.push(new Float32Array(n));
@@ -1707,7 +1710,7 @@ function zoomloopStarten(root, film, hilfe) {
     var abJa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
     var nachHalt = Math.max(1, abJa ? G.abDauer : nachSek());
     var H0 = Math.max(0, Math.round((haltSek || 0) * fps));        // so lange steht Bild 1 still (Intro)
-    var Ue = Math.ceil((ueberSek || 0) * fps);                      // so lange liegt noch etwas darueber (Titel)
+    var Ue = Math.ceil((ueberSek || 0) * fps);                      // bis dahin liegt noch etwas darueber (Titel), absolute Zeit
     var dauer = Math.max(1, stimmeSek - (haltSek || 0));
     var n = items.length;
     if (G.rahmen && n >= 4) {
@@ -1721,7 +1724,7 @@ function zoomloopStarten(root, film, hilfe) {
       var mitte = { items: items.slice(1, n - 1), loop: true };
       var ende = { items: [items[n - 2], items[n - 1]], loop: false };
       return {
-        A: Math.max(A, H0 + Ue), loopF: loopF, periodischBis: Math.floor(midEnde),
+        A: Math.max(A, Ue), loopF: loopF, periodischBis: Math.floor(midEnde),
         an: function (g) {
           if (g < H0) return { sicht: anf, u: 0 };
           if (g < A) return { sicht: anf, u: (g - H0) / (A - H0) };
@@ -1736,7 +1739,7 @@ function zoomloopStarten(root, film, hilfe) {
     }
     var S = n, fpl = Math.max(2, Math.round(S * G.sec * fps)), alle = { items: items, loop: true };
     return {
-      A: H0 + Ue, loopF: fpl, periodischBis: Infinity,
+      A: Math.max(H0, Ue), loopF: fpl, periodischBis: Infinity,
       an: function (g) { return g < H0 ? { sicht: alle, u: 0 } : { sicht: alle, u: ((g - H0) % fpl) / fpl * S }; }
     };
   }
@@ -1756,7 +1759,7 @@ function zoomloopStarten(root, film, hilfe) {
   }
   $("tonab").addEventListener("input", function () {
     var v = parseFloat(String(this.value).replace(",", "."));
-    if (isFinite(v)) { G.tonAb = Math.max(0, Math.min(60, v)); save(); }
+    if (isFinite(v)) { G.tonAb = Math.max(0, Math.min(60, v)); save(); if (typeof welleZeichnen === "function") welleZeichnen(); }
   });
 
   // Ton aus der App: die Aufnahmen, die in der Aufnahme mit "in die App" abgelegt wurden
@@ -1845,7 +1848,7 @@ function zoomloopStarten(root, film, hilfe) {
     var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
     var gesamt = Math.max(T + (abDa ? G.abDauer : nachSek()), (vor.bisTon || 0) + 0.5);
     if (T && t >= gesamt) { vorStop(); return; }
-    if (!vor.plan) vor.plan = zeitplan(T, 60, vor.iz ? vor.iz.ende : 0, vor.iz ? vor.iz.ende + 1.3 : 0);
+    if (!vor.plan) vor.plan = zeitplan(T, 60, vor.iz ? vor.iz.zoom : 0, vor.iz ? vor.iz.ende + 1.3 : 0);
     var pa = vor.plan.an(t * 60);
     var W = cv.width, H = cv.height;
     planZeichnen(ctx, W, H, pa, false);
@@ -2005,7 +2008,7 @@ function zoomloopStarten(root, film, hilfe) {
       }
 
       // Bild-Kodierer
-      var plan = zeitplan(T, fps, iz ? iz.ende : 0, iz ? iz.ende + 1.3 : 0), A = plan.A, framesPerLoop = plan.loopF;
+      var plan = zeitplan(T, fps, iz ? iz.zoom : 0, iz ? iz.ende + 1.3 : 0), A = plan.A, framesPerLoop = plan.loopF;
       // nach der Stimme: entweder der Abspann oder noch ein paar Sekunden stehen lassen; dann ausblenden
       var stimmeF = Math.ceil(T * fps);
       var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
