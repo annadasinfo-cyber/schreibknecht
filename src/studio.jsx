@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 29.9. · Titel</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 29.9. · Rahmen</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1108,7 +1108,17 @@ function zoomloopStarten(root, film, hilfe) {
   $("cprev").addEventListener("pointercancel", endPrevDrag);
 
   /* ---------- Seitenleiste ---------- */
-  function child() { var n = items.length; if (n < 2) return null; if (!G.loop && sel >= n - 1) return null; return items[(sel + 1) % n]; }
+  // das naechste EINGESCHALTETE Bild nach dem ausgewaehlten — das sitzt im Rahmen
+  function child() {
+    var n = items.length; if (n < 2) return null;
+    for (var j = 1; j < n; j++) {
+      var q = sel + j;
+      if (q >= n) { if (!G.loop) return null; q = q % n; }
+      if (!items[q].aus) return items[q];
+    }
+    return null;
+  }
+  function vollIndex(ai) { var z = -1; for (var q = 0; q < items.length; q++) if (!items[q].aus && ++z === ai) return q; return Math.max(0, items.length - 1); }
   var PK = ["s", "r", "feather", "shape", "br", "co", "sa", "hu"];
   function syncPanel() {
     var ch = child(), n = items.length, it = items[sel];
@@ -1280,7 +1290,8 @@ function zoomloopStarten(root, film, hilfe) {
   var dragging = null;
   cv.addEventListener("pointerdown", function (e) {
     if (exporting) return;
-    stop(); var n0 = Math.max(1, items.length), k0 = Math.round(u); u = sel = G.loop ? k0 % n0 : Math.min(k0, n0 - 1);
+    stop(); var n0 = Math.max(1, aktiv().length), k0 = Math.round(u), ka = G.loop ? k0 % n0 : Math.min(k0, n0 - 1);
+    u = ka; sel = vollIndex(ka);   // u zaehlt nur eingeschaltete Bilder, sel die ganze Liste
     var ch = child(); thumbs(); syncPanel(); draw(); if (!ch) return;
     dragging = { x: e.clientX, y: e.clientY, cx: ch.p.cx, cy: ch.p.cy };
     cv.setPointerCapture(e.pointerId); cv.classList.add("drag");
