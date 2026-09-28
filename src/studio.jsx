@@ -10,7 +10,8 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 
 const EIMER = "studiobilder";
 const ABSPANN = "🎬 Abspann";   // liegt als besonderer Text in studio_texte, gilt fuer alle Filme
-const ZAEHLER = "🎨 Bildzähler"; // ebenso: wie viele KI-Bilder in diesem Monat und was sie gekostet haben
+const ZAEHLER = "🎨 Bildzähler";
+const BAUSTEINE = "🎚 Intro und Outro"; // Musik fuer Anfang/Ende + freigestellter Titel // ebenso: wie viele KI-Bilder in diesem Monat und was sie gekostet haben
 
 // Die BILDER, die zwischen den Filmen liegen. Bei jedem Oeffnen der
 // Filmliste werden drei davon gezogen. Sie stecken direkt hier drin,
@@ -185,7 +186,32 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
   const aufnahmenFach = useRef(null);   // wird unten mit den Aufnahme-Helfern gefuellt
   const zaehlerId = useRef(null);
   const laufend = useRef(Promise.resolve());   // noch nicht fertig gespeicherte Aenderungen
+  const bausteinId = useRef(null);
   const filmHilfe = useCallback((id) => ({
+    // Intro/Outro-Musik und der freigestellte Titel: gelten fuer alle Filme
+    bausteinHochladen: async (blob, datei, typ) => {
+      const s = await frisch();
+      const pfad = `${s.user.id}/bausteine/${datei}`;
+      const r = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
+        method: "POST", headers: { ...kopf(s, typ || "application/octet-stream"), "x-upsert": "true" }, body: blob,
+      });
+      if (!r.ok) throw new Error((await r.text()).slice(0, 160) || "hochladen ging nicht");
+      return pfad;
+    },
+    bausteineHolen: async () => {
+      const l = await api("GET", `/rest/v1/studio_texte?select=id,text&name=eq.${encodeURIComponent(BAUSTEINE)}&limit=1`);
+      if (!l || !l[0]) return {};
+      bausteinId.current = l[0].id;
+      try { return JSON.parse(l[0].text || "{}") || {}; } catch (e) { return {}; }
+    },
+    bausteineSpeichern: async (b) => {
+      const text = JSON.stringify(b);
+      if (bausteinId.current) await api("PATCH", `/rest/v1/studio_texte?id=eq.${bausteinId.current}`, { text, updated_at: new Date().toISOString() });
+      else {
+        const r = await api("POST", "/rest/v1/studio_texte", { name: BAUSTEINE, text }, { Prefer: "return=representation" });
+        if (r && r[0]) bausteinId.current = r[0].id;
+      }
+    },
     aufnahmenListe: () => aufnahmenFach.current ? aufnahmenFach.current.aufnahmenListe() : Promise.resolve([]),
     aufnahmeHolen: (pfad) => aufnahmenFach.current.aufnahmeHolen(pfad),
     // Bildgenerator: laeuft ueber /api/bild bei Vercel, dort liegt der OpenRouter-Schluessel
@@ -266,7 +292,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
   // ---- helfer fuer den teleprompter ----
   const textHilfe = useCallback(() => ({
     holen: async () => ((await api("GET", "/rest/v1/studio_texte?select=id,name,text&order=created_at.asc")) || [])
-      .filter((t) => t.name !== ABSPANN && t.name !== ZAEHLER && !/^(💬|🧠) /.test(String(t.name || ""))),
+      .filter((t) => t.name !== ABSPANN && t.name !== ZAEHLER && !/^(💬|🧠|🎚) /.test(String(t.name || ""))),
     neu: async (name, text) => {
       const r = await api("POST", "/rest/v1/studio_texte", { name, text }, { Prefer: "return=representation" });
       return r && r[0];
@@ -340,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 27.9. · 21 Uhr</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 28.9. · Intro</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -533,6 +559,32 @@ const ZL_HTML = `
       <input id="zl_nachlauf" type="number" min="0" max="30" step="0.5"> <span class="zl-klein">s stehen lassen</span>
     </div>
     <label class="zl-chk" id="zl_rahmenzeile" hidden><input type="checkbox" id="zl_rahmen"> erstes und letztes Bild stehen f&uuml;r sich: Anfang mit Bild 1, dazwischen l&auml;uft der Rest im Kreis, zum Schluss kommt das letzte Bild</label>
+    <div id="zl_bstzeile" hidden>
+      <label class="zl-chk"><input type="checkbox" id="zl_mitintro"> Intro: Musik mit Titel &uuml;ber Bild 1 (BÄHM!)</label>
+      <label class="zl-chk"><input type="checkbox" id="zl_mitoutro"> Outro: Musik nach der Stimme</label>
+      <button id="zl_bstauf" style="width:100%">&#127898; Intro &amp; Outro einrichten &hellip;</button>
+      <div id="zl_bst" class="zl-bst" hidden>
+        <div class="zl-bstteil">
+          <b>Intro-Musik</b>
+          <div class="zl-row"><button id="zl_bstintro">Datei &hellip;</button><span id="zl_bstintroname" class="zl-klein"></span></div>
+          <canvas id="zl_bstwelle" class="zl-bstwelle" width="600" height="80"></canvas>
+          <div class="zl-row"><button id="zl_bstspiel">&#9654; anh&ouml;ren</button><span id="zl_bstknall" class="zl-klein">Tippe auf der Welle auf den BÄHM.</span></div>
+        </div>
+        <div class="zl-bstteil">
+          <b>Outro-Musik</b>
+          <div class="zl-row"><button id="zl_bstoutro">Datei &hellip;</button><span id="zl_bstoutroname" class="zl-klein"></span></div>
+        </div>
+        <div class="zl-bstteil">
+          <b>Titel (PNG, freigestellt)</b>
+          <div class="zl-row"><button id="zl_bsttitel">Datei &hellip;</button><img id="zl_bsttitelbild" class="zl-bsttitelbild" alt="" hidden></div>
+          <label>Gr&ouml;&szlig;e</label><input type="range" id="zl_bstbreite" min="20" max="100">
+          <label>H&ouml;he im Bild</label><input type="range" id="zl_bsthoehe" min="5" max="95">
+          <button id="zl_bstprobe" style="width:100%">&#9889; BÄHM ansehen</button>
+        </div>
+        <div id="zl_bstmsg" class="zl-tonhinweis"></div>
+        <input type="file" id="zl_bstdatei" hidden>
+      </div>
+    </div>
     <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
     <div id="zl_tonvormsg" class="zl-tonhinweis"></div>
     <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
@@ -558,7 +610,7 @@ function zoomloopStarten(root, film, hilfe) {
   var $ = function (id) { return root.querySelector("#zl_" + id); };
   var DEF = { cx: 0, cy: 0, s: 0.08, r: 0, feather: 18, shape: "oval", br: 100, co: 100, sa: 100, hu: 0, pan: 0, text: "", tpos: "unten", tgr: 6 };
   var daten = film.daten || {};
-  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "", tonAb: 6, rahmen: false, nachlauf: 3.5 }, daten.G || {});
+  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "", tonAb: 6, rahmen: false, nachlauf: 3.5, mitIntro: false, mitOutro: false }, daten.G || {});
   if (!G.vorlage) G.vorlage = { stil: "", figuren: "" };
   if (!G.vorlage.bilder) G.vorlage.bilder = [];
   var items = [];
@@ -1322,7 +1374,7 @@ function zoomloopStarten(root, film, hilfe) {
   var ton = null;   // { file, name }
   function tonAnzeigen(extra) {
     $("tonname").textContent = ton ? ton.name + (extra ? " \u2013 " + extra : "") : "kein Ton";
-    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton; $("tonvor").hidden = !ton; $("tonabzeile").hidden = !ton; $("nachzeile").hidden = !ton; $("rahmenzeile").hidden = !ton;
+    $("tonweg").hidden = !ton; $("tonhinweis").hidden = !ton; $("tonvor").hidden = !ton; $("tonabzeile").hidden = !ton; $("nachzeile").hidden = !ton; $("rahmenzeile").hidden = !ton; $("bstzeile").hidden = !ton;
     $("exp").textContent = ton ? "MP4 mit Ton exportieren" : "MP4 exportieren";
   }
   function dauerText(sec) {
@@ -1352,41 +1404,264 @@ function zoomloopStarten(root, film, hilfe) {
   $("rahmen").checked = !!G.rahmen;
   $("rahmen").onchange = function () { G.rahmen = this.checked; save(); };
 
+
+  /* ---------- Intro & Outro (Bausteine) ---------- */
+  var bst = {}, titelEl = null, bstTonCache = {};
+  function bstMsg(t) { if (!dead) $("bstmsg").textContent = t || ""; }
+  function bstAnzeigen() {
+    if (dead) return;
+    $("bstintroname").textContent = bst.intro ? bst.intro.name : "noch keine";
+    $("bstoutroname").textContent = bst.outro ? bst.outro.name : "noch keine";
+    $("bstknall").textContent = bst.intro ? (bst.intro.knall != null ? "BÄHM bei " + bst.intro.knall.toFixed(2).replace(".", ",") + " s \u2013 zum \u00c4ndern auf die Welle tippen" : "Tippe auf der Welle auf den BÄHM.") : "";
+    var tb = $("bsttitelbild");
+    if (titelEl) { tb.src = titelEl.src; tb.hidden = false; } else tb.hidden = true;
+    var t = bst.titel || {};
+    $("bstbreite").value = t.breite || 70; $("bsthoehe").value = t.hoehe || 40;
+    $("mitintro").checked = !!G.mitIntro; $("mitoutro").checked = !!G.mitOutro;
+    welleZeichnen();
+  }
+  function bstSpeichern() { hilfe.bausteineSpeichern(bst).catch(function (e) { bstMsg("Speichern ging nicht: " + (e.message || e)); }); }
+  // Musik holen und auf die gewuenschte Abtastrate bringen (fuer das Mischen)
+  async function bausteinTon(meta, rate) {
+    var key = meta.pfad + "@" + rate;
+    if (bstTonCache[key]) return bstTonCache[key];
+    var blob = await hilfe.holen(meta.pfad);
+    var OC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    var buf = await new OC(2, 1, rate).decodeAudioData(await blob.arrayBuffer());
+    var planes = [];
+    for (var c = 0; c < Math.min(2, buf.numberOfChannels); c++) planes.push(buf.getChannelData(c));
+    bstTonCache[key] = { ch: planes.length, planes: planes, frames: buf.length };
+    return bstTonCache[key];
+  }
+  var welle = null;   // { spitzen, dauer }
+  async function welleLaden() {
+    welle = null;
+    if (!bst.intro) { welleZeichnen(); return; }
+    try {
+      var t = await bausteinTon(bst.intro, 48000), n = 600, pro = Math.max(1, Math.floor(t.frames / n)), sp = new Float32Array(n);
+      for (var i = 0; i < n; i++) { var m = 0; for (var k = i * pro; k < Math.min(t.frames, (i + 1) * pro); k += 4) { var v = Math.abs(t.planes[0][k]); if (v > m) m = v; } sp[i] = m; }
+      welle = { spitzen: sp, dauer: t.frames / 48000 };
+      if (bst.intro.knall == null) {   // Vorschlag: die lauteste Stelle ist meist der BÄHM
+        var best = 0; for (var q = 1; q < n; q++) if (sp[q] > sp[best]) best = q;
+        bst.intro.knall = best / n * welle.dauer; bstSpeichern();
+      }
+    } catch (e) { bstMsg("Die Intro-Musik kann ich nicht lesen: " + (e.message || e)); }
+    bstAnzeigen();
+  }
+  function welleZeichnen() {
+    var cvw = $("bstwelle"), x = cvw.getContext("2d"), w = cvw.width, h = cvw.height;
+    x.clearRect(0, 0, w, h); x.fillStyle = "#0b0907"; x.fillRect(0, 0, w, h);
+    if (!welle) return;
+    var mx = 0; welle.spitzen.forEach(function (v) { if (v > mx) mx = v; }); mx = mx || 1;
+    x.fillStyle = "#c9a15c";
+    for (var i = 0; i < welle.spitzen.length; i++) { var a = welle.spitzen[i] / mx * (h / 2 - 2); x.fillRect(i * w / welle.spitzen.length, h / 2 - a, Math.max(1, w / welle.spitzen.length), a * 2); }
+    if (bst.intro && bst.intro.knall != null) {
+      var kx = bst.intro.knall / welle.dauer * w;
+      x.fillStyle = "#e0453a"; x.fillRect(kx - 1, 0, 3, h);
+    }
+  }
+  $("bstwelle").onclick = function (ev) {
+    if (!welle || !bst.intro) return;
+    var r = this.getBoundingClientRect();
+    bst.intro.knall = Math.max(0, Math.min(welle.dauer, (ev.clientX - r.left) / r.width * welle.dauer));
+    bstSpeichern(); bstAnzeigen();
+  };
+  var bstWas = null;
+  $("bstauf").onclick = function () { $("bst").hidden = !$("bst").hidden; };
+  $("bstintro").onclick = function () { bstWas = "intro"; $("bstdatei").accept = "audio/*,.m4a,.mp3,.wav,.aac"; $("bstdatei").click(); };
+  $("bstoutro").onclick = function () { bstWas = "outro"; $("bstdatei").accept = "audio/*,.m4a,.mp3,.wav,.aac"; $("bstdatei").click(); };
+  $("bsttitel").onclick = function () { bstWas = "titel"; $("bstdatei").accept = "image/png"; $("bstdatei").click(); };
+  $("bstdatei").onchange = async function () {
+    var f = this.files && this.files[0]; this.value = "";
+    if (!f || !bstWas) return;
+    var was = bstWas; bstMsg("wird hochgeladen \u2026");
+    try {
+      var endung = (f.name.split(".").pop() || "bin").toLowerCase();
+      var pfad = await hilfe.bausteinHochladen(f, was + "-" + Date.now() + "." + endung, f.type);
+      if (was === "titel") {
+        bst.titel = Object.assign({ breite: 70, hoehe: 40 }, bst.titel || {}, { pfad: pfad, name: f.name });
+        var url = URL.createObjectURL(f); urls.push(url); titelEl = await bildAus(url);
+      } else {
+        bst[was] = { pfad: pfad, name: f.name };
+        Object.keys(bstTonCache).forEach(function (k) { delete bstTonCache[k]; });
+        if (was === "intro") await welleLaden();
+      }
+      bstSpeichern(); bstAnzeigen(); bstMsg("");
+    } catch (e) { bstMsg("Das ging nicht: " + (e.message || e)); }
+  };
+  $("bstbreite").oninput = function () { bst.titel = Object.assign({}, bst.titel || {}, { breite: +this.value }); bstSpeichern(); titelProbe(2.5); };
+  $("bsthoehe").oninput = function () { bst.titel = Object.assign({}, bst.titel || {}, { hoehe: +this.value }); bstSpeichern(); titelProbe(2.5); };
+  $("mitintro").onchange = function () { G.mitIntro = this.checked; save(); };
+  $("mitoutro").onchange = function () { G.mitOutro = this.checked; save(); };
+  // Musik zum Anhoeren
+  var bstAc = null, bstQ = null;
+  $("bstspiel").onclick = async function () {
+    if (bstQ) { try { bstQ.stop(); } catch (e) {} bstQ = null; this.innerHTML = "&#9654; anh&ouml;ren"; return; }
+    if (!bst.intro) return;
+    if (!bstAc) bstAc = new (window.AudioContext || window.webkitAudioContext)();
+    bstAc.resume();
+    var t = await bausteinTon(bst.intro, bstAc.sampleRate), b = bstAc.createBuffer(t.ch, t.frames, bstAc.sampleRate);
+    for (var c = 0; c < t.ch; c++) b.getChannelData(c).set(t.planes[c]);
+    var q = bstAc.createBufferSource(); q.buffer = b; q.connect(bstAc.destination); q.start();
+    bstQ = q; var knopf = this; knopf.innerHTML = "&#9632; stopp";
+    q.onended = function () { if (bstQ === q) { bstQ = null; knopf.innerHTML = "&#9654; anh&ouml;ren"; } };
+  };
+  // den BÄHM einmal im grossen Bild ansehen (ohne Ton)
+  var probeUhr = 0;
+  function titelProbe(abSek) {
+    if (!titelEl) return;
+    cancelAnimationFrame(probeUhr);
+    var start = performance.now(), iz = { knall: 1, ende: 4.5 };
+    (function lauf() {
+      if (dead || vor) return;
+      var t = (abSek != null ? abSek : 0) + (performance.now() - start) / 1000;
+      var W = cv.width, H = cv.height, liste = aktiv();
+      if (liste.length) mitSicht({ items: liste, loop: G.loop }, function () { render(ctx, W, H, 0, false, false, false); });
+      introUeber(ctx, W, H, t, iz);
+      if (abSek == null && t < 5.8) probeUhr = requestAnimationFrame(lauf); else if (abSek != null) {} else draw();
+    })();
+  }
+  $("bstprobe").onclick = function () { titelProbe(null); };
+
+  /* Der schauerliche Moment: vorher lauert der Titel kaum sichtbar im Dunkeln,
+     beim BÄHM zuckt ein kalter Blitz, der Titel springt hervor, bebt kurz
+     und glueht blutrot nach. Nach dem Einsatz der Stimme verblasst er. */
+  function introUeber(c, W, H, t, iz) {
+    if (!iz || !titelEl) return;
+    var K = iz.knall, E = iz.ende;
+    if (t > E + 1.2) return;
+    var aus = t > E ? Math.max(0, 1 - (t - E) / 1.2) : 1, d = t - K;
+    var alpha, scale = 1, glow = 0, shx = 0, shy = 0, blitz = 0;
+    if (d < 0) alpha = 0.08 + 0.05 * (0.5 + 0.5 * Math.sin(t * 6.1) * Math.sin(t * 2.3));
+    else {
+      alpha = 1;
+      scale = 1 + 0.22 * Math.exp(-d * 5) * Math.cos(d * 16);
+      var bebe = Math.exp(-d * 8);
+      shx = Math.sin(d * 97) * W * 0.006 * bebe; shy = Math.cos(d * 83) * H * 0.006 * bebe;
+      glow = Math.exp(-d * 1.3);
+      blitz = 0.65 * Math.exp(-d * 14) + (d > 0.13 && d < 0.5 ? 0.35 * Math.exp(-(d - 0.13) * 15) : 0);
+    }
+    alpha *= aus;
+    var tt = bst.titel || {}, tw = W * (tt.breite || 70) / 100, th = tw * titelEl.naturalHeight / Math.max(1, titelEl.naturalWidth);
+    var cx = W / 2 + shx, cy = H * (tt.hoehe || 40) / 100 + shy;
+    c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
+    if (glow > 0.01) { c.shadowColor = "rgba(200,20,20," + (0.95 * glow * aus) + ")"; c.shadowBlur = W * 0.035 * glow + 6; }
+    c.globalAlpha = alpha;
+    c.translate(cx, cy); c.scale(scale, scale);
+    c.drawImage(titelEl, -tw / 2, -th / 2, tw, th);
+    c.restore();
+    if (blitz > 0.005) {
+      c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
+      c.globalCompositeOperation = "screen";
+      c.fillStyle = "rgba(205,218,255," + (blitz * aus) + ")"; c.fillRect(0, 0, W, H);
+      c.restore();
+    }
+  }
+
+  /* Alles, was man hoert, in einer Spur: Intro-Musik, die Stimme, Outro-Musik.
+     Ohne Intro setzt die Stimme wie bisher nach "Stimme setzt ein nach" sanft ein. */
+  async function mischQuelle(roh) {
+    var sr = roh.sr;
+    var intro = G.mitIntro && bst.intro ? await bausteinTon(bst.intro, sr) : null;
+    var outro = G.mitOutro && bst.outro ? await bausteinTon(bst.outro, sr) : null;
+    var introSek = intro ? intro.frames / sr : 0;
+    var knall = intro ? Math.min(introSek, bst.intro.knall != null ? bst.intro.knall : 0) : 0;
+    // die Stimme kommt nach dem BÄHM, frühestens gut eine Sekunde danach, spätestens 3 s vor Musikende
+    var start = intro ? Math.max(knall + 1.5, Math.min(introSek - 3, knall + 6)) : tonAbSek();
+    start = Math.max(0, start);
+    var sS = Math.round(start * sr), sE = sS + roh.frames;
+    var fI0 = sS, fI1 = intro ? Math.min(intro.frames, sS + Math.round(3 * sr)) : 0;   // Musik klingt unter der Stimme aus
+    var oS = outro ? sE + Math.round(0.4 * sr) : 0, oE = outro ? oS + outro.frames : 0, oEin = Math.round(0.3 * sr);
+    var ch = Math.min(2, Math.max(roh.ch, intro ? intro.ch : 1, outro ? outro.ch : 1));
+    var einF = intro ? Math.round(0.05 * sr) : Math.round(0.5 * sr);
+    var frames = Math.max(sE, oE);
+    return {
+      sr: sr, ch: ch, frames: frames, stimmeStart: start, stimmeEnde: sE / sr,
+      intro: intro ? { knall: knall, ende: start } : null,
+      lies: async function (a, b) {
+        var n = b - a, planes = [];
+        for (var c = 0; c < ch; c++) planes.push(new Float32Array(n));
+        if (b > sS && a < sE) {
+          var s0 = Math.max(a, sS), s1 = Math.min(b, sE), teil = await roh.lies(s0 - sS, s1 - sS);
+          for (var c1 = 0; c1 < ch; c1++) {
+            var src = teil[Math.min(c1, teil.length - 1)], zi = planes[c1], ab0 = s0 - a;
+            for (var i = 0; i < src.length && ab0 + i < n; i++) { var fp = s0 - sS + i; zi[ab0 + i] += src[i] * (fp < einF ? fp / einF : 1); }
+          }
+        }
+        if (intro && a < intro.frames) {
+          var e1 = Math.min(b, intro.frames);
+          for (var c2 = 0; c2 < ch; c2++) {
+            var ip = intro.planes[Math.min(c2, intro.ch - 1)], z2 = planes[c2];
+            for (var k = a; k < e1; k++) {
+              var g = k < fI0 ? 1 : (fI1 > fI0 ? Math.max(0, 1 - (k - fI0) / (fI1 - fI0)) : 0);
+              if (g > 0) z2[k - a] += ip[k] * g * 0.9;
+            }
+          }
+        }
+        if (outro && b > oS && a < oE) {
+          var o0 = Math.max(a, oS), o1 = Math.min(b, oE);
+          for (var c3 = 0; c3 < ch; c3++) {
+            var op = outro.planes[Math.min(c3, outro.ch - 1)], z3 = planes[c3];
+            for (var k2 = o0; k2 < o1; k2++) { var q = k2 - oS; z3[k2 - a] += op[q] * 0.9 * (q < oEin ? q / oEin : 1); }
+          }
+        }
+        for (var c4 = 0; c4 < ch; c4++) { var z4 = planes[c4]; for (var j = 0; j < n; j++) { var v = z4[j]; if (v > 0.99) z4[j] = 0.99; else if (v < -0.99) z4[j] = -0.99; } }
+        return planes;
+      }
+    };
+  }
+
+  // beim Start: Intro/Outro und Titel holen
+  hilfe.bausteineHolen().then(async function (b) {
+    bst = b || {};
+    if (bst.titel && bst.titel.pfad) {
+      try { var bl = await hilfe.holen(bst.titel.pfad); var u2 = URL.createObjectURL(bl); urls.push(u2); titelEl = await bildAus(u2); } catch (e) {}
+    }
+    bstAnzeigen(); welleLaden();
+  }).catch(function () {});
+
   /* ---------- Zeitplan fuer Filme mit Ton ----------
      normal: alle Bilder laufen im Kreis.
      "rahmen": Bild 1 nur am Anfang, dazwischen laufen die mittleren Bilder
      im Kreis, und genau zum Ende der Stimme kommt das letzte Bild an und bleibt stehen.
      Liefert fuer jedes Bild g (auch mit Kommastellen) die Ansicht und die Stelle. */
-  function zeitplan(stimmeSek, fps) {
-    var items = aktiv();   // nur eingeschaltete Bilder (bewusst verdeckt)
+  function zeitplan(stimmeSek, fps, haltSek, ueberSek) {
+    var items = aktiv();   // nur eingeschaltete Bilder
     var abJa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
-    var haltSek = Math.max(1, abJa ? G.abDauer : nachSek());
+    var nachHalt = Math.max(1, abJa ? G.abDauer : nachSek());
+    var H0 = Math.max(0, Math.round((haltSek || 0) * fps));        // so lange steht Bild 1 still (Intro)
+    var Ue = Math.ceil((ueberSek || 0) * fps);                      // so lange liegt noch etwas darueber (Titel)
+    var dauer = Math.max(1, stimmeSek - (haltSek || 0));
     var n = items.length;
     if (G.rahmen && n >= 4) {
       var M = n - 2;
-      var k = Math.max(1, Math.round((stimmeSek / G.sec - 1) / M));
-      var secV = stimmeSek / (k * M + 1);
+      var k = Math.max(1, Math.round((dauer / G.sec - 1) / M));
+      var secV = dauer / (k * M + 1);
       var loopF = Math.max(2, Math.round(M * secV * fps)), segF = loopF / M;
-      var A = Math.max(1, Math.round(segF));
+      var A = H0 + Math.max(1, Math.round(segF));
       var midEnde = A + (k * M - 1) * segF, schluss = midEnde + segF;
       var anf = { items: [items[0], items[1]], loop: false };
       var mitte = { items: items.slice(1, n - 1), loop: true };
       var ende = { items: [items[n - 2], items[n - 1]], loop: false };
       return {
-        A: A, loopF: loopF, periodischBis: Math.floor(midEnde),
+        A: Math.max(A, H0 + Ue), loopF: loopF, periodischBis: Math.floor(midEnde),
         an: function (g) {
-          if (g < A) return { sicht: anf, u: g / A };
+          if (g < H0) return { sicht: anf, u: 0 };
+          if (g < A) return { sicht: anf, u: (g - H0) / (A - H0) };
           if (g < midEnde) return { sicht: mitte, u: ((g - A) / segF) % M };
           if (g < schluss) return { sicht: ende, u: (g - midEnde) / segF };
           // das letzte Bild steht, zoomt aber ganz langsam weiter hinein, damit es lebendig bleibt
           // (sanft anlaufend, bis zum Ausblenden insgesamt etwa 6 % naeher)
-          var x = Math.min(1.2, (g - schluss) / fps / haltSek);
+          var x = Math.min(1.2, (g - schluss) / fps / nachHalt);
           return { sicht: ende, u: 1, extra: 1 + 0.06 * (1.3 * x * x / (x + 0.3)) };
         }
       };
     }
     var S = n, fpl = Math.max(2, Math.round(S * G.sec * fps)), alle = { items: items, loop: true };
-    return { A: 0, loopF: fpl, periodischBis: Infinity, an: function (g) { return { sicht: alle, u: (g % fpl) / fpl * S }; } };
+    return {
+      A: H0 + Ue, loopF: fpl, periodischBis: Infinity,
+      an: function (g) { return g < H0 ? { sicht: alle, u: 0 } : { sicht: alle, u: ((g - H0) % fpl) / fpl * S }; }
+    };
   }
   var driftC = document.createElement("canvas"), driftX = driftC.getContext("2d");
   function planZeichnen(c, W, H, pa, big) {
@@ -1470,12 +1745,15 @@ function zoomloopStarten(root, film, hilfe) {
         vorPufferDatei = ton.file;
       }
       if (dead) return;
-      var q = vorAc.createBufferSource(); q.buffer = vorPuffer;
-      var gg = vorAc.createGain(); q.connect(gg); gg.connect(vorAc.destination);
-      var t0 = vorAc.currentTime + 0.05, ein = t0 + tonAbSek();
-      gg.gain.setValueAtTime(0, ein); gg.gain.linearRampToValueAtTime(1, ein + 0.5);
-      q.start(ein);
-      vor = { quelle: q, t0: t0, T: tonAbSek() + vorPuffer.duration, altLoop: G.loop };
+      // dieselbe Mischung wie beim Export: Intro, Stimme, Outro
+      var pb = vorPuffer, roh = { sr: pb.sampleRate, ch: Math.min(2, pb.numberOfChannels), frames: pb.length,
+        lies: async function (a, b) { var r = []; for (var c = 0; c < Math.min(2, pb.numberOfChannels); c++) r.push(pb.getChannelData(c).subarray(a, b)); return r; } };
+      var mix = await mischQuelle(roh), mb = vorAc.createBuffer(mix.ch, mix.frames, mix.sr), alles = await mix.lies(0, mix.frames);
+      for (var mc = 0; mc < mix.ch; mc++) mb.getChannelData(mc).set(alles[mc]);
+      var q = vorAc.createBufferSource(); q.buffer = mb; q.connect(vorAc.destination);
+      var t0 = vorAc.currentTime + 0.05;
+      q.start(t0);
+      vor = { quelle: q, t0: t0, T: mix.stimmeEnde, iz: mix.intro, bisTon: mix.frames / mix.sr, altLoop: G.loop };
       G.loop = true;   // wie beim Export: mit Ton laeuft der Film endlos
       knopf.innerHTML = "&#9632; Vorschau beenden";
       requestAnimationFrame(vorLauf);
@@ -1488,12 +1766,13 @@ function zoomloopStarten(root, film, hilfe) {
     if (!vor || dead) return;
     var T = vor.T, t = Math.max(0, vorAc.currentTime - vor.t0);
     var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
-    var gesamt = T + (abDa ? G.abDauer : nachSek());
+    var gesamt = Math.max(T + (abDa ? G.abDauer : nachSek()), (vor.bisTon || 0) + 0.5);
     if (T && t >= gesamt) { vorStop(); return; }
-    if (!vor.plan) vor.plan = zeitplan(T, 60);   // wie beim Export, gemessen in 1/60 s
+    if (!vor.plan) vor.plan = zeitplan(T, 60, vor.iz ? vor.iz.ende : 0, vor.iz ? vor.iz.ende + 1.3 : 0);
     var pa = vor.plan.an(t * 60);
     var W = cv.width, H = cv.height;
     planZeichnen(ctx, W, H, pa, false);
+    if (vor.iz) introUeber(ctx, W, H, t, vor.iz);
     if (abDa && t >= T) abspannUeber(ctx, W, H, t - T, G.abDauer);
     if (T && t > gesamt - 2) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1583,30 +1862,8 @@ function zoomloopStarten(root, film, hilfe) {
 
     try {
       var t = await tonOeffnen(ton.file);
-      // die Stimme setzt erst nach ein paar Sekunden ein und wird sanft eingeblendet
-      (function () {
-        var roh = t, vorS = Math.round(tonAbSek() * roh.sr), einF = Math.round(0.5 * roh.sr);
-        if (!vorS) return;
-        t = {
-          sr: roh.sr, ch: roh.ch, frames: roh.frames + vorS,
-          lies: async function (a, b) {
-            var n = b - a, planes = [];
-            for (var c = 0; c < roh.ch; c++) planes.push(new Float32Array(n));
-            if (b > vorS) {
-              var s0 = Math.max(a, vorS), teil = await roh.lies(s0 - vorS, b - vorS);
-              for (var c2 = 0; c2 < roh.ch; c2++) {
-                var src = teil[Math.min(c2, teil.length - 1)], ziel2 = planes[c2], ab0 = s0 - a;
-                for (var i = 0; i < src.length && ab0 + i < n; i++) {
-                  var fp = s0 - vorS + i;   // Position in der Aufnahme
-                  ziel2[ab0 + i] = src[i] * (fp < einF ? fp / einF : 1);
-                }
-              }
-            }
-            return planes;
-          }
-        };
-      })();
-      var sr = t.sr, aFrames = t.frames, T = aFrames / sr;
+      t = await mischQuelle(t);   // Intro-Musik, Stimme, Outro-Musik in einer Spur
+      var sr = t.sr, aFrames = t.frames, T = t.stimmeEnde, iz = t.intro;
       if (T < 1) throw new Error("Der Ton ist zu kurz.");
       // rss.com (Max) nimmt Videos bis 5 GB: die Datenrate so waehlen, dass
       // der ganze Film unter 4,6 GB bleibt. Bei ruhigen Zoomfahrten reicht das locker.
@@ -1671,13 +1928,14 @@ function zoomloopStarten(root, film, hilfe) {
       }
 
       // Bild-Kodierer
-      var plan = zeitplan(T, fps), A = plan.A, framesPerLoop = plan.loopF;
+      var plan = zeitplan(T, fps, iz ? iz.ende : 0, iz ? iz.ende + 1.3 : 0), A = plan.A, framesPerLoop = plan.loopF;
       // nach der Stimme: entweder der Abspann oder noch ein paar Sekunden stehen lassen; dann ausblenden
       var stimmeF = Math.ceil(T * fps);
       var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
       var abFrames = abDa ? Math.round(G.abDauer * fps) : 0;
       var totalV = stimmeF;
-      var total = stimmeF + (abFrames || Math.round(nachSek() * fps)), fadeV = Math.min(total, 2 * fps);
+      var total = Math.max(stimmeF + (abFrames || Math.round(nachSek() * fps)), Math.ceil(aFrames / sr * fps) + Math.round(0.5 * fps));
+      var fadeV = Math.min(total, 2 * fps);
       // (eigener Name: "ziel" ist schon die Datei, in die geschrieben wird)
       var endeBild = Math.min(plan.periodischBis, abFrames ? totalV : Infinity, total - fadeV);
       var rel = Math.max(0, endeBild - A), c0 = Math.floor(rel / framesPerLoop), r0 = rel - c0 * framesPerLoop;
@@ -1717,6 +1975,7 @@ function zoomloopStarten(root, film, hilfe) {
 
       async function bildRechnen(g, schluessel) {
         planZeichnen(ox, W, H, plan.an(g), true);
+        if (iz) introUeber(ox, W, H, g / fps, iz);
         if (abFrames && g >= totalV) abspannUeber(ox, W, H, (g - totalV) / fps, G.abDauer);
         if (g >= total - fadeV) {
           ox.setTransform(1, 0, 0, 1, 0, 0);
@@ -3445,6 +3704,12 @@ function StudioStil() {
 .zl-vorlage{margin:6px 0 4px; border:1px solid var(--st-linie); border-radius:3px; padding:4px 8px}
 .zl-vorlage summary{cursor:pointer; color:var(--st-gold); font-size:12px; padding:4px 0}
 .zl-tonab input{width:58px}
+.zl-bst{border:1px solid var(--st-linie); border-radius:4px; padding:8px; margin:6px 0}
+.zl-bst[hidden], #zl_bstzeile[hidden]{display:none}
+.zl-bstteil{margin-bottom:10px}
+.zl-bstteil b{display:block; font-weight:normal; color:var(--st-gold); font-size:12px; letter-spacing:.06em; margin-bottom:4px}
+.zl-bstwelle{width:100%; height:60px; border:1px solid var(--st-linie); border-radius:3px; cursor:crosshair; display:block; margin:4px 0}
+.zl-bsttitelbild{max-height:40px; max-width:140px; background:repeating-conic-gradient(#222 0 25%, #333 0 50%) 0 0/12px 12px}
 .zl-th{position:relative}
 .zl-th.aus canvas{opacity:.28; filter:grayscale(1)}
 .zl button.zl-an{position:absolute; left:4px; bottom:4px; z-index:2; width:22px; height:22px; padding:0; border-radius:50%; font-size:12px; line-height:20px; background:rgba(0,0,0,.6)}
