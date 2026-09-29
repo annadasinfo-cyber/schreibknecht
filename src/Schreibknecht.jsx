@@ -605,9 +605,68 @@ function Kerze({ seite, aus }) {
 }
 
 // ---------- Anmeldung ----------
+// Der Link aus der "passwort vergessen"-mail bringt den schluessel in der
+// adresse mit (#access_token=...&type=recovery). Den lesen wir beim start.
+function wiederherstellungLesen() {
+  try {
+    const h = new URLSearchParams((window.location.hash || "").replace(/^#/, ""));
+    if (h.get("type") !== "recovery" || !h.get("access_token")) return null;
+    return { access_token: h.get("access_token"), refresh_token: h.get("refresh_token") || "",
+      expires_at: Math.floor(Date.now() / 1000) + (+h.get("expires_in") || 3600) };
+  } catch { return null; }
+}
+
+function NeuesPasswort({ schluessel, fertig }) {
+  const [wort, setWort] = useState(""), [wort2, setWort2] = useState("");
+  const [fehler, setFehler] = useState(""), [laeuft, setLaeuft] = useState(false);
+  const setzen = async () => {
+    if (wort.length < 6) { setFehler("mindestens 6 zeichen"); return; }
+    if (wort !== wort2) { setFehler("die beiden passwörter sind nicht gleich"); return; }
+    setLaeuft(true); setFehler("");
+    try {
+      const r = await fetch(URL_DB + "/auth/v1/user", {
+        method: "PUT",
+        headers: { apikey: KEY_DB, Authorization: "Bearer " + schluessel.access_token, "Content-Type": "application/json" },
+        body: JSON.stringify({ password: wort }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.msg || d.error_description || d.message || ("status " + r.status));
+      fertig({ ...schluessel, user: d });
+    } catch (e) { setFehler(String(e.message || e)); }
+    setLaeuft(false);
+  };
+  return (
+    <div className="pforte">
+      <div className="pfortenkasten">
+        <p className="pfortentext">ein neues passwort für die herrin.</p>
+        <input className="ti" type="password" value={wort} placeholder="neues passwort" autoComplete="new-password"
+          onChange={(e) => setWort(e.target.value)} />
+        <input className="ti" type="password" value={wort2} placeholder="nochmal" autoComplete="new-password"
+          onChange={(e) => setWort2(e.target.value)} onKeyDown={(e) => e.key === "Enter" && setzen()} />
+        <button className="btn gross" disabled={laeuft || !wort || !wort2} onClick={setzen}>{laeuft ? "…" : "passwort setzen"}</button>
+        {fehler && <p className="pfortenfehler">{fehler}</p>}
+      </div>
+    </div>
+  );
+}
+
 function Anmeldung({ anmelden, fehler, laeuft }) {
   const [mail, setMail] = useState("");
   const [wort, setWort] = useState("");
+  const [hinweis, setHinweis] = useState("");
+  const vergessen = async () => {
+    if (!mail.trim()) { setHinweis("erst oben deine e-mail eintragen"); return; }
+    setHinweis("…");
+    try {
+      const zurueck = window.location.origin + window.location.pathname;
+      const r = await fetch(URL_DB + "/auth/v1/recover?redirect_to=" + encodeURIComponent(zurueck), {
+        method: "POST", headers: { apikey: KEY_DB, "Content-Type": "application/json" },
+        body: JSON.stringify({ email: mail.trim() }),
+      });
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.msg || d.message || ("status " + r.status)); }
+      setHinweis("die mail ist unterwegs. öffne den link darin in diesem browser.");
+    } catch (e) { setHinweis("das ging nicht: " + (e.message || e)); }
+  };
   return (
     <div className="pforte">
       <div className="pfortenkasten">
@@ -620,6 +679,8 @@ function Anmeldung({ anmelden, fehler, laeuft }) {
         <button className="btn gross" disabled={laeuft || !mail || !wort}
           onClick={() => anmelden(mail, wort)}>{laeuft ? "…" : "eintreten"}</button>
         {fehler && <p className="pfortenfehler">{fehler}</p>}
+        <button className="klein pfortenvergessen" onClick={vergessen}>passwort vergessen?</button>
+        {hinweis && <p className="pfortentext" style={{ fontSize: 13 }}>{hinweis}</p>}
       </div>
     </div>
   );
@@ -2964,6 +3025,7 @@ const SPRUECHE = [
 // ---------- App ----------
 export default function Schreibknecht() {
   const [sitzung, setSitzung] = useState(sitzungLesen);
+  const [wiederher, setWiederher] = useState(wiederherstellungLesen);
   const [fehler, setFehler] = useState("");
   const [laeuft, setLaeuft] = useState(false);
   const [projekte, setProjekte] = useState([]);
@@ -3824,7 +3886,12 @@ fortfahren?`
       </header>
 
       <main className="tisch">
-        {!sitzung
+        {wiederher
+          ? <NeuesPasswort schluessel={wiederher} fertig={(d) => {
+              try { history.replaceState(null, "", window.location.pathname); } catch {}
+              sitzungSchreiben(d); sitzungRef.current = d; setSitzung(d); setGeprueft(true); setWiederher(null);
+            }} />
+          : !sitzung
           ? <Anmeldung anmelden={anmelden} fehler={fehler} laeuft={laeuft} />
           : !geladen
             ? <p className="leerwort">wird geholt …</p>
@@ -4127,6 +4194,7 @@ function Stil() {
   font-size:13px; color:var(--nebel); text-align:center;
 }
 .pfortenfehler{margin:2px 0 0; font-size:11.5px; color:#e08070; text-align:center}
+.pfortenvergessen{align-self:center; margin-top:6px; background:none !important; border:0 !important; text-decoration:underline; opacity:.7; cursor:pointer}
 .btn.gross{padding:11px; font-size:13px; letter-spacing:.12em}
 /* was noch nicht abgeschickt werden konnte */
 .warteleiste{
