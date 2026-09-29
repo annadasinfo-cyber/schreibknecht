@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 29.9. · Rahmen</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 29.9. · Standbild</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -578,6 +578,7 @@ const ZL_HTML = `
           <div class="zl-bstzeiten">
             <label>Bilder laufen los bei</label><input id="zl_bstzoom" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
             <label>Musik blendet aus ab</label><input id="zl_bstaus" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
+            <label>Standbild vorweg</label><input id="zl_bststand" type="text" inputmode="decimal" placeholder="0,5"><span class="zl-klein">s</span>
             <label>Titel bleibt stehen bis</label><input id="zl_bsttitelbis" type="text" inputmode="decimal" placeholder="auto"><span class="zl-klein">s</span>
           </div>
           <div class="zl-klein zl-bstlegende"><i style="background:#e0453a"></i>BÄHM <i style="background:#e0b44a"></i>Bilder los <i style="background:#8a8a8a"></i>Ausblenden <i style="background:#6fb36f"></i>Stimme <i style="background:#d8c9a8"></i>Titel bis</div>
@@ -1460,6 +1461,7 @@ function zoomloopStarten(root, film, hilfe) {
     $("bstknall").textContent = bst.intro ? (kn.length ? "BÄHM bei " + kn.map(function (t) { return t.toFixed(1).replace(".", ",") + " s"; }).join(" \u00b7 ") : "noch kein BÄHM markiert") : "";
     var it = bst.intro || {}, zp = introZeiten(welle ? welle.dauer : 0);
     function feld(id, eigen, auto) { var e = $(id); if (document.activeElement !== e) e.value = eigen != null && eigen !== "" ? String(eigen).replace(".", ",") : ""; e.placeholder = "auto: " + auto.toFixed(1).replace(".", ","); }
+    var sf = $("bststand"); if (document.activeElement !== sf) sf.value = it.stand != null ? String(it.stand).replace(".", ",") : "";
     feld("bstzoom", it.zoom, zp.zoom); feld("bstaus", it.aus, zp.aus); feld("bsttitelbis", it.titelBis, zp.titelBis);
     var tb = $("bsttitelbild");
     if (titelEl) { tb.src = titelEl.src; tb.hidden = false; } else tb.hidden = true;
@@ -1521,8 +1523,8 @@ function zoomloopStarten(root, film, hilfe) {
     delete bst.intro.knall;
     bstSpeichern(); bstAnzeigen();
   };
-  ["bstzoom", "bstaus", "bsttitelbis"].forEach(function (id) {
-    var schluessel = { bstzoom: "zoom", bstaus: "aus", bsttitelbis: "titelBis" }[id];
+  ["bstzoom", "bstaus", "bsttitelbis", "bststand"].forEach(function (id) {
+    var schluessel = { bstzoom: "zoom", bstaus: "aus", bsttitelbis: "titelBis", bststand: "stand" }[id];
     $(id).addEventListener("change", function () {
       if (!bst.intro) return;
       var v = zahl(this.value);
@@ -1596,6 +1598,13 @@ function zoomloopStarten(root, film, hilfe) {
     if (!iz || !titelEl) return;
     var kn = iz.knalle || [], E = iz.ende;
     if (t > E + 1.2) return;
+    if (iz.still && t < iz.still) {   // Standbild: Titel klar und ruhig, kein Blitz
+      var tt0 = bst.titel || {}, tw0 = W * (tt0.breite || 70) / 100, th0 = tw0 * titelEl.naturalHeight / Math.max(1, titelEl.naturalWidth);
+      c.save(); c.setTransform(1, 0, 0, 1, 0, 0);
+      c.shadowColor = "rgba(200,20,20,.55)"; c.shadowBlur = W * 0.012;
+      c.drawImage(titelEl, W / 2 - tw0 / 2, H * (tt0.hoehe || 40) / 100 - th0 / 2, tw0, th0);
+      c.restore(); return;
+    }
     var K = null; for (var qi = 0; qi < kn.length; qi++) if (kn[qi] <= t) K = kn[qi];
     var aus = t > E ? Math.max(0, 1 - (t - E) / 1.2) : 1, d = K == null ? -1 : t - K;
     var alpha, scale = 1, glow = 0, shx = 0, shy = 0, blitz = 0;
@@ -1630,6 +1639,7 @@ function zoomloopStarten(root, film, hilfe) {
     if (!bst.intro.knalle && bst.intro.knall != null) bst.intro.knalle = [bst.intro.knall];
     return (bst.intro.knalle || []).slice().sort(function (a, b) { return a - b; });
   }
+  function standSek() { var v = zahl(bst.intro && bst.intro.stand); return v == null ? 0.5 : Math.max(0, Math.min(5, v)); }
   function zahl(v) { var x = parseFloat(String(v == null ? "" : v).replace(",", ".")); return isFinite(x) ? x : null; }
   // wann was im Intro passiert — eigene Angaben gehen vor, sonst sinnvolle Vorgaben
   function introZeiten(musikSek) {
@@ -1650,10 +1660,13 @@ function zoomloopStarten(root, film, hilfe) {
     var intro = G.mitIntro && bst.intro ? await bausteinTon(bst.intro, sr) : null;
     var outro = G.mitOutro && bst.outro ? await bausteinTon(bst.outro, sr) : null;
     var zp = introZeiten(intro ? intro.frames / sr : 0);
-    var start = intro ? zp.stimme : tonAbSek();
+    // Standbild vorweg (sauberes Vorschaubild): so lange ist alles still, dann beginnt die Musik
+    var V = intro ? standSek() : 0, VS = Math.round(V * sr);
+    var start = intro ? zp.stimme + V : tonAbSek();
     start = Math.max(0, start);
     var sS = Math.round(start * sr), sE = sS + roh.frames;
     // Musik: ab "blendet aus ab" bis zum Einsatz der Stimme ausblenden (ohne Angabe: 3 s unter der Stimme)
+    // (in Musik-Zeit; die Musik selbst beginnt erst nach dem Standbild bei VS)
     var fI0 = intro ? Math.round(zp.aus * sr) : 0, fI1 = intro ? Math.min(intro.frames, Math.round(zp.ausEnde * sr)) : 0;
     // Outro: nur so lange wie der Abspann (ohne Abspann: "nach der Stimme noch ... s"), am Ende sanft ausgeblendet
     var abJa2 = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
@@ -1665,7 +1678,7 @@ function zoomloopStarten(root, film, hilfe) {
     var frames = Math.max(sE, oE);
     return {
       sr: sr, ch: ch, frames: frames, stimmeStart: start, stimmeEnde: sE / sr,
-      intro: intro ? { knalle: zp.knalle, ende: zp.titelBis, zoom: zp.zoom } : null,
+      intro: intro ? { knalle: zp.knalle.map(function (k) { return k + V; }), ende: zp.titelBis + V, zoom: zp.zoom + V, still: V } : null,
       lies: async function (a, b) {
         var n = b - a, planes = [];
         for (var c = 0; c < ch; c++) planes.push(new Float32Array(n));
@@ -1676,13 +1689,14 @@ function zoomloopStarten(root, film, hilfe) {
             for (var i = 0; i < src.length && ab0 + i < n; i++) { var fp = s0 - sS + i; zi[ab0 + i] += src[i] * (fp < einF ? fp / einF : 1); }
           }
         }
-        if (intro && a < intro.frames) {
-          var e1 = Math.min(b, intro.frames);
+        if (intro && a < VS + intro.frames && b > VS) {
+          var i0 = Math.max(a, VS), e1 = Math.min(b, VS + intro.frames);
           for (var c2 = 0; c2 < ch; c2++) {
             var ip = intro.planes[Math.min(c2, intro.ch - 1)], z2 = planes[c2];
-            for (var k = a; k < e1; k++) {
+            for (var o = i0; o < e1; o++) {
+              var k = o - VS;   // Stelle in der Musik
               var g = k < fI0 ? 1 : (fI1 > fI0 ? Math.max(0, 1 - (k - fI0) / (fI1 - fI0)) : 0);
-              if (g > 0) z2[k - a] += ip[k] * g * 0.9;
+              if (g > 0) z2[o - a] += ip[k] * g * 0.9;
             }
           }
         }
