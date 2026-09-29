@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 29.9. · Standbild</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 29.9. · Farbe</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1370,7 +1370,7 @@ function zoomloopStarten(root, film, hilfe) {
       var muxer = new window.Mp4Muxer.Muxer({ target: target, video: { codec: "avc", width: W, height: H, frameRate: fps }, fastStart: stream ? false : "in-memory" });
       var oc = document.createElement("canvas"); oc.width = W; oc.height = H;
       var ox = oc.getContext("2d", { alpha: false });
-      var enc = new VideoEncoder({ output: function (c, m) { muxer.addVideoChunk(c, m); }, error: function (e) { err = e; } });
+      var enc = new VideoEncoder({ output: function (c, m) { muxer.addVideoChunk(c, farbeRichtig(m)); }, error: function (e) { err = e; } });
       var cfg = { codec: (W * H > 1920 * 1080 ? "avc1.640033" : "avc1.64002A"), width: W, height: H, bitrate: rate, framerate: fps };
       var sup = await VideoEncoder.isConfigSupported(cfg);
       if (!sup.supported) throw new Error("Dieses Format kann dein Browser nicht als MP4 kodieren.");
@@ -2070,7 +2070,7 @@ function zoomloopStarten(root, film, hilfe) {
             else { st.off = lagerOff; lagerOff += buf.length; lagerSchreib = lagerSchreib.then(function () { return lagerW.write(buf); }); }
             stuecke.push(st);
           }
-          muxer.addVideoChunk(c, m);
+          muxer.addVideoChunk(c, farbeRichtig(m));
         },
         error: function (e) { err = e; }
       });
@@ -2595,6 +2595,17 @@ function auspacken(teile) {
    ADTS-Kopf und ohne die kleine Beschreibung (AudioSpecificConfig), die ein
    MP4 braucht. Dann spielt QuickTime die Datei gar nicht ab. Hier wird der
    Kopf entfernt und die Beschreibung notfalls selbst gebaut. */
+
+/* Safari rechnet das Bild in den "TV-Bereich" um (Schwarz = 16, Weiss = 235),
+   beschriftet es aber als "voller Bereich" (0-255). Abspielprogramme zeigen
+   Schwarz dann als Dunkelgrau: der Film wirkt milchig. Hier wird die
+   Beschriftung richtiggestellt. */
+function farbeRichtig(meta) {
+  if (!meta || !meta.decoderConfig) return meta;
+  var dc = Object.assign({}, meta.decoderConfig);
+  dc.colorSpace = { primaries: "bt709", transfer: "bt709", matrix: "bt709", fullRange: false };
+  return Object.assign({}, meta, { decoderConfig: dc });
+}
 function aacWeiche(sr, ch, hinzu, fehler) {
   var FREQ = [96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350];
   var fi = FREQ.indexOf(sr); if (fi < 0) fi = 3;
