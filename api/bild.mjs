@@ -129,30 +129,56 @@ export default async function handler(req, res) {
         let j = null; try { j = await r.json(); } catch (e) { j = {}; }
         return { r, j };
       };
+      const fehlerText = (j) => JSON.stringify((j && j.error) || j || {});
+      // Reine Bildmodelle (z. B. Qwen Image, GPT Image) laufen nur ueber die eigene Bild-Schnittstelle
+      const nurBildSchnittstelle = (j) => /api\/v1\/images|images endpoint/i.test(fehlerText(j));
       let { r, j } = await senden();
-      if (!r.ok || (j.error && !j.choices)) {
+      let erstes = null, kosten = null;
+      if (!nurBildSchnittstelle(j) && (!r.ok || (j.error && !j.choices))) {
         delete anfrage.image_config.image_size;
         ({ r, j } = await senden());
       }
-      if (!r.ok || (j.error && !j.choices)) {
+      if (!nurBildSchnittstelle(j) && (!r.ok || (j.error && !j.choices))) {
         delete anfrage.image_config;
         ({ r, j } = await senden());
       }
-      if (!r.ok || (j.error && !j.choices)) {
-        const e = j.error || {};
-        const m = e.metadata || {};
-        const genauer = (m.raw || m.provider_name) ? " (" + String(m.provider_name || "") + ": " + String(m.raw || "").slice(0, 300) + ")" : "";
-        res.status(r.ok ? 502 : r.status).json({ fehler: (e.message || "Das Bild ging nicht") + genauer + " [Modell: " + body.modell + "]" });
-        return;
+      if (nurBildSchnittstelle(j)) {
+        const bildAnfrage = { model: body.modell, prompt: text, aspect_ratio: body.format || "16:9", resolution: "2K" };
+        if (bildTeile.length) bildAnfrage.input_references = bildTeile;
+        const bildSenden = async () => {
+          const r2 = await fetch(`${OR}/images`, { method: "POST", headers: kopf, body: JSON.stringify(bildAnfrage) });
+          let j2 = null; try { j2 = await r2.json(); } catch (e) { j2 = {}; }
+          return { r: r2, j: j2 };
+        };
+        ({ r, j } = await bildSenden());
+        if (!r.ok) { delete bildAnfrage.resolution; ({ r, j } = await bildSenden()); }
+        if (!r.ok) { delete bildAnfrage.aspect_ratio; ({ r, j } = await bildSenden()); }
+        if (!r.ok) {
+          const e = j.error || {};
+          res.status(r.status || 502).json({ fehler: (e.message || "Das Bild ging nicht") + " [Modell: " + body.modell + "]" });
+          return;
+        }
+        const d = (j.data || [])[0];
+        if (!d || !d.b64_json) { res.status(502).json({ fehler: "Das Modell hat kein Bild geschickt. [Modell: " + body.modell + "]" }); return; }
+        erstes = "data:" + (d.media_type || "image/png") + ";base64," + d.b64_json;
+        kosten = (j.usage && j.usage.cost) || null;
+      } else {
+        if (!r.ok || (j.error && !j.choices)) {
+          const e = j.error || {};
+          const m = e.metadata || {};
+          const genauer = (m.raw || m.provider_name) ? " (" + String(m.provider_name || "") + ": " + String(m.raw || "").slice(0, 300) + ")" : "";
+          res.status(r.ok ? 502 : r.status).json({ fehler: (e.message || "Das Bild ging nicht") + genauer + " [Modell: " + body.modell + "]" });
+          return;
+        }
+        const nachricht = j.choices && j.choices[0] && j.choices[0].message;
+        const bilder = (nachricht && nachricht.images) || [];
+        erstes = bilder[0] && ((bilder[0].image_url && bilder[0].image_url.url) || (bilder[0].imageUrl && bilder[0].imageUrl.url));
+        if (!erstes) {
+          res.status(502).json({ fehler: "Das Modell hat kein Bild geschickt." + (nachricht && nachricht.content ? " Es schrieb: " + String(nachricht.content).slice(0, 300) : "") });
+          return;
+        }
+        kosten = (j.usage && j.usage.cost) || null;
       }
-      const nachricht = j.choices && j.choices[0] && j.choices[0].message;
-      const bilder = (nachricht && nachricht.images) || [];
-      const erstes = bilder[0] && ((bilder[0].image_url && bilder[0].image_url.url) || (bilder[0].imageUrl && bilder[0].imageUrl.url));
-      if (!erstes) {
-        res.status(502).json({ fehler: "Das Modell hat kein Bild geschickt." + (nachricht && nachricht.content ? " Es schrieb: " + String(nachricht.content).slice(0, 300) : "") });
-        return;
-      }
-      const kosten = (j.usage && j.usage.cost) || null;
       const pfad = await ablegen(req.headers.authorization, nutzer, erstes);
       if (pfad) { res.status(200).json({ pfad, kosten }); return; }
       if (erstes.length < 4000000) { res.status(200).json({ bild: erstes, kosten }); return; }
