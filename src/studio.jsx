@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 29.9. · Farbe</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 1.10. · Mikro</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2486,6 +2486,8 @@ const AU_HTML = `
       <select id="au_mode"><option value="voice">Text folgt meiner Stimme</option><option value="tempo">Gleichm&auml;&szlig;iges Tempo</option><option value="selbst">Selbst scrollen (Trackpad, Mausrad, Pfeiltasten)</option></select>
       <label class="au-chk"><input type="checkbox" id="au_mirror"> Spiegeln (f&uuml;r Glasaufsatz)</label>
       <label class="au-chk"><input type="checkbox" id="au_ns"> Rauschfilter vom Browser</label>
+      <label class="au-klein">Mikrofon</label>
+      <select id="au_mik"><option value="">so wie im Mac eingestellt</option></select>
     </div>
   </div>
   <div id="au_stage" class="au-stage">
@@ -2541,7 +2543,7 @@ const AU_HTML = `
     <button id="au_rec" class="au-rec">&#9679; Aufnahme</button>
     <span id="au_status" class="au-status"></span>
     <button id="au_oeffnen" title="eine Aufnahme &ouml;ffnen">&#128194;</button>
-    <input id="au_datei" type="file" accept="audio/*,.wav" hidden>
+    <input id="au_datei" type="file" accept="audio/*,.wav" multiple hidden>
   </div>
 </div>`;
 
@@ -2884,7 +2886,16 @@ function aufnahmeStarten(root, hilfe) {
     var m = $("meter"); m.style.width = w + "%"; m.classList.toggle("hot", db > -3);
   }
   async function openMic() {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: S.ns, channelCount: 1 } });
+    var wunsch = { echoCancellation: false, autoGainControl: false, noiseSuppression: S.ns, channelCount: 1 };
+    if (S.mik) wunsch.deviceId = { exact: S.mik };
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: wunsch }); }
+    catch (e) {
+      if (!S.mik) throw e;
+      delete wunsch.deviceId;   // das gewaehlte Mikro ist nicht da -> das vom Mac nehmen
+      stream = await navigator.mediaDevices.getUserMedia({ audio: wunsch });
+      status("Das gew\u00e4hlte Mikrofon ist nicht angeschlossen \u2013 ich nehme das vom Mac.");
+    }
+    mikListe();
     if (ac.state !== "running") await ac.resume();
     sr = ac.sampleRate; chunks = [];
     srcNode = ac.createMediaStreamSource(stream);
@@ -2914,6 +2925,23 @@ function aufnahmeStarten(root, hilfe) {
     chunks = [];
     return out;
   }
+  // die Mikrofone auflisten (Namen gibt es erst, nachdem einmal erlaubt wurde)
+  async function mikListe() {
+    try {
+      var l = (await navigator.mediaDevices.enumerateDevices()).filter(function (d) { return d.kind === "audioinput"; });
+      if (dead) return;
+      var sel = $("mik"), alt = S.mik || "";
+      sel.innerHTML = "";
+      var o0 = document.createElement("option"); o0.value = ""; o0.textContent = "so wie im Mac eingestellt"; sel.appendChild(o0);
+      l.forEach(function (d, i) {
+        if (!d.deviceId || d.deviceId === "default") return;
+        var o = document.createElement("option"); o.value = d.deviceId; o.textContent = d.label || ("Mikrofon " + (i + 1)); sel.appendChild(o);
+      });
+      sel.value = alt; if (sel.value !== alt) sel.value = "";
+    } catch (e) {}
+  }
+  $("mik").onchange = function () { S.mik = this.value; saveS(); };
+  mikListe();
   function setBtn() {
     if (dead) return;
     var b = $("rec");
@@ -2958,6 +2986,11 @@ function aufnahmeStarten(root, hilfe) {
     state = "idle"; setBtn();
     if (raw.length < sr * 0.5) { status("Die Aufnahme war zu kurz."); raw = null; return; }
     cache = {}; showTake();
+    // gleich pruefen, ob ueberhaupt etwas angekommen ist
+    var pk = 0; for (var q = 0; q < raw.length; q += 7) { var av = raw[q] < 0 ? -raw[q] : raw[q]; if (av > pk) pk = av; }
+    var db = Math.round(20 * Math.log10(pk + 1e-9));
+    if (pk < 0.004) status("Achtung: Die Aufnahme ist fast stumm (lauteste Stelle " + db + " dB). Schau bitte, welches Mikrofon oben ausgew\u00e4hlt ist.");
+    else status("Aufnahme fertig \u2013 lauteste Stelle " + db + " dB.");
   }
 
   /* ---------- Klangkette ---------- */
@@ -3337,22 +3370,57 @@ function aufnahmeStarten(root, hilfe) {
   }
   $("welle").addEventListener("pointerup", ziehEnde);
   $("welle").addEventListener("pointercancel", function () { zieht = null; });
-  function zoomen(f, um) {
+  // anker: die Stelle unter dem Mauszeiger bleibt beim Zoomen genau dort, wo sie ist
+  function zoomen(f, um, anteil) {
     var d = dauer(); if (!d) return;
     var mitte = um !== undefined ? um : (wahlA !== null && Math.abs(wahlB - wahlA) > 0.01 ? (wahlA + wahlB) / 2 : kopf);
+    var rel = anteil !== undefined ? anteil : 0.5;
     var neu = Math.max(1, Math.min(d, sichtLang * f));
-    sicht0 = Math.max(0, Math.min(d - neu, mitte - neu / 2)); sichtLang = neu;
+    sicht0 = Math.max(0, Math.min(d - neu, mitte - neu * rel)); sichtLang = neu;
     knoepfe(); zeichneWelle();
   }
+  // Wisch- und Zoombewegungen sammeln und nur einmal pro Bild zeichnen (ruckelt sonst auf langsamen Rechnern)
+  var gesten = { zoom: 0, schieb: 0, um: 0, rel: 0.5, an: false };
+  function gestenAnwenden() {
+    gesten.an = false;
+    if (!raw) return;
+    if (gesten.schieb) {
+      sicht0 = Math.max(0, Math.min(dauer() - sichtLang, sicht0 + gesten.schieb * sichtLang));
+      gesten.schieb = 0;
+      if (!gesten.zoom) { knoepfe(); zeichneWelle(); }
+    }
+    if (gesten.zoom) {
+      var f = Math.max(0.5, Math.min(2, Math.exp(gesten.zoom)));
+      gesten.zoom = 0;
+      zoomen(f, gesten.um, gesten.rel);
+    }
+  }
+  function gesteMerken() { if (!gesten.an) { gesten.an = true; requestAnimationFrame(gestenAnwenden); } }
   $("zrein").onclick = function () { zoomen(0.25); };
   $("zraus").onclick = function () { zoomen(4); };
   $("welle").addEventListener("wheel", function (e) {
     if (!raw) return; e.preventDefault();
-    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {       // seitlich wischen = verschieben
-      sicht0 = Math.max(0, Math.min(dauer() - sichtLang, sicht0 + e.deltaX / this.clientWidth * sichtLang));
-      knoepfe(); zeichneWelle();
-    } else zoomen(Math.exp(e.deltaY * 0.004), zeitAn(e));
+    var r = this.getBoundingClientRect();
+    gesten.rel = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    gesten.um = sicht0 + gesten.rel * sichtLang;
+    if (!e.ctrlKey && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {       // seitlich wischen = verschieben
+      gesten.schieb += e.deltaX / this.clientWidth;
+    } else {                                                        // hoch/runter wischen oder Zwei-Finger-Spreizen = zoomen
+      gesten.zoom += e.deltaY * (e.ctrlKey ? 0.01 : 0.0025);
+    }
+    gesteMerken();
   }, { passive: false });
+  // Safari am Mac: Zwei-Finger-Spreizen auf dem Trackpad
+  var gestenStart = 1;
+  $("welle").addEventListener("gesturestart", function (e) { e.preventDefault(); gestenStart = 1; });
+  $("welle").addEventListener("gesturechange", function (e) {
+    if (!raw) return; e.preventDefault();
+    var r = this.getBoundingClientRect();
+    gesten.rel = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    gesten.um = sicht0 + gesten.rel * sichtLang;
+    gesten.zoom += Math.log(gestenStart / e.scale); gestenStart = e.scale;
+    gesteMerken();
+  });
   $("lauf").oninput = function () {
     sicht0 = (dauer() - sichtLang) * this.value / 1000; zeichneWelle();
   };
@@ -3550,14 +3618,32 @@ function aufnahmeStarten(root, hilfe) {
       });
     } catch (e) { box.innerHTML = ""; var p = document.createElement("p"); p.className = "au-klein"; p.textContent = "Liste ging nicht: " + (e.message || e); box.appendChild(p); }
   }
+  // mehrere Dateien auf einmal (z. B. die Stuecke, in die das DJI eine lange Aufnahme teilt):
+  // nach Namen sortieren und nahtlos aneinanderhaengen
   $("datei").onchange = async function () {
-    var f = this.files && this.files[0]; this.value = "";
-    if (!f) return;
+    var fs = Array.prototype.slice.call(this.files || []); this.value = "";
+    if (!fs.length) return;
     if (!darfErsetzen()) return;
     $("liste").hidden = true;
-    status("Wird ge\u00f6ffnet \u2026");
-    try { await tonLaden(await f.arrayBuffer(), false); }
-    catch (e) { status("Die Datei kann ich nicht \u00f6ffnen: " + (e.message || e)); }
+    fs.sort(function (a, b) { return a.name.localeCompare(b.name, undefined, { numeric: true }); });
+    try {
+      if (fs.length === 1) { status("Wird ge\u00f6ffnet \u2026"); await tonLaden(await fs[0].arrayBuffer(), false); return; }
+      if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+      var teile = [], rate = 0, n = 0;
+      for (var k = 0; k < fs.length; k++) {
+        status("Datei " + (k + 1) + " von " + fs.length + " wird gelesen \u2026 (" + fs[k].name + ")");
+        var ab = await ac.decodeAudioData(await fs[k].arrayBuffer());
+        rate = rate || ab.sampleRate;
+        var len = ab.length, kan = ab.numberOfChannels, m = new Float32Array(len);
+        for (var c = 0; c < kan; c++) { var d = ab.getChannelData(c); for (var i = 0; i < len; i++) m[i] += d[i] / kan; }
+        teile.push(m); n += len;
+      }
+      var alles = new Float32Array(n), o = 0;
+      teile.forEach(function (t) { alles.set(t, o); o += t.length; });
+      raw = alles; sr = rate; cache = {}; inApp = false;
+      await showTake();
+      status(fs.length + " Dateien zusammengef\u00fcgt: " + fs.map(function (f) { return f.name; }).join(" + "));
+    } catch (e) { status("Die Dateien kann ich nicht \u00f6ffnen: " + (e.message || e)); }
   };
 
   // verkleinert in die App: die geschnittene rohe Aufnahme als m4a (AAC, 96 kbit/s)
