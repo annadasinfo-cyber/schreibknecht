@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 1.10. · Mikro</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 1.10. · Dazunehmen</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2505,6 +2505,9 @@ const AU_HTML = `
         <button id="au_hoer">&#9654; h&ouml;ren</button>
         <button id="au_schnitt" disabled>&#9986; Auswahl raus</button>
         <button id="au_undo" disabled title="letzten Schnitt zur&uuml;cknehmen">&#8630;</button>
+        <button id="au_dazuende" title="eine oder mehrere Dateien hinten an die Aufnahme h&auml;ngen">&#10133; ans Ende</button>
+        <button id="au_dazukopf" title="eine oder mehrere Dateien an der Stelle des Zeigers einf&uuml;gen">&#10133; am Zeiger</button>
+        <input id="au_dazu" type="file" accept="audio/*,.wav" multiple hidden>
         <span class="au-luft"></span>
         <span class="au-klein">Zeit:</span>
         <button id="au_zraus" title="mehr Zeit auf einmal sehen">&minus;</button>
@@ -3495,6 +3498,11 @@ function aufnahmeStarten(root, hilfe) {
     var u = rueck.pop(); if (!u) return;
     hoerStop();
     if (u.voll) { raw = u.voll; nachSchnitt(kopf); status("Pausen wieder da."); return; }
+    if (u.dazu) {
+      var ohne = new Float32Array(raw.length - u.dazu);
+      ohne.set(raw.subarray(0, u.pos), 0); ohne.set(raw.subarray(u.pos + u.dazu), u.pos);
+      raw = ohne; nachSchnitt(u.pos / sr); status("Eingef\u00fcgtes wieder raus."); return;
+    }
     var neu = new Float32Array(raw.length - u.x + u.weg.length);
     neu.set(raw.subarray(0, u.pos), 0);
     neu.set(u.weg, u.pos);
@@ -3618,6 +3626,46 @@ function aufnahmeStarten(root, hilfe) {
       });
     } catch (e) { box.innerHTML = ""; var p = document.createElement("p"); p.className = "au-klein"; p.textContent = "Liste ging nicht: " + (e.message || e); box.appendChild(p); }
   }
+  // Dateien lesen, nach Namen sortiert, zu einem Stueck (mono) aneinander
+  async function dateienLesen(fs) {
+    fs.sort(function (a, b) { return a.name.localeCompare(b.name, undefined, { numeric: true }); });
+    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
+    var teile = [], rate = 0, n = 0;
+    for (var k = 0; k < fs.length; k++) {
+      status("Datei " + (k + 1) + " von " + fs.length + " wird gelesen \u2026 (" + fs[k].name + ")");
+      var ab = await ac.decodeAudioData(await fs[k].arrayBuffer());
+      rate = rate || ab.sampleRate;
+      var len = ab.length, kan = ab.numberOfChannels, m = new Float32Array(len);
+      for (var c = 0; c < kan; c++) { var d = ab.getChannelData(c); for (var i = 0; i < len; i++) m[i] += d[i] / kan; }
+      teile.push(m); n += len;
+    }
+    var alles = new Float32Array(n), o = 0;
+    teile.forEach(function (t) { alles.set(t, o); o += t.length; });
+    return { ton: alles, rate: rate };
+  }
+  // nachtraeglich dazunehmen: ans Ende oder an der Stelle des Zeigers
+  var dazuWo = "ende";
+  $("dazuende").onclick = function () { if (raw) { dazuWo = "ende"; $("dazu").click(); } };
+  $("dazukopf").onclick = function () { if (raw) { dazuWo = "kopf"; $("dazu").click(); } };
+  $("dazu").onchange = async function () {
+    var fs = Array.prototype.slice.call(this.files || []); this.value = "";
+    if (!fs.length || !raw) return;
+    hoerStop();
+    try {
+      var g = await dateienLesen(fs), neu = g.ton;
+      // 5 ms ein- und ausblenden, damit die Nahtstellen nicht knacken
+      var f = Math.min(Math.round(0.005 * sr), Math.floor(neu.length / 2));
+      for (var i = 0; i < f; i++) { var t = i / f; neu[i] *= t; neu[neu.length - 1 - i] *= t; }
+      var pos = dazuWo === "ende" ? raw.length : Math.max(0, Math.min(raw.length, Math.round(kopf * sr)));
+      var zus = new Float32Array(raw.length + neu.length);
+      zus.set(raw.subarray(0, pos), 0); zus.set(neu, pos); zus.set(raw.subarray(pos), pos + neu.length);
+      raw = zus;
+      rueck.push({ dazu: neu.length, pos: pos }); if (rueck.length > 30) rueck.shift();
+      nachSchnitt((pos + neu.length) / sr);
+      var sek = Math.round(neu.length / sr), wo = dazuWo === "ende" ? "ans Ende geh\u00e4ngt" : "am Zeiger eingef\u00fcgt";
+      status(fs.length + (fs.length === 1 ? " Datei " : " Dateien ") + wo + " (" + Math.floor(sek / 60) + ":" + ("0" + sek % 60).slice(-2) + "). \u21b6 nimmt es wieder raus.");
+    } catch (e) { status("Die Datei kann ich nicht \u00f6ffnen: " + (e.message || e)); }
+  };
   // mehrere Dateien auf einmal (z. B. die Stuecke, in die das DJI eine lange Aufnahme teilt):
   // nach Namen sortieren und nahtlos aneinanderhaengen
   $("datei").onchange = async function () {
@@ -3625,22 +3673,10 @@ function aufnahmeStarten(root, hilfe) {
     if (!fs.length) return;
     if (!darfErsetzen()) return;
     $("liste").hidden = true;
-    fs.sort(function (a, b) { return a.name.localeCompare(b.name, undefined, { numeric: true }); });
     try {
       if (fs.length === 1) { status("Wird ge\u00f6ffnet \u2026"); await tonLaden(await fs[0].arrayBuffer(), false); return; }
-      if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
-      var teile = [], rate = 0, n = 0;
-      for (var k = 0; k < fs.length; k++) {
-        status("Datei " + (k + 1) + " von " + fs.length + " wird gelesen \u2026 (" + fs[k].name + ")");
-        var ab = await ac.decodeAudioData(await fs[k].arrayBuffer());
-        rate = rate || ab.sampleRate;
-        var len = ab.length, kan = ab.numberOfChannels, m = new Float32Array(len);
-        for (var c = 0; c < kan; c++) { var d = ab.getChannelData(c); for (var i = 0; i < len; i++) m[i] += d[i] / kan; }
-        teile.push(m); n += len;
-      }
-      var alles = new Float32Array(n), o = 0;
-      teile.forEach(function (t) { alles.set(t, o); o += t.length; });
-      raw = alles; sr = rate; cache = {}; inApp = false;
+      var g = await dateienLesen(fs);
+      raw = g.ton; sr = g.rate; cache = {}; inApp = false;
       await showTake();
       status(fs.length + " Dateien zusammengef\u00fcgt: " + fs.map(function (f) { return f.name; }).join(" + "));
     } catch (e) { status("Die Dateien kann ich nicht \u00f6ffnen: " + (e.message || e)); }
