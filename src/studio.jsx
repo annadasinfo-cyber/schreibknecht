@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 1.10. · Dazunehmen</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Markierungen</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2505,6 +2505,12 @@ const AU_HTML = `
         <button id="au_hoer">&#9654; h&ouml;ren</button>
         <button id="au_schnitt" disabled>&#9986; Auswahl raus</button>
         <button id="au_undo" disabled title="letzten Schnitt zur&uuml;cknehmen">&#8630;</button>
+        <span class="au-luft"></span>
+        <button id="au_mzurueck" title="zur vorigen Markierung springen">&#9664; &#128681;</button>
+        <span id="au_mzahl" class="au-klein">0</span>
+        <button id="au_mvor" title="zur n&auml;chsten Markierung springen">&#128681; &#9654;</button>
+        <button id="au_mweg" title="die Markierung beim Zeiger l&ouml;schen">&#10005; &#128681;</button>
+        <span class="au-luft"></span>
         <button id="au_dazuende" title="eine oder mehrere Dateien hinten an die Aufnahme h&auml;ngen">&#10133; ans Ende</button>
         <button id="au_dazukopf" title="eine oder mehrere Dateien an der Stelle des Zeigers einf&uuml;gen">&#10133; am Zeiger</button>
         <input id="au_dazu" type="file" accept="audio/*,.wav" multiple hidden>
@@ -2518,6 +2524,12 @@ const AU_HTML = `
         <span class="au-klein">l&auml;nger als</span>
         <input id="au_pmin" type="number" min="0.3" max="5" step="0.1" value="0.8"> <span class="au-klein">s &rarr; auf</span>
         <input id="au_pziel" type="number" min="0" max="3" step="0.1" value="0.4"> <span class="au-klein">s</span>
+      </div>
+      <div class="au-row au-pausen">
+        <label class="au-chk"><input type="checkbox" id="au_pdrama" checked> dramatische Pausen bleiben:</label>
+        <span class="au-klein">ab</span>
+        <input id="au_pdab" type="number" min="0.5" max="5" step="0.1" value="1.2"> <span class="au-klein">s, l&auml;ngere werden auf</span>
+        <input id="au_pdmax" type="number" min="1" max="10" step="0.1" value="3"> <span class="au-klein">s gek&uuml;rzt</span>
       </div>
       <div id="au_zeit" class="au-zeit"></div>
     </div>
@@ -2544,6 +2556,7 @@ const AU_HTML = `
   </div>
   <div class="au-fuss">
     <button id="au_rec" class="au-rec">&#9679; Aufnahme</button>
+    <button id="au_marke" class="au-marke" hidden title="Versprecher markieren (Taste M)">&#128681; Versprecher <span class="au-klein">(M)</span></button>
     <span id="au_status" class="au-status"></span>
     <button id="au_oeffnen" title="eine Aufnahme &ouml;ffnen">&#128194;</button>
     <input id="au_datei" type="file" accept="audio/*,.wav" multiple hidden>
@@ -2879,6 +2892,8 @@ function aufnahmeStarten(root, hilfe) {
     "if(this.i===2048){this.port.postMessage(this.b.slice(0));this.i=0;}}}return true;}}registerProcessor('rec',R);";
   var ac = null, wlReady = false, stream = null, srcNode = null, recNode = null, muteNode = null;
   var chunks = [], capturing = false, raw = null, sr = 48000, wake = null, state = "idle";
+  // Markierungen fuer Versprecher, als Stelle in der Aufnahme (in Samples)
+  var marken = [], recMarken = [];
   function onChunk(d) {
     var pk = 0; for (var i = 0; i < d.length; i++) { var a = Math.abs(d[i]); if (a > pk) pk = a; }
     meter(pk); if (capturing) chunks.push(d);
@@ -2951,6 +2966,7 @@ function aufnahmeStarten(root, hilfe) {
     b.innerHTML = state === "rec" ? "&#9632; Stopp" : "&#9679; Aufnahme";
     b.classList.toggle("stop", state === "rec");
     b.disabled = state === "busy" || state === "count";
+    $("marke").hidden = state !== "rec";
   }
   $("rec").onclick = async function () {
     if (state === "rec") { stopAll(); return; }
@@ -2966,7 +2982,8 @@ function aufnahmeStarten(root, hilfe) {
     var c = $("count"); c.style.display = "flex";
     for (var k = 3; k > 0; k--) { c.textContent = k; await sleep(800); if (dead) return; }
     c.style.display = "none";
-    capturing = true; state = "rec"; setBtn(); status("Aufnahme l\u00e4uft");
+    recMarken = [];
+    capturing = true; state = "rec"; setBtn(); status("Aufnahme l\u00e4uft \u2013 bei einem Versprecher M dr\u00fccken");
     // alle 5 Sekunden das Neue zusaetzlich im Browser ablegen
     gesichertBis = 0;
     dbTun("stuecke", "readwrite", function (os) { return os.clear(); }).catch(function () {});
@@ -2988,12 +3005,13 @@ function aufnahmeStarten(root, hilfe) {
     if (wake) { try { wake.release(); } catch (e) {} wake = null; }
     state = "idle"; setBtn();
     if (raw.length < sr * 0.5) { status("Die Aufnahme war zu kurz."); raw = null; return; }
+    marken = recMarken.slice();
     cache = {}; showTake();
     // gleich pruefen, ob ueberhaupt etwas angekommen ist
     var pk = 0; for (var q = 0; q < raw.length; q += 7) { var av = raw[q] < 0 ? -raw[q] : raw[q]; if (av > pk) pk = av; }
     var db = Math.round(20 * Math.log10(pk + 1e-9));
     if (pk < 0.004) status("Achtung: Die Aufnahme ist fast stumm (lauteste Stelle " + db + " dB). Schau bitte, welches Mikrofon oben ausgew\u00e4hlt ist.");
-    else status("Aufnahme fertig \u2013 lauteste Stelle " + db + " dB.");
+    else status("Aufnahme fertig \u2013 lauteste Stelle " + db + " dB." + (marken.length ? " " + marken.length + (marken.length === 1 ? " Versprecher" : " Versprecher") + " markiert." : ""));
   }
 
   /* ---------- Klangkette ---------- */
@@ -3287,7 +3305,7 @@ function aufnahmeStarten(root, hilfe) {
     clearTimeout(kopieUhr);
     kopieUhr = setTimeout(function () {
       if (!raw) return;
-      var k = einpacken(raw); k.sr = sr; k.inApp = inApp;
+      var k = einpacken(raw); k.sr = sr; k.inApp = inApp; k.marken = marken.slice();
       dbTun("kopie", "readwrite", function (os) { return os.put(k, "aktuell"); })
         .then(function () { return dbTun("stuecke", "readwrite", function (os) { return os.clear(); }); })
         .catch(function () {});
@@ -3312,6 +3330,8 @@ function aufnahmeStarten(root, hilfe) {
   function knoepfe() {
     var hat = wahlA !== null && Math.abs(wahlB - wahlA) > 0.01;
     $("schnitt").disabled = !hat; $("undo").disabled = !rueck.length;
+    $("mzahl").textContent = String(marken.length);
+    $("mvor").disabled = $("mzurueck").disabled = $("mweg").disabled = !marken.length;
     var z = "L\u00e4nge " + zeitText(dauer()) + "  \u00b7  Kopf " + zeitText(kopf);
     if (hat) { var a = Math.min(wahlA, wahlB), b = Math.max(wahlA, wahlB); z += "  \u00b7  Auswahl " + zeitText(a) + " \u2013 " + zeitText(b) + " (" + (b - a).toFixed(1).replace(".", ",") + " s)"; }
     $("zeit").textContent = z;
@@ -3346,6 +3366,12 @@ function aufnahmeStarten(root, hilfe) {
       x.fillStyle = "rgba(184,69,47,.35)"; x.fillRect(a, 0, b - a, H);
       x.fillStyle = "rgba(184,69,47,.9)"; x.fillRect(a, 0, 1 * dpr, H); x.fillRect(b - dpr, 0, dpr, H);
     }
+    marken.forEach(function (m) {
+      var mx = (m / sr - sicht0) / sichtLang * W;
+      if (mx < -10 || mx > W + 10) return;
+      x.fillStyle = "rgba(230,70,60,.85)"; x.fillRect(mx, 0, 1.5 * dpr, H);
+      x.beginPath(); x.moveTo(mx, 0); x.lineTo(mx + 9 * dpr, 4 * dpr); x.lineTo(mx, 8 * dpr); x.closePath(); x.fill();
+    });
     var k = (kopf - sicht0) / sichtLang * W;
     if (k >= 0 && k <= W) { x.fillStyle = "#ffd79a"; x.fillRect(k, 0, 2 * dpr, H); }
   }
@@ -3436,7 +3462,9 @@ function aufnahmeStarten(root, hilfe) {
     a = Math.max(0, a); b = Math.min(raw.length, b);
     var x = Math.min(Math.round(0.01 * sr), a, raw.length - b);
     var pos = a - x;
-    rueck.push({ pos: pos, weg: raw.slice(pos, b + x), x: x });
+    rueck.push({ pos: pos, weg: raw.slice(pos, b + x), x: x, m: marken.slice() });
+    // Markierungen im Herausgeschnittenen fallen weg, die dahinter ruecken nach vorn
+    marken = marken.filter(function (p) { return p < a || p >= b; }).map(function (p) { return p >= b ? p - (b - a) - x : p; });
     if (rueck.length > 30) rueck.shift();
     var neu = new Float32Array(raw.length - (b - a) - x);
     neu.set(raw.subarray(0, pos), 0);
@@ -3452,6 +3480,11 @@ function aufnahmeStarten(root, hilfe) {
     if (!raw || state !== "idle") return;
     var minS = Math.max(0.3, parseFloat(String($("pmin").value).replace(",", ".")) || 0.8);
     var zielS = Math.max(0, Math.min(minS - 0.1, parseFloat(String($("pziel").value).replace(",", ".")) || 0));
+    var drama = $("pdrama").checked;
+    var dramaAb = Math.max(minS, parseFloat(String($("pdab").value).replace(",", ".")) || 1.2);
+    var dramaMax = Math.max(dramaAb, parseFloat(String($("pdmax").value).replace(",", ".")) || 3);
+    var normal = 0, langeGekuerzt = 0, dramaGezaehlt = 0;
+    S.pmin = minS; S.pziel = zielS; S.pdrama = drama; S.pdab = dramaAb; S.pdmax = dramaMax; saveS();
     hoerStop();
     var bl = Math.max(1, Math.round(0.02 * sr)), nb = Math.floor(raw.length / bl), pw = new Float32Array(nb);
     for (var b = 0; b < nb; b++) { var m = 0; for (var i = b * bl; i < (b + 1) * bl; i++) m += raw[i] * raw[i]; pw[b] = m / bl; }
@@ -3466,13 +3499,18 @@ function aufnahmeStarten(root, hilfe) {
       if (still && start < 0) start = k;
       if (!still && start >= 0) {
         if (k - start >= minB && start > 0 && k < nb) {   // Anfang und Ende der Aufnahme lassen wir in Ruhe
-          var a = start * bl, e = k * bl, halb = Math.round(zielS * sr / 2);
-          if (e - a > 2 * halb + Math.round(0.03 * sr)) weg.push([a + halb, e - halb]);
+          var a = start * bl, e = k * bl, lang = (k - start) * bl / sr, soll = zielS;
+          if (drama && lang >= dramaAb) {
+            if (lang <= dramaMax) { dramaGezaehlt++; start = -1; continue; }   // dramatische Pause: bleibt wie sie ist
+            soll = dramaMax;                                   // zu lang (z. B. getrunken): auf die Hoechstlaenge
+          }
+          var halb = Math.round(soll * sr / 2);
+          if (e - a > 2 * halb + Math.round(0.03 * sr)) { weg.push([a + halb, e - halb]); if (soll !== zielS) langeGekuerzt++; else normal++; }
         }
         start = -1;
       }
     }
-    if (!weg.length) { status("Keine Pausen \u00fcber " + String(minS).replace(".", ",") + " s gefunden."); return; }
+    if (!weg.length) { status("Nichts zu k\u00fcrzen." + (dramaGezaehlt ? " " + dramaGezaehlt + " dramatische Pausen bleiben." : "")); return; }
     // in einem Durchgang zusammensetzen, mit 10 ms Ueberblendung an jeder Naht
     var x = Math.round(0.01 * sr), stuecke = [], von = 0;
     weg.forEach(function (w) { stuecke.push([von, w[0]]); von = w[1]; });
@@ -3486,17 +3524,80 @@ function aufnahmeStarten(root, hilfe) {
       for (var q = 0; q < x; q++) { var t = (q + 0.5) / x; neu[pos - x + q] = neu[pos - x + q] * (1 - t) + seg[q] * t; }
       neu.set(seg.subarray(x), pos); pos += seg.length - x;
     });
-    rueck.push({ voll: raw }); if (rueck.length > 30) rueck.shift();
+    rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+    // Markierungen mitwandern lassen
+    marken = marken.map(function (p) {
+      var minus = 0;
+      for (var j = 0; j < weg.length; j++) {
+        if (p >= weg[j][1]) minus += weg[j][1] - weg[j][0] + x;
+        else { if (p > weg[j][0]) minus += p - weg[j][0]; break; }
+      }
+      return Math.max(0, p - minus);
+    });
     var vorher = raw.length;
     raw = neu; nachSchnitt(Math.min(kopf, raw.length / sr));
-    status(weg.length + (weg.length === 1 ? " Pause" : " Pausen") + " gek\u00fcrzt \u2013 " +
-      ((vorher - raw.length) / sr).toFixed(1).replace(".", ",") + " s k\u00fcrzer. Mit \u21b6 holst du alles zur\u00fcck.");
+    status(normal + (normal === 1 ? " Pause" : " Pausen") + " gek\u00fcrzt" +
+      (drama ? ", " + dramaGezaehlt + " dramatische geblieben" + (langeGekuerzt ? ", " + langeGekuerzt + " zu lange auf " + String(dramaMax).replace(".", ",") + " s" : "") : "") +
+      " \u2013 " + ((vorher - raw.length) / sr).toFixed(1).replace(".", ",") + " s k\u00fcrzer. Mit \u21b6 holst du alles zur\u00fcck.");
   }
   $("pausen").onclick = pausenKuerzen;
+  // Pausen-Einstellungen merken
+  if (S.pmin) $("pmin").value = S.pmin;
+  if (S.pziel !== undefined) $("pziel").value = S.pziel;
+  if (S.pdrama !== undefined) $("pdrama").checked = S.pdrama;
+  if (S.pdab) $("pdab").value = S.pdab;
+  if (S.pdmax) $("pdmax").value = S.pdmax;
+
+  // ---------- Markierungen ----------
+  function markeSetzen(p) {
+    marken.push(p); marken.sort(function (a, b) { return a - b; });
+    kopieMerken(); knoepfe(); zeichneWelle();
+  }
+  $("marke").onclick = function () {
+    if (state !== "rec") return;
+    var p = chunks.length * 2048; recMarken.push(p);
+    status("\ud83d\udea9 markiert bei " + zeitText(p / sr) + " \u2013 Aufnahme l\u00e4uft weiter");
+  };
+  function zuMarke(p) {
+    var t = p / sr;
+    if (sichtLang > 60) sichtLang = Math.min(dauer(), 20);
+    sicht0 = Math.max(0, Math.min(dauer() - sichtLang, t - sichtLang * 0.4));
+    kopf = Math.max(0, t - 3);   // 3 Sekunden davor, damit du den Versprecher hoerst
+    wahlA = wahlB = null;
+    knoepfe(); zeichneWelle();
+  }
+  $("mvor").onclick = function () {
+    var p = kopf * sr + 3 * sr + 1;
+    var n = marken.filter(function (m) { return m > p; })[0];
+    if (n === undefined) { status("Keine Markierung mehr danach."); return; }
+    zuMarke(n);
+  };
+  $("mzurueck").onclick = function () {
+    var p = kopf * sr + 3 * sr - 1;
+    var v = marken.filter(function (m) { return m < p; }).pop();
+    if (v === undefined) { status("Keine Markierung davor."); return; }
+    zuMarke(v);
+  };
+  $("mweg").onclick = function () {
+    if (!marken.length) return;
+    var p = kopf * sr, best = -1, abst = Infinity;
+    marken.forEach(function (m, i) { var d = Math.abs(m - p - 3 * sr) < Math.abs(m - p) ? Math.abs(m - p - 3 * sr) : Math.abs(m - p); if (d < abst) { abst = d; best = i; } });
+    if (best < 0 || abst > 10 * sr) { status("Keine Markierung in der N\u00e4he des Zeigers."); return; }
+    marken.splice(best, 1); kopieMerken(); knoepfe(); zeichneWelle();
+  };
+  function onTasteMarke(e) {
+    if (e.code !== "KeyM" || e.metaKey || e.ctrlKey || e.altKey) return;
+    var el = document.activeElement;
+    if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.type !== "range" && el.type !== "checkbox") return;
+    if (state === "rec") { e.preventDefault(); $("marke").click(); return; }
+    if (state === "idle" && raw && !$("take").hidden) { e.preventDefault(); markeSetzen(Math.round(kopf * sr)); status("\ud83d\udea9 Markierung gesetzt bei " + zeitText(kopf) + "."); }
+  }
+  document.addEventListener("keydown", onTasteMarke);
 
   function zuruecknehmen() {
     var u = rueck.pop(); if (!u) return;
     hoerStop();
+    if (u.m) marken = u.m;
     if (u.voll) { raw = u.voll; nachSchnitt(kopf); status("Pausen wieder da."); return; }
     if (u.dazu) {
       var ohne = new Float32Array(raw.length - u.dazu);
@@ -3584,7 +3685,7 @@ function aufnahmeStarten(root, hilfe) {
     var ab = await ac.decodeAudioData(arrayBuffer);
     var n = ab.length, kan = ab.numberOfChannels, m = new Float32Array(n);
     for (var c = 0; c < kan; c++) { var d = ab.getChannelData(c); for (var i = 0; i < n; i++) m[i] += d[i] / kan; }
-    raw = m; sr = ab.sampleRate; cache = {}; inApp = !!ausApp;
+    raw = m; sr = ab.sampleRate; cache = {}; inApp = !!ausApp; marken = [];
     await showTake();
   }
   $("oeffnen").onclick = function () {
@@ -3660,7 +3761,8 @@ function aufnahmeStarten(root, hilfe) {
       var zus = new Float32Array(raw.length + neu.length);
       zus.set(raw.subarray(0, pos), 0); zus.set(neu, pos); zus.set(raw.subarray(pos), pos + neu.length);
       raw = zus;
-      rueck.push({ dazu: neu.length, pos: pos }); if (rueck.length > 30) rueck.shift();
+      rueck.push({ dazu: neu.length, pos: pos, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+      marken = marken.map(function (p) { return p >= pos ? p + neu.length : p; });
       nachSchnitt((pos + neu.length) / sr);
       var sek = Math.round(neu.length / sr), wo = dazuWo === "ende" ? "ans Ende geh\u00e4ngt" : "am Zeiger eingef\u00fcgt";
       status(fs.length + (fs.length === 1 ? " Datei " : " Dateien ") + wo + " (" + Math.floor(sek / 60) + ":" + ("0" + sek % 60).slice(-2) + "). \u21b6 nimmt es wieder raus.");
@@ -3676,7 +3778,7 @@ function aufnahmeStarten(root, hilfe) {
     try {
       if (fs.length === 1) { status("Wird ge\u00f6ffnet \u2026"); await tonLaden(await fs[0].arrayBuffer(), false); return; }
       var g = await dateienLesen(fs);
-      raw = g.ton; sr = g.rate; cache = {}; inApp = false;
+      raw = g.ton; sr = g.rate; cache = {}; inApp = false; marken = [];
       await showTake();
       status(fs.length + " Dateien zusammengef\u00fcgt: " + fs.map(function (f) { return f.name; }).join(" + "));
     } catch (e) { status("Die Dateien kann ich nicht \u00f6ffnen: " + (e.message || e)); }
@@ -3736,14 +3838,14 @@ function aufnahmeStarten(root, hilfe) {
       var st = await dbTun("stuecke", "readonly", function (os) { return os.getAll(); });
       if (dead) return;
       if (st && st.length) {
-        raw = auspacken(st); sr = st[0].sr; cache = {}; inApp = false;
+        raw = auspacken(st); sr = st[0].sr; cache = {}; inApp = false; marken = [];
         await showTake();
         status("Die Aufnahme wurde unterbrochen \u2013 alles bis dahin Aufgenommene ist wieder da.");
         return;
       }
       var k = await dbTun("kopie", "readonly", function (os) { return os.get("aktuell"); });
       if (dead || !k || raw) return;
-      raw = auspacken([k]); sr = k.sr; cache = {}; inApp = !!k.inApp;
+      raw = auspacken([k]); sr = k.sr; cache = {}; inApp = !!k.inApp; marken = (k.marken || []).slice();
       await showTake();
       status(inApp ? "Deine letzte Aufnahme ist noch da." : "Deine letzte Aufnahme ist noch da \u2013 sie liegt noch nicht in der App.");
     } catch (e) {}
@@ -3825,6 +3927,7 @@ function aufnahmeStarten(root, hilfe) {
     if (sicherUhr) { clearInterval(sicherUhr); sicherUhr = null; }
     document.removeEventListener("keydown", onKey);
     document.removeEventListener("keydown", onTasteSchnitt);
+    document.removeEventListener("keydown", onTasteMarke);
     window.removeEventListener("resize", onGroesse);
     if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
     if (wake) { try { wake.release(); } catch (e) {} }
@@ -4028,6 +4131,7 @@ function StudioStil() {
 .au-fuss{display:flex; gap:10px; align-items:center; padding:10px 12px; background:#110d09; border-top:1px solid var(--st-linie)}
 .au button.au-rec{background:var(--st-rot); border-color:var(--st-rot); color:#fff; padding:12px 20px; font-size:17px}
 .au button.au-rec.stop{background:#0b0907; color:var(--st-rot)}
+.au button.au-marke{padding:12px 16px; font-size:16px}
 .au-status{color:var(--st-dim); font-size:13px; flex:1}
 .au-take{padding:8px 12px 14px; background:#110d09; border-top:1px solid var(--st-linie)}
 .au-take[hidden]{display:none}
