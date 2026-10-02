@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Einmal-Bilder</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Reihenfolge</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1744,9 +1744,18 @@ function zoomloopStarten(root, film, hilfe) {
     var dauer = Math.max(1, stimmeSek - (haltSek || 0));
     var n = items.length;
     // Bilder mit "1x" laufen nur einmal am Anfang (nach Bild 1) und werden danach uebersprungen
-    var einmalB = items.slice(1, n - 1).filter(function (it) { return it.einmal; });
+    // Der erste Durchgang laeuft streng der Reihe nach bis zum letzten "1x"-Bild,
+    // danach kreisen nur noch die Bilder ohne "1x".
+    var L = 0; for (var li = 1; li < n - 1; li++) if (items[li].einmal) L = li;
     var kreisB = items.slice(1, n - 1).filter(function (it) { return !it.einmal; });
-    if (kreisB.length < 2) { einmalB = []; kreisB = items.slice(1, n - 1); }
+    var einmalB = [];
+    if (L > 0 && kreisB.length >= 2) {
+      einmalB = items.slice(1, L + 1);
+      // der Kreis geht mit dem ersten Bild nach dem letzten "1x"-Bild weiter
+      var nach = items.slice(L + 1, n - 1).filter(function (it) { return !it.einmal; })[0];
+      var r = nach ? kreisB.indexOf(nach) : 0;
+      kreisB = kreisB.slice(r).concat(kreisB.slice(0, r));
+    } else kreisB = items.slice(1, n - 1);
     var V = einmalB.length;
     if ((G.rahmen || V) && n >= 4) {
       var M = kreisB.length;
