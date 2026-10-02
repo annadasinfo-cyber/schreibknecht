@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Reihenfolge</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Schluss-Bilder</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1214,6 +1214,7 @@ function zoomloopStarten(root, film, hilfe) {
       em.title = it.einmal ? "l\u00e4uft nur einmal am Anfang \u2013 tippen: l\u00e4uft wieder normal mit" : "nur einmal am Anfang zeigen, danach \u00fcberspringen";
       em.onclick = function (ev) { ev.stopPropagation(); stop(); it.einmal = !it.einmal; thumbs(); draw(); save(); };
       if (i === 0 || i === items.length - 1) em.hidden = true;   // Bild 1 und das letzte laufen ohnehin nur einmal
+      else em.title = it.einmal ? "l\u00e4uft nur einmal \u2013 vorn in der Liste: am Anfang, ganz hinten: am Ende. Tippen: l\u00e4uft wieder normal mit" : "nur einmal zeigen (vorn in der Liste: am Anfang, ganz hinten vor dem letzten Bild: am Ende)";
       var c = document.createElement("canvas"); c.width = 160; c.height = Math.round(160 * G.H / G.W);
       var R = cropRect(it.el, G.W / G.H, it.p.pan);
       c.getContext("2d").drawImage(it.el, R[0], R[1], R[2], R[3], 0, 0, c.width, c.height);
@@ -1744,40 +1745,46 @@ function zoomloopStarten(root, film, hilfe) {
     var dauer = Math.max(1, stimmeSek - (haltSek || 0));
     var n = items.length;
     // Bilder mit "1x" laufen nur einmal am Anfang (nach Bild 1) und werden danach uebersprungen
-    // Der erste Durchgang laeuft streng der Reihe nach bis zum letzten "1x"-Bild,
-    // danach kreisen nur noch die Bilder ohne "1x".
-    var L = 0; for (var li = 1; li < n - 1; li++) if (items[li].einmal) L = li;
-    var kreisB = items.slice(1, n - 1).filter(function (it) { return !it.einmal; });
-    var einmalB = [];
-    if (L > 0 && kreisB.length >= 2) {
+    // "1x"-Bilder ganz hinten (direkt vor dem letzten Bild) kommen nur einmal am Ende.
+    // Die anderen "1x"-Bilder: der erste Durchgang laeuft streng der Reihe nach bis zum
+    // letzten von ihnen. Dazwischen kreisen nur die Bilder ohne "1x", in deiner Reihenfolge.
+    var endB = [];
+    for (var ej = n - 2; ej >= 1 && items[ej].einmal; ej--) endB.unshift(items[ej]);
+    var vorEnde = n - 1 - endB.length;   // Bilder 1 .. vorEnde-1 sind die Mitte
+    var L = 0; for (var li = 1; li < vorEnde; li++) if (items[li].einmal) L = li;
+    var kreisB = items.slice(1, vorEnde).filter(function (it) { return !it.einmal; });
+    var einmalB = [], r = 0;
+    if (kreisB.length < 2) { kreisB = items.slice(1, n - 1); endB = []; L = 0; }
+    if (L > 0) {
       einmalB = items.slice(1, L + 1);
       // der Kreis geht mit dem ersten Bild nach dem letzten "1x"-Bild weiter
-      var nach = items.slice(L + 1, n - 1).filter(function (it) { return !it.einmal; })[0];
-      var r = nach ? kreisB.indexOf(nach) : 0;
-      kreisB = kreisB.slice(r).concat(kreisB.slice(0, r));
-    } else kreisB = items.slice(1, n - 1);
-    var V = einmalB.length;
-    if ((G.rahmen || V) && n >= 4) {
+      var nach = items.slice(L + 1, vorEnde).filter(function (it) { return !it.einmal; })[0];
+      r = nach ? kreisB.indexOf(nach) : 0;
+    }
+    var V = einmalB.length, E = endB.length;
+    if ((G.rahmen || V || E) && n >= 4) {
       var M = kreisB.length;
-      var k = Math.max(1, Math.round((dauer / G.sec - 1 - V) / M));
-      var secV = dauer / (k * M + 1 + V);
+      // die letzte Runde endet immer mit dem letzten Kreis-Bild, dann kommt der Schluss
+      var k = Math.max(1, Math.round((dauer / G.sec - 1 - V - E + r) / M));
+      var nSeg = (V + 1) + (k * M - 1 - r) + (E + 1);
+      var secV = dauer / nSeg;
       var loopF = Math.max(2, Math.round(M * secV * fps)), segF = loopF / M;
       var A = H0 + Math.max(1, Math.round(segF * (V + 1)));
-      var midEnde = A + (k * M - 1) * segF, schluss = midEnde + segF;
-      var anf = { items: [items[0]].concat(einmalB, [kreisB[0]]), loop: false };
+      var midEnde = A + (k * M - 1 - r) * segF, schluss = midEnde + (E + 1) * segF;
+      var anf = { items: [items[0]].concat(einmalB, [kreisB[r]]), loop: false };
       var mitte = { items: kreisB, loop: true };
-      var ende = { items: [kreisB[M - 1], items[n - 1]], loop: false };
+      var ende = { items: [kreisB[M - 1]].concat(endB, [items[n - 1]]), loop: false };
       return {
         A: Math.max(A, Ue), loopF: loopF, periodischBis: Math.floor(midEnde),
         an: function (g) {
           if (g < H0) return { sicht: anf, u: 0 };
           if (g < A) return { sicht: anf, u: (g - H0) / (A - H0) * (V + 1) };
-          if (g < midEnde) return { sicht: mitte, u: ((g - A) / segF) % M };
+          if (g < midEnde) return { sicht: mitte, u: (r + (g - A) / segF) % M };
           if (g < schluss) return { sicht: ende, u: (g - midEnde) / segF };
           // das letzte Bild steht, zoomt aber ganz langsam weiter hinein, damit es lebendig bleibt
           // (sanft anlaufend, bis zum Ausblenden insgesamt etwa 6 % naeher)
           var x = Math.min(1.2, (g - schluss) / fps / nachHalt);
-          return { sicht: ende, u: 1, extra: 1 + 0.06 * (1.3 * x * x / (x + 0.3)) };
+          return { sicht: ende, u: E + 1, extra: 1 + 0.06 * (1.3 * x * x / (x + 0.3)) };
         }
       };
     }
