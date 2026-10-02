@@ -366,8 +366,13 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
         <button className="st-knopf" onClick={ansicht === "film" ? () => setAnsicht("liste") : zurueck}>
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
+        {ansicht === "film" && (
+          <button className="st-knopf" onClick={() => { const f = document.getElementById("zl_file"); if (f) f.click(); }}>
+            + bilder laden
+          </button>
+        )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Masken</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Bilder unten</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -461,7 +466,7 @@ function ZoomloopRaum({ film, hilfe }) {
 const ZL_HTML = `
 <div class="zl-app">
   <div class="zl-list">
-    <button id="zl_add" class="zl-add">+ Bilder laden</button>
+    <button id="zl_add" class="zl-add" hidden>+ Bilder laden</button>
     <input id="zl_file" type="file" accept="image/*" multiple hidden>
     <div id="zl_thumbs" class="zl-thumbs"></div>
   </div>
@@ -4098,6 +4103,7 @@ function StudioStil() {
 .zl button:hover{border-color:var(--st-gold)}
 .zl-big{width:100%; padding:10px !important; background:var(--st-rot) !important; border-color:var(--st-rot) !important; color:#fff !important; margin-top:10px}
 .zl-add{width:100%; margin-bottom:10px}
+.zl-add[hidden]{display:none !important}
 .zl-th{display:flex; gap:6px; align-items:center; padding:5px; border:1px solid transparent; border-radius:4px; margin-bottom:4px; cursor:pointer}
 .zl-th.sel{border-color:var(--st-rot); background:#21180f}
 .zl-th canvas{width:80px; flex:none; display:block}
