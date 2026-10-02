@@ -69,7 +69,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
   const filmeHolen = useCallback(async () => {
     setLaedt(true); setFehler("");
     try {
-      const l = await api("GET", "/rest/v1/studio_filme?select=id,name,created_at,daten&order=created_at.desc");
+      const l = await api("GET", "/rest/v1/studio_filme?select=id,name,created_at,updated_at,daten&order=created_at.desc");
       setFilme(l || []);
     } catch (e) {
       const t = String(e.message || e);
@@ -261,8 +261,9 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
       }
     },
     speichern: async (daten) => {
-      setFilme((l) => l.map((x) => x.id === id ? { ...x, daten } : x));
-      const auftrag = api("PATCH", `/rest/v1/studio_filme?id=eq.${id}`, { daten, updated_at: new Date().toISOString() });
+      const jetzt = new Date().toISOString();
+      setFilme((l) => l.map((x) => x.id === id ? { ...x, daten, updated_at: jetzt } : x));
+      const auftrag = api("PATCH", `/rest/v1/studio_filme?id=eq.${id}`, { daten, updated_at: jetzt });
       laufend.current = laufend.current.then(() => auftrag).catch(() => {});
       await auftrag;
     },
@@ -366,7 +367,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Schluss-Bilder</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Vorschau springen</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -413,7 +414,7 @@ function FilmListe({ filme, laedt, fehler, setFehler, neuerFilm, umbenennen, fil
       {laedt ? <p className="st-leer">wird geholt …</p> : (
         <div className="st-kacheln">
           <button className="st-kachel neu" onClick={neuerFilm} title="neuer film">+</button>
-          {filme.map((f, i) => {
+          {[...filme].sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || ""))).map((f, i) => {
             const s = streuung(f.id);
             const anzahl = ((f.daten && f.daten.items) || []).length;
             return (
@@ -560,6 +561,14 @@ const ZL_HTML = `
     </div>
     <label class="zl-chk" id="zl_rahmenzeile" hidden><input type="checkbox" id="zl_rahmen"> erstes und letztes Bild stehen f&uuml;r sich: Anfang mit Bild 1, dazwischen l&auml;uft der Rest im Kreis, zum Schluss kommt das letzte Bild</label>
     <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
+    <div id="zl_vorspring" class="zl-vorspring" hidden>
+      <input id="zl_vorpos" type="range" min="0" max="100" step="1" value="0" title="an eine Stelle springen">
+      <div class="zl-vorknoepfe">
+        <button id="zl_vorzur" title="eine Minute zur&uuml;ck">&#8634; 1 Min.</button>
+        <button id="zl_vorvor" title="eine Minute vor">1 Min. &#8635;</button>
+        <button id="zl_vorende" title="zu den letzten zwei Minuten springen">&#9197; Ende</button>
+      </div>
+    </div>
     <div id="zl_tonvormsg" class="zl-tonhinweis"></div>
     <input id="zl_ton" type="file" accept="audio/*,.wav,.m4a,.mp3,.aac" hidden>
     <div id="zl_tonhinweis" class="zl-tonhinweis" hidden>Mit Ton l&auml;uft der Film endlos weiter, bis die Sprache aufh&ouml;rt, und blendet dann aus.</div>
@@ -1857,7 +1866,7 @@ function zoomloopStarten(root, film, hilfe) {
     try { vor.quelle.stop(); } catch (e) {}
     G.loop = vor.altLoop;
     vor = null;
-    if (!dead) { $("tonvor").innerHTML = "&#9654; Vorschau mit Ton"; draw(); }
+    if (!dead) { $("tonvor").innerHTML = "&#9654; Vorschau mit Ton"; $("vorspring").hidden = true; draw(); }
   }
   $("tonvor").onclick = async function () {
     if (vor) { vorStop(); return; }
@@ -1884,7 +1893,8 @@ function zoomloopStarten(root, film, hilfe) {
       var q = vorAc.createBufferSource(); q.buffer = mb; q.connect(vorAc.destination);
       var t0 = vorAc.currentTime + 0.05;
       q.start(t0);
-      vor = { quelle: q, t0: t0, T: mix.stimmeEnde, iz: mix.intro, bisTon: mix.frames / mix.sr, altLoop: G.loop };
+      vor = { quelle: q, puffer: mb, t0: t0, T: mix.stimmeEnde, iz: mix.intro, bisTon: mix.frames / mix.sr, altLoop: G.loop };
+      $("vorspring").hidden = false;
       G.loop = true;   // wie beim Export: mit Ton laeuft der Film endlos
       knopf.innerHTML = "&#9632; Vorschau beenden";
       requestAnimationFrame(vorLauf);
@@ -1893,6 +1903,27 @@ function zoomloopStarten(root, film, hilfe) {
       vorMsg("Die Vorschau ging nicht: " + (e && e.message || e));
     }
   };
+  // in der Vorschau an eine andere Stelle springen: den Ton ab dort neu starten
+  function vorGesamt() {
+    var abDa = G.abspann && ((ab.titel || "").trim() || (ab.namen || "").trim());
+    return Math.max(vor.T + (abDa ? G.abDauer : nachSek()), (vor.bisTon || 0) + 0.5);
+  }
+  function vorSpringen(t) {
+    if (!vor) return;
+    t = Math.max(0, Math.min(vorGesamt() - 0.5, t));
+    try { vor.quelle.stop(); } catch (e) {}
+    var q = vorAc.createBufferSource(); q.buffer = vor.puffer; q.connect(vorAc.destination);
+    var start = vorAc.currentTime + 0.05;
+    if (t < vor.puffer.duration) q.start(start, t);
+    vor.quelle = q; vor.t0 = start - t;
+  }
+  function vorJetzt() { return vor ? Math.max(0, vorAc.currentTime - vor.t0) : 0; }
+  var vorZieht = false;
+  $("vorpos").addEventListener("pointerdown", function () { vorZieht = true; });
+  $("vorpos").addEventListener("change", function () { vorZieht = false; vorSpringen(parseFloat(this.value) || 0); });
+  $("vorzur").onclick = function () { vorSpringen(vorJetzt() - 60); };
+  $("vorvor").onclick = function () { vorSpringen(vorJetzt() + 60); };
+  $("vorende").onclick = function () { if (vor) vorSpringen(vorGesamt() - 120); };
   function vorLauf() {
     if (!vor || dead) return;
     var T = vor.T, t = Math.max(0, vorAc.currentTime - vor.t0);
@@ -1910,6 +1941,8 @@ function zoomloopStarten(root, film, hilfe) {
       ctx.fillStyle = "rgba(0,0,0," + Math.min(1, (t - (gesamt - 2)) / 2) + ")"; ctx.fillRect(0, 0, W, H);
     }
     $("tt").textContent = dauerText(t) + " / " + dauerText(gesamt);
+    var sl = $("vorpos");
+    if (!vorZieht) { sl.max = String(Math.ceil(gesamt)); sl.value = String(Math.floor(t)); }
     requestAnimationFrame(vorLauf);
   }
 
@@ -4100,6 +4133,10 @@ function StudioStil() {
 .zl-th.aus canvas{opacity:.28; filter:grayscale(1)}
 .zl button.zl-an{position:absolute; left:4px; bottom:4px; z-index:2; width:22px; height:22px; padding:0; border-radius:50%; font-size:12px; line-height:20px; background:rgba(0,0,0,.6)}
 .zl-th.aus .zl-an{color:var(--st-dim)}
+.zl-vorspring{margin:8px 0 2px}
+.zl-vorspring input[type=range]{width:100%}
+.zl-vorknoepfe{display:flex; gap:6px; margin-top:6px}
+.zl-vorknoepfe button{flex:1}
 .zl button.zl-einmal{position:absolute; left:30px; bottom:4px; z-index:2; height:22px; padding:0 6px; border-radius:11px; font-size:11px; line-height:20px; background:rgba(0,0,0,.6); color:var(--st-dim)}
 .zl button.zl-einmal.an{background:var(--st-rot); border-color:var(--st-rot); color:#fff}
 .zl-chk{display:flex; gap:6px; align-items:flex-start; font-size:12px; line-height:1.35; color:var(--st-dim); margin:6px 0; cursor:pointer}
