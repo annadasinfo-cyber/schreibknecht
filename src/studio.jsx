@@ -367,7 +367,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Vorschau springen</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Masken</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1780,9 +1780,23 @@ function zoomloopStarten(root, film, hilfe) {
       var loopF = Math.max(2, Math.round(M * secV * fps)), segF = loopF / M;
       var A = H0 + Math.max(1, Math.round(segF * (V + 1)));
       var midEnde = A + (k * M - 1 - r) * segF, schluss = midEnde + (E + 1) * segF;
-      var anf = { items: [items[0]].concat(einmalB, [kreisB[r]]), loop: false };
-      var mitte = { items: kreisB, loop: true };
-      var ende = { items: [kreisB[M - 1]].concat(endB, [items[n - 1]]), loop: false };
+      // Die Maske, die du auf einem Bild ziehst, gilt fuer den Weg aus diesem Bild heraus,
+      // auch wenn im Film ein anderes Bild folgt (weil "1x"-Bilder uebersprungen werden).
+      var listNach = function (it) { var q = items.indexOf(it); return items[(q + 1) % n]; };
+      var maskeVon = function (liste, ring) {
+        return liste.map(function (it, j) {
+          var vater = j > 0 ? liste[j - 1] : (ring ? liste[liste.length - 1] : null);
+          if (!vater) return it;
+          var besitzer = listNach(vater);
+          if (!besitzer || besitzer === it) return it;
+          var w = Object.create(it), bp = besitzer.p;
+          w.p = Object.assign({}, it.p, { cx: bp.cx, cy: bp.cy, s: bp.s, r: bp.r, shape: bp.shape, feather: bp.feather });
+          return w;
+        });
+      };
+      var anf = { items: maskeVon([items[0]].concat(einmalB, [kreisB[r]]), false), loop: false };
+      var mitte = { items: maskeVon(kreisB, true), loop: true };
+      var ende = { items: maskeVon([kreisB[M - 1]].concat(endB, [items[n - 1]]), false), loop: false };
       return {
         A: Math.max(A, Ue), loopF: loopF, periodischBis: Math.floor(midEnde),
         an: function (g) {
