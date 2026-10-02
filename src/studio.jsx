@@ -372,7 +372,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Bilder unten</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Einfügen unter Markierung</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1274,7 +1274,7 @@ function zoomloopStarten(root, film, hilfe) {
   }
   var laedtHoch = false;
   // einfuegenBei: an dieser Stelle einfuegen (sonst hinten anhaengen)
-  async function addFiles(files, einfuegenBei) {
+  async function addFiles(files, einfuegenBei, markieren) {
     if (laedtHoch) return;
     var stelle = typeof einfuegenBei === "number" ? Math.max(0, Math.min(items.length, einfuegenBei)) : -1;
     var list = Array.prototype.slice.call(files).filter(function (f) { return /^image\//.test(f.type) || /\.(jpe?g|png|webp|gif|avif)$/i.test(f.name); });
@@ -1291,7 +1291,7 @@ function zoomloopStarten(root, film, hilfe) {
         var url = URL.createObjectURL(blob); urls.push(url);
         var el = await bildAus(url);
         var neu = { id: id, name: f.name, pfad: pfad, el: el, p: Object.assign({}, DEF) };
-        if (stelle >= 0) { items.splice(stelle, 0, neu); smallCache.clear(); bigCache.clear(); stelle++; }
+        if (stelle >= 0) { items.splice(stelle, 0, neu); smallCache.clear(); bigCache.clear(); if (markieren) sel = stelle; stelle++; }
         else items.push(neu);
         thumbs(); syncPanel(); draw(); save();
       } catch (e) { bad.push(f.name + " (" + (e.message || e) + ")"); }
@@ -1301,9 +1301,11 @@ function zoomloopStarten(root, film, hilfe) {
     if (bad.length && !dead) alert("Das hat nicht geklappt (HEIC? dann bitte als JPG):\n" + bad.join("\n"));
   }
   $("add").onclick = function () { $("file").click(); };
-  $("file").onchange = function () { addFiles(this.files); this.value = ""; };
+  // neue Bilder kommen direkt unter das markierte Bild; danach ist das neue markiert
+  function unterMarkiert() { return items.length ? Math.min(items.length, sel + 1) : undefined; }
+  $("file").onchange = function () { addFiles(this.files, unterMarkiert(), true); this.value = ""; };
   function onDragOver(e) { e.preventDefault(); }
-  function onDrop(e) { e.preventDefault(); if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files); }
+  function onDrop(e) { e.preventDefault(); if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files, unterMarkiert(), true); }
   root.addEventListener("dragover", onDragOver);
   root.addEventListener("drop", onDrop);
 
