@@ -366,7 +366,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           {ansicht === "film" ? "← filme" : "← schreibknecht"}
         </button>
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Markierungen</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Einmal-Bilder</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -657,7 +657,7 @@ function zoomloopStarten(root, film, hilfe) {
   /* ---------- Speichern: 0,8 s nach der letzten Aenderung ---------- */
   var saveT = 0, saveOffen = false;
   function paket() {
-    return JSON.parse(JSON.stringify({ G: G, items: items.map(function (it) { return { id: it.id, name: it.name, pfad: it.pfad, p: it.p, aus: it.aus ? true : undefined }; }) }));
+    return JSON.parse(JSON.stringify({ G: G, items: items.map(function (it) { return { id: it.id, name: it.name, pfad: it.pfad, p: it.p, aus: it.aus ? true : undefined, einmal: it.einmal ? true : undefined }; }) }));
   }
   function jetztSpeichern() {
     if (!saveOffen) return;
@@ -1209,6 +1209,11 @@ function zoomloopStarten(root, film, hilfe) {
         it.aus = !it.aus;
         u = Math.min(aktivIndex(sel), segs()); thumbs(); syncPanel(); draw(); save();
       };
+      // "1x": laeuft nur einmal am Anfang mit (z. B. Vorraum, Titel), danach wird es uebersprungen
+      var em = document.createElement("button"); em.className = "zl-einmal" + (it.einmal ? " an" : ""); em.textContent = "1\u00d7";
+      em.title = it.einmal ? "l\u00e4uft nur einmal am Anfang \u2013 tippen: l\u00e4uft wieder normal mit" : "nur einmal am Anfang zeigen, danach \u00fcberspringen";
+      em.onclick = function (ev) { ev.stopPropagation(); stop(); it.einmal = !it.einmal; thumbs(); draw(); save(); };
+      if (i === 0 || i === items.length - 1) em.hidden = true;   // Bild 1 und das letzte laufen ohnehin nur einmal
       var c = document.createElement("canvas"); c.width = 160; c.height = Math.round(160 * G.H / G.W);
       var R = cropRect(it.el, G.W / G.H, it.p.pan);
       c.getContext("2d").drawImage(it.el, R[0], R[1], R[2], R[3], 0, 0, c.width, c.height);
@@ -1227,7 +1232,7 @@ function zoomloopStarten(root, film, hilfe) {
         };
         b.appendChild(bt);
       });
-      d.appendChild(n); d.appendChild(an); d.appendChild(c); d.appendChild(b);
+      d.appendChild(n); d.appendChild(an); d.appendChild(em); d.appendChild(c); d.appendChild(b);
       d.onclick = function () { stop(); sel = i; u = Math.min(aktivIndex(i), segs()); thumbs(); syncPanel(); draw(); };
       box.appendChild(d);
     });
@@ -1738,21 +1743,26 @@ function zoomloopStarten(root, film, hilfe) {
     var Ue = Math.ceil((ueberSek || 0) * fps);                      // bis dahin liegt noch etwas darueber (Titel), absolute Zeit
     var dauer = Math.max(1, stimmeSek - (haltSek || 0));
     var n = items.length;
-    if (G.rahmen && n >= 4) {
-      var M = n - 2;
-      var k = Math.max(1, Math.round((dauer / G.sec - 1) / M));
-      var secV = dauer / (k * M + 1);
+    // Bilder mit "1x" laufen nur einmal am Anfang (nach Bild 1) und werden danach uebersprungen
+    var einmalB = items.slice(1, n - 1).filter(function (it) { return it.einmal; });
+    var kreisB = items.slice(1, n - 1).filter(function (it) { return !it.einmal; });
+    if (kreisB.length < 2) { einmalB = []; kreisB = items.slice(1, n - 1); }
+    var V = einmalB.length;
+    if ((G.rahmen || V) && n >= 4) {
+      var M = kreisB.length;
+      var k = Math.max(1, Math.round((dauer / G.sec - 1 - V) / M));
+      var secV = dauer / (k * M + 1 + V);
       var loopF = Math.max(2, Math.round(M * secV * fps)), segF = loopF / M;
-      var A = H0 + Math.max(1, Math.round(segF));
+      var A = H0 + Math.max(1, Math.round(segF * (V + 1)));
       var midEnde = A + (k * M - 1) * segF, schluss = midEnde + segF;
-      var anf = { items: [items[0], items[1]], loop: false };
-      var mitte = { items: items.slice(1, n - 1), loop: true };
-      var ende = { items: [items[n - 2], items[n - 1]], loop: false };
+      var anf = { items: [items[0]].concat(einmalB, [kreisB[0]]), loop: false };
+      var mitte = { items: kreisB, loop: true };
+      var ende = { items: [kreisB[M - 1], items[n - 1]], loop: false };
       return {
         A: Math.max(A, Ue), loopF: loopF, periodischBis: Math.floor(midEnde),
         an: function (g) {
           if (g < H0) return { sicht: anf, u: 0 };
-          if (g < A) return { sicht: anf, u: (g - H0) / (A - H0) };
+          if (g < A) return { sicht: anf, u: (g - H0) / (A - H0) * (V + 1) };
           if (g < midEnde) return { sicht: mitte, u: ((g - A) / segF) % M };
           if (g < schluss) return { sicht: ende, u: (g - midEnde) / segF };
           // das letzte Bild steht, zoomt aber ganz langsam weiter hinein, damit es lebendig bleibt
@@ -2428,7 +2438,7 @@ function zoomloopStarten(root, film, hilfe) {
           var blob = await hilfe.holen(x.pfad);
           var url = URL.createObjectURL(blob); urls.push(url);
           var el = await bildAus(url);
-          raus[i] = { id: x.id, name: x.name, pfad: x.pfad, el: el, p: Object.assign({}, DEF, x.p || {}), aus: !!x.aus };
+          raus[i] = { id: x.id, name: x.name, pfad: x.pfad, el: el, p: Object.assign({}, DEF, x.p || {}), aus: !!x.aus, einmal: !!x.einmal };
         } catch (e) { fehlt++; }
         fertig++;
         if (!dead) msg("Hole Bilder: " + fertig + " von " + liste.length + " \u2026");
@@ -4074,6 +4084,8 @@ function StudioStil() {
 .zl-th.aus canvas{opacity:.28; filter:grayscale(1)}
 .zl button.zl-an{position:absolute; left:4px; bottom:4px; z-index:2; width:22px; height:22px; padding:0; border-radius:50%; font-size:12px; line-height:20px; background:rgba(0,0,0,.6)}
 .zl-th.aus .zl-an{color:var(--st-dim)}
+.zl button.zl-einmal{position:absolute; left:30px; bottom:4px; z-index:2; height:22px; padding:0 6px; border-radius:11px; font-size:11px; line-height:20px; background:rgba(0,0,0,.6); color:var(--st-dim)}
+.zl button.zl-einmal.an{background:var(--st-rot); border-color:var(--st-rot); color:#fff}
 .zl-chk{display:flex; gap:6px; align-items:flex-start; font-size:12px; line-height:1.35; color:var(--st-dim); margin:6px 0; cursor:pointer}
 .zl-chk[hidden]{display:none}
 .zl-chk input{margin-top:2px}
