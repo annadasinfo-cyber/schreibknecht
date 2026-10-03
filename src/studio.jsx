@@ -372,7 +372,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 2.10. · Einfügen unter Markierung</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 3.10. · Taste W</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2636,7 +2636,7 @@ const AU_HTML = `
   </div>
   <div class="au-fuss">
     <button id="au_rec" class="au-rec">&#9679; Aufnahme</button>
-    <button id="au_marke" class="au-marke" hidden title="Versprecher markieren (Taste M)">&#128681; Versprecher <span class="au-klein">(M)</span></button>
+    <button id="au_marke" class="au-marke" hidden title="Versprecher markieren (Taste W)">&#128681; Versprecher <span class="au-klein">(W)</span></button>
     <span id="au_status" class="au-status"></span>
     <button id="au_oeffnen" title="eine Aufnahme &ouml;ffnen">&#128194;</button>
     <input id="au_datei" type="file" accept="audio/*,.wav" multiple hidden>
@@ -3063,7 +3063,7 @@ function aufnahmeStarten(root, hilfe) {
     for (var k = 3; k > 0; k--) { c.textContent = k; await sleep(800); if (dead) return; }
     c.style.display = "none";
     recMarken = [];
-    capturing = true; state = "rec"; setBtn(); status("Aufnahme l\u00e4uft \u2013 bei einem Versprecher M dr\u00fccken");
+    capturing = true; state = "rec"; setBtn(); status("Aufnahme l\u00e4uft \u2013 bei einem Versprecher W dr\u00fccken");
     // alle 5 Sekunden das Neue zusaetzlich im Browser ablegen
     gesichertBis = 0;
     dbTun("stuecke", "readwrite", function (os) { return os.clear(); }).catch(function () {});
@@ -3666,7 +3666,7 @@ function aufnahmeStarten(root, hilfe) {
     marken.splice(best, 1); kopieMerken(); knoepfe(); zeichneWelle();
   };
   function onTasteMarke(e) {
-    if (e.code !== "KeyM" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if ((e.code !== "KeyM" && e.code !== "KeyW") || e.metaKey || e.ctrlKey || e.altKey) return;
     var el = document.activeElement;
     if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.type !== "range" && el.type !== "checkbox") return;
     if (state === "rec") { e.preventDefault(); $("marke").click(); return; }
