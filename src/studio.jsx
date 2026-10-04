@@ -372,7 +372,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 3.10. · Taste W</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 4.10. · Staub</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -564,6 +564,8 @@ const ZL_HTML = `
       <span class="zl-klein">nach der Stimme noch</span>
       <input id="zl_nachlauf" type="text" inputmode="decimal"> <span class="zl-klein">s stehen lassen</span>
     </div>
+    <label class="zl-chk"><input type="checkbox" id="zl_staub"> &#10024; Staub im Kerzenlicht: schwebende, funkelnde P&uuml;nktchen &uuml;ber den Bildern</label>
+    <div id="zl_staubzeile" style="display:flex;align-items:center;gap:8px;margin:2px 0 8px 26px"><span class="zl-klein">wenig</span><input type="range" id="zl_staubmenge" min="10" max="220" step="5" style="flex:1"><span class="zl-klein">viel</span></div>
     <label class="zl-chk" id="zl_rahmenzeile" hidden><input type="checkbox" id="zl_rahmen"> erstes und letztes Bild stehen f&uuml;r sich: Anfang mit Bild 1, dazwischen l&auml;uft der Rest im Kreis, zum Schluss kommt das letzte Bild</label>
     <button id="zl_tonvor" hidden style="width:100%">&#9654; Vorschau mit Ton</button>
     <div id="zl_vorspring" class="zl-vorspring" hidden>
@@ -633,7 +635,7 @@ function zoomloopStarten(root, film, hilfe) {
   var $ = function (id) { return root.querySelector("#zl_" + id); };
   var DEF = { cx: 0, cy: 0, s: 0.08, r: 0, feather: 18, shape: "oval", br: 100, co: 100, sa: 100, hu: 0, pan: 0, text: "", tpos: "unten", tgr: 6 };
   var daten = film.daten || {};
-  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "", tonAb: 6, rahmen: false, nachlauf: 3.5, mitIntro: false, mitOutro: false }, daten.G || {});
+  var G = Object.assign({ W: 1920, H: 1080, sec: 20, ease: 0.8, fade: 0.5, fps: 60, loop: true, abspann: false, abDauer: 15, vorlage: { stil: "", figuren: "" }, kiModell: "", tonAb: 6, rahmen: false, nachlauf: 3.5, mitIntro: false, mitOutro: false, staub: false, staubMenge: 70 }, daten.G || {});
   if (!G.vorlage) G.vorlage = { stil: "", figuren: "" };
   if (!G.vorlage.bilder) G.vorlage.bilder = [];
   var items = [];
@@ -1060,6 +1062,7 @@ function zoomloopStarten(root, film, hilfe) {
     if (abVor || vor) return;   // waehrend einer Vorschau nicht dazwischenmalen
     render(ctx, cv.width, cv.height, u, false, editing() && $("frame").checked, editing());
     var S = segs();
+    if (!(editing() && $("frame").checked)) staubZeichnen(ctx, cv.width, cv.height, u * G.sec, S * G.sec);
     $("scrub").max = Math.max(S, 0.001); $("scrub").value = u;
     $("tt").textContent = S ? (u * G.sec).toFixed(1) + " / " + (S * G.sec).toFixed(0) + " s" : "";
     $("hint").style.display = items.length ? "none" : "";
@@ -1470,6 +1473,10 @@ function zoomloopStarten(root, film, hilfe) {
   });
   $("rahmen").checked = !!G.rahmen;
   $("rahmen").onchange = function () { G.rahmen = this.checked; save(); };
+  $("staub").checked = !!G.staub; $("staubmenge").value = G.staubMenge;
+  $("staubzeile").style.opacity = G.staub ? "1" : ".4";
+  $("staub").onchange = function () { G.staub = this.checked; $("staubzeile").style.opacity = G.staub ? "1" : ".4"; save(); draw(); };
+  $("staubmenge").oninput = function () { G.staubMenge = parseInt(this.value, 10) || 70; save(); draw(); };
 
 
   /* ---------- Intro & Outro (Bausteine) ---------- */
@@ -1825,6 +1832,44 @@ function zoomloopStarten(root, film, hilfe) {
     };
   }
   var driftC = document.createElement("canvas"), driftX = driftC.getContext("2d");
+  // ---------- Staub im Kerzenlicht ----------
+  // Jedes Kornchen ist eine feste Funktion der Zeit (keine Zufallswerte pro Bild): Vorschau und Export
+  // sehen gleich aus, und mit Periode P wiederholt es sich nahtlos (der Export kopiert die Runden).
+  var staubKoerner = null, staubN = 0;
+  function staubVorrat(n) {
+    if (staubKoerner && staubN === n) return staubKoerner;
+    var seed = 20261031;
+    function zufall() { seed = (seed + 0x6D2B79F5) | 0; var t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+    staubKoerner = [];
+    for (var i = 0; i < n; i++) staubKoerner.push({ x: zufall(), y: zufall(), v: 0.004 + zufall() * 0.012, s: 0.6 + zufall() * 1.6, ph: zufall(), sw: zufall(), d: zufall() - 0.5 });
+    staubN = n; return staubKoerner;
+  }
+  function staubZeichnen(c, W, H, t, P) {
+    if (!G.staub) return;
+    P = P > 1 ? P : 600;
+    var k = staubVorrat(Math.max(1, Math.round(G.staubMenge || 70)));
+    var tau = (t / P) % 1, zweiPi = Math.PI * 2, gr = H / 720;
+    c.save(); c.setTransform(1, 0, 0, 1, 0, 0); c.globalCompositeOperation = "lighter";
+    for (var i = 0; i < k.length; i++) {
+      var q = k[i];
+      // ganze Zahl von Runden pro Periode, damit es am Ende der Periode genau wieder passt
+      var runden = Math.max(1, Math.round(P * q.v));
+      var y = (q.y - runden * tau) % 1; if (y < 0) y += 1;
+      var wellen = Math.max(1, Math.round(P / 40));
+      var x = q.x + 0.012 * Math.sin(zweiPi * (wellen * tau + q.sw)) + q.d * 0.02 * Math.sin(zweiPi * (tau + q.ph));
+      x = x - Math.floor(x);
+      var funkelN = Math.max(1, Math.round(P / 5.6));
+      var funkel = 0.35 + 0.65 * Math.abs(Math.sin(Math.PI * (funkelN * tau + q.ph)));
+      var X = x * W, Y = y * H, r = q.s * gr;
+      var a = funkel * 0.75;
+      c.fillStyle = "rgba(255,214,150," + (a * 0.22).toFixed(3) + ")";
+      c.beginPath(); c.arc(X, Y, r * 3, 0, zweiPi); c.fill();
+      c.fillStyle = "rgba(255,222,165," + a.toFixed(3) + ")";
+      c.beginPath(); c.arc(X, Y, r, 0, zweiPi); c.fill();
+    }
+    c.restore();
+  }
+
   function planZeichnen(c, W, H, pa, big) {
     if (!pa.extra || pa.extra <= 1.0001) { mitSicht(pa.sicht, function () { render(c, W, H, pa.u, big, false, false); }); return; }
     if (driftC.width !== W || driftC.height !== H) { driftC.width = W; driftC.height = H; }
@@ -1955,6 +2000,7 @@ function zoomloopStarten(root, film, hilfe) {
     var pa = vor.plan.an(t * 60);
     var W = cv.width, H = cv.height;
     planZeichnen(ctx, W, H, pa, false);
+    staubZeichnen(ctx, W, H, t, vor.plan.loopF / 60);
     if (vor.iz) introUeber(ctx, W, H, t, vor.iz);
     if (abDa && t >= T) abspannUeber(ctx, W, H, t - T, G.abDauer);
     if (T && t > gesamt - 2) {
@@ -2160,6 +2206,7 @@ function zoomloopStarten(root, film, hilfe) {
 
       async function bildRechnen(g, schluessel) {
         planZeichnen(ox, W, H, plan.an(g), true);
+        staubZeichnen(ox, W, H, g / fps, plan.loopF / fps);
         if (iz) introUeber(ox, W, H, g / fps, iz);
         if (abFrames && g >= totalV) abspannUeber(ox, W, H, (g - totalV) / fps, G.abDauer);
         if (g >= total - fadeV) {
