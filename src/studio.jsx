@@ -288,6 +288,29 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
         await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, { method: "DELETE", headers: kopf(s) });
       } catch (e) {}
     },
+    // die anderen Filme, zuletzt bearbeitete zuerst
+    andereFilme: () => [...filme].filter((f) => f.id !== id)
+      .sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")))
+      .map((f) => ({ id: f.id, name: f.name || "ohne Namen" })),
+    // ein Bild in einen anderen Film kopieren: die Datei bekommt dort eine eigene Kopie,
+    // damit Loeschen in einem Film den anderen nie trifft
+    bildKopieren: async (zielId, bild) => {
+      const s = await frisch();
+      const neuId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
+      const ziel = `${s.user.id}/${zielId}/${neuId}.jpg`;
+      const r = await fetch(`${URL_DB}/storage/v1/object/copy`, {
+        method: "POST", headers: kopf(s, "application/json"),
+        body: JSON.stringify({ bucketId: EIMER, sourceKey: bild.pfad, destinationKey: ziel }),
+      });
+      if (!r.ok) throw new Error((await r.text()).slice(0, 160) || "kopieren ging nicht");
+      const l = await api("GET", `/rest/v1/studio_filme?id=eq.${zielId}&select=daten`);
+      const daten = (l && l[0] && l[0].daten) || {};
+      daten.items = Array.isArray(daten.items) ? daten.items : [];
+      daten.items.push({ id: neuId, name: bild.name, pfad: ziel, p: bild.p });
+      const jetzt = new Date().toISOString();
+      await api("PATCH", `/rest/v1/studio_filme?id=eq.${zielId}`, { daten, updated_at: jetzt });
+      setFilme((fl) => fl.map((x) => x.id === zielId ? { ...x, daten, updated_at: jetzt } : x));
+    },
   }), [api, frisch, kopf, URL_DB, filme]);
 
   // ---- helfer fuer den teleprompter ----
@@ -372,7 +395,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 4.10. · Staub</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 4.10. · Bilder kopieren</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -1250,10 +1273,48 @@ function zoomloopStarten(root, film, hilfe) {
         };
         b.appendChild(bt);
       });
+      var kp = document.createElement("button"); kp.textContent = "\u21e2"; kp.title = "in einen anderen Film kopieren";
+      kp.onclick = function (ev) { ev.stopPropagation(); filmWahl(it); };
+      b.appendChild(kp);
       d.appendChild(n); d.appendChild(an); d.appendChild(em); d.appendChild(c); d.appendChild(b);
       d.onclick = function () { stop(); sel = i; u = Math.min(aktivIndex(i), segs()); thumbs(); syncPanel(); draw(); };
       box.appendChild(d);
     });
+  }
+  // ---- ein Bild in einen anderen Film kopieren ----
+  function filmWahl(it) {
+    if (!hilfe.andereFilme || !hilfe.bildKopieren) return;
+    var liste = hilfe.andereFilme();
+    var wurzel = $("thumbs").closest(".zl") || document.body;
+    var alt = wurzel.querySelector(".zl-filmwahl"); if (alt) alt.remove();
+    var hg = document.createElement("div"); hg.className = "zl-filmwahl";
+    var kasten = document.createElement("div"); kasten.className = "zl-fwk";
+    var h = document.createElement("div"); h.className = "zl-fwh";
+    h.textContent = "Bild \u201e" + (it.name || "") + "\u201c kopieren nach \u2026";
+    kasten.appendChild(h);
+    if (!liste.length) {
+      var leer = document.createElement("div"); leer.className = "zl-klein"; leer.textContent = "Es gibt noch keinen anderen Film.";
+      kasten.appendChild(leer);
+    }
+    liste.forEach(function (f) {
+      var bt = document.createElement("button"); bt.className = "zl-fwb"; bt.textContent = f.name;
+      bt.onclick = async function () {
+        kasten.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
+        bt.textContent = f.name + " \u2026 wird kopiert";
+        try {
+          await hilfe.bildKopieren(f.id, { name: it.name, pfad: it.pfad, p: JSON.parse(JSON.stringify(it.p || {})) });
+          hg.remove(); msg("Kopiert nach \u201e" + f.name + "\u201c \u2013 dort steht es ganz hinten.");
+        } catch (e) {
+          hg.remove(); msg("Kopieren ging nicht: " + (e.message || e));
+        }
+      };
+      kasten.appendChild(bt);
+    });
+    var ab = document.createElement("button"); ab.className = "zl-fwab"; ab.textContent = "Abbrechen";
+    ab.onclick = function () { hg.remove(); };
+    kasten.appendChild(ab);
+    hg.onclick = function (e) { if (e.target === hg) hg.remove(); };
+    hg.appendChild(kasten); wurzel.appendChild(hg);
   }
   function neueId() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2); }
   function bildAus(url) {
@@ -4199,6 +4260,11 @@ function StudioStil() {
 .zl-bstwelle{width:100%; height:60px; border:1px solid var(--st-linie); border-radius:3px; cursor:crosshair; display:block; margin:4px 0}
 .zl-bsttitelbild{max-height:40px; max-width:140px; background:repeating-conic-gradient(#222 0 25%, #333 0 50%) 0 0/12px 12px}
 .zl-th{position:relative}
+.zl-filmwahl{position:fixed; inset:0; z-index:50; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; padding:16px}
+.zl-fwk{background:var(--st-bg,#14110e); border:1px solid var(--st-linie,#3a3128); border-radius:8px; padding:16px; width:min(420px,100%); max-height:80vh; overflow:auto; display:flex; flex-direction:column; gap:6px}
+.zl-fwh{font-size:15px; margin-bottom:6px}
+.zl button.zl-fwb{text-align:left; padding:10px 12px}
+.zl button.zl-fwab{margin-top:6px; opacity:.8}
 .zl-th.aus canvas{opacity:.28; filter:grayscale(1)}
 .zl button.zl-an{position:absolute; left:4px; bottom:4px; z-index:2; width:22px; height:22px; padding:0; border-radius:50%; font-size:12px; line-height:20px; background:rgba(0,0,0,.6)}
 .zl-th.aus .zl-an{color:var(--st-dim)}
