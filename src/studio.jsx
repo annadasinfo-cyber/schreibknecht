@@ -395,7 +395,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 4.10. · Bilder kopieren</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 4.10. · Atmer & Klicks</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2673,7 +2673,7 @@ const AU_HTML = `
       <label>Laufen</label>
       <select id="au_mode"><option value="voice">Text folgt meiner Stimme</option><option value="tempo">Gleichm&auml;&szlig;iges Tempo</option><option value="selbst">Selbst scrollen (Trackpad, Mausrad, Pfeiltasten)</option></select>
       <label class="au-chk"><input type="checkbox" id="au_mirror"> Spiegeln (f&uuml;r Glasaufsatz)</label>
-      <label class="au-chk"><input type="checkbox" id="au_ns"> Rauschfilter vom Browser</label>
+      <label class="au-chk"><input type="checkbox" id="au_ns"> Rauschfilter vom Browser <span class="au-klein">(macht die Stimme dumpfer, mit dem DJI nicht n&ouml;tig)</span></label>
       <label class="au-klein">Mikrofon</label>
       <select id="au_mik"><option value="">so wie im Mac eingestellt</option></select>
     </div>
@@ -2718,6 +2718,16 @@ const AU_HTML = `
         <span class="au-klein">ab</span>
         <input id="au_pdab" type="number" min="0.5" max="5" step="0.1" value="1.2"> <span class="au-klein">s, l&auml;ngere werden auf</span>
         <input id="au_pdmax" type="number" min="1" max="10" step="0.1" value="3"> <span class="au-klein">s gek&uuml;rzt</span>
+      </div>
+      <div class="au-row au-pausen">
+        <button id="au_geraeusch" title="leise Ger&auml;usche in den Pausen (Atmer, Klicks, Schmatzer) finden und stumm machen">&#129755; Atmer &amp; Klicks entfernen</button>
+        <select id="au_gmodus">
+          <option value="vorsichtig">vorsichtig</option>
+          <option value="normal">normal</option>
+          <option value="kraeftig">kr&auml;ftig</option>
+        </select>
+        <button id="au_gzurueck" hidden title="die gr&uuml;ne Stelle, in der der Zeiger steht, wieder herstellen">&#8634; Stelle zur&uuml;ck</button>
+        <span class="au-klein">am besten vor dem Pausenk&uuml;rzen</span>
       </div>
       <div id="au_zeit" class="au-zeit"></div>
     </div>
@@ -2908,7 +2918,7 @@ function aufnahmeStarten(root, hilfe) {
   function status(t) { if (!dead) $("status").textContent = t || ""; }
 
   /* ---------- Einstellungen (je Geraet) ---------- */
-  var S = Object.assign({ size: 44, speed: 40, mode: "voice", mirror: false, ns: true, preset: "studio" },
+  var S = Object.assign({ size: 44, speed: 40, mode: "voice", mirror: false, ns: false, preset: "studio" },
     (function () { try { return JSON.parse(localStorage.getItem("studio:aufn")) || {}; } catch (e) { return {}; } })());
   function saveS() { try { localStorage.setItem("studio:aufn", JSON.stringify(S)); } catch (e) {} }
 
@@ -3554,6 +3564,11 @@ function aufnahmeStarten(root, hilfe) {
       x.fillStyle = "rgba(184,69,47,.35)"; x.fillRect(a, 0, b - a, H);
       x.fillStyle = "rgba(184,69,47,.9)"; x.fillRect(a, 0, 1 * dpr, H); x.fillRect(b - dpr, 0, dpr, H);
     }
+    (gStellen || []).forEach(function (gs) {
+      var g0 = (gs[0] / sr - sicht0) / sichtLang * W, g1 = (gs[1] / sr - sicht0) / sichtLang * W;
+      if (g1 < 0 || g0 > W) return;
+      x.fillStyle = "rgba(110,190,120,.28)"; x.fillRect(g0, 0, Math.max(2, g1 - g0), H);
+    });
     marken.forEach(function (m) {
       var mx = (m / sr - sicht0) / sichtLang * W;
       if (mx < -10 || mx > W + 10) return;
@@ -3729,6 +3744,80 @@ function aufnahmeStarten(root, hilfe) {
       " \u2013 " + ((vorher - raw.length) / sr).toFixed(1).replace(".", ",") + " s k\u00fcrzer. Mit \u21b6 holst du alles zur\u00fcck.");
   }
   $("pausen").onclick = pausenKuerzen;
+
+  // ---------- Atmer & Klicks: kurze, leise Geraeusche zwischen den Saetzen stumm machen ----------
+  var gStellen = [];   // zum Anzeigen in der Welle, bis zum naechsten Schnitt
+  var G_MODI = {
+    vorsichtig: { abstand: 16, maxS: 0.45 },
+    normal: { abstand: 12, maxS: 0.65 },
+    kraeftig: { abstand: 8, maxS: 0.9 }
+  };
+  if (S.gModus && G_MODI[S.gModus]) $("gmodus").value = S.gModus; else $("gmodus").value = "normal";
+  $("gmodus").onchange = function () { S.gModus = this.value; saveS(); };
+  function geraeuscheEntfernen() {
+    if (!raw || state !== "idle") return;
+    hoerStop();
+    var mod = G_MODI[$("gmodus").value] || G_MODI.normal;
+    var bl = Math.max(1, Math.round(0.01 * sr)), nb = Math.floor(raw.length / bl), pw = new Float32Array(nb);
+    for (var b = 0; b < nb; b++) { var m = 0; for (var i = b * bl; i < (b + 1) * bl; i++) m += raw[i] * raw[i]; pw[b] = m / bl; }
+    if (nb < 50) return;
+    var so = Array.prototype.slice.call(pw).sort(function (a, c) { return a - c; });
+    var boden = so[Math.floor(nb * 0.1)] + 1e-12, laut = so[Math.floor(nb * 0.9)] + 1e-12;
+    var schwelle = Math.max(boden * Math.pow(10, 0.6), Math.min(boden * Math.pow(10, 1.0), laut * Math.pow(10, -2.0)));
+    var grenze = laut * Math.pow(10, -mod.abstand / 10);
+    // Inseln aus Nicht-Stille finden (kleine Luecken unter 40 ms zaehlen nicht als Trennung)
+    var inseln = [], st = -1, luecke = 0;
+    for (var k = 0; k <= nb; k++) {
+      var still = k === nb || pw[k] < schwelle;
+      if (!still) { if (st < 0) st = k; luecke = 0; }
+      else if (st >= 0) { luecke++; if (luecke >= 4 || k === nb) { inseln.push([st, k - luecke + 1]); st = -1; luecke = 0; } }
+    }
+    var treffer = [];
+    for (var j = 0; j < inseln.length; j++) {
+      var a = inseln[j][0], e = inseln[j][1], dauerS = (e - a) * bl / sr;
+      if (dauerS > mod.maxS) continue;
+      var vor = j > 0 ? (a - inseln[j - 1][1]) * bl / sr : 9, nach = j < inseln.length - 1 ? (inseln[j + 1][0] - e) * bl / sr : 9;
+      if (vor < 0.2 || nach < 0.04) continue;           // nur Geraeusche, die in einer Pause stehen (ein T/D am Wortende haengt naeher dran)
+      var pk = 0; for (var q = a; q < e; q++) if (pw[q] > pk) pk = pw[q];
+      if (pk >= grenze) continue;                       // so laut wie Sprache: bleibt
+      treffer.push([Math.max(0, a * bl - Math.round(0.008 * sr)), Math.min(raw.length, e * bl + Math.round(0.008 * sr))]);
+    }
+    if (!treffer.length) { status("Keine leisen Ger\u00e4usche in den Pausen gefunden."); return; }
+    rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+    var neu = raw.slice(), f = Math.round(0.01 * sr);
+    var orig = treffer.map(function (t) { return raw.slice(t[0], t[1]); });
+    treffer.forEach(function (t) {
+      for (var i = t[0]; i < t[1]; i++) {
+        var g = 0, rein = i - t[0], raus = t[1] - 1 - i;
+        if (rein < f) g = 1 - rein / f; else if (raus < f) g = 1 - raus / f;   // weich aus- und wieder einblenden
+        neu[i] *= g;
+      }
+    });
+    raw = neu; nachSchnitt(kopf);
+    gStellen = treffer.map(function (t, i) { return [t[0], t[1], orig[i]]; }); zeichneWelle();
+    $("gzurueck").hidden = false;
+    status(treffer.length + " Ger\u00e4usche stumm gemacht (gr\u00fcn markiert). Einzelne holst du mit \u201eStelle zur\u00fcck\u201c, alle mit \u21b6.");
+  }
+  $("geraeusch").onclick = geraeuscheEntfernen;
+  // eine einzelne gruene Stelle wiederherstellen: die, in der der Zeiger steht (oder die naechste daneben)
+  $("gzurueck").onclick = function () {
+    if (!raw || !gStellen.length) return;
+    hoerStop();
+    var p = kopf * sr, best = -1, abst = Infinity;
+    gStellen.forEach(function (gs, i) {
+      var d = p < gs[0] ? gs[0] - p : (p > gs[1] ? p - gs[1] : 0);
+      if (d < abst) { abst = d; best = i; }
+    });
+    if (best < 0 || abst > 0.5 * sr) { status("Setz den Zeiger in die gr\u00fcne Stelle, die du behalten willst."); return; }
+    var gs = gStellen[best];
+    rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+    var neu = raw.slice(); neu.set(gs[2], gs[0]); raw = neu;
+    var rest = gStellen.slice(0, best).concat(gStellen.slice(best + 1));
+    nachSchnitt(kopf);
+    gStellen = rest; zeichneWelle();
+    $("gzurueck").hidden = !gStellen.length;
+    status("Stelle wieder da. Noch " + gStellen.length + " gr\u00fcn markiert.");
+  };
   // Pausen-Einstellungen merken
   if (S.pmin) $("pmin").value = S.pmin;
   if (S.pziel !== undefined) $("pziel").value = S.pziel;
@@ -3799,6 +3888,7 @@ function aufnahmeStarten(root, hilfe) {
     raw = neu; nachSchnitt(u.pos / sr);
   }
   function nachSchnitt(t) {
+    if (typeof gStellen !== "undefined") { gStellen = []; var gz = $("gzurueck"); if (gz) gz.hidden = true; }
     wahlA = wahlB = null; kopf = Math.min(t, dauer()); inApp = false; kopieMerken();
     spitzenBauen();
     sichtLang = Math.min(sichtLang, dauer()); sicht0 = Math.max(0, Math.min(sicht0, dauer() - sichtLang));
@@ -3984,7 +4074,9 @@ function aufnahmeStarten(root, hilfe) {
   async function alsM4a(x, rate) {
     if (!("AudioEncoder" in window)) throw new Error("In die App speichern geht in diesem Browser nicht \u2013 bitte Safari aktualisieren (ab Version 26), sonst Teilen/AirDrop.");
     await mp4BausteinLaden();
-    var cfg = { codec: "mp4a.40.2", sampleRate: rate, numberOfChannels: 1, bitrate: 96000, aac: { format: "aac" } };
+    // 192 kbit/s wie beim Export, damit die Hoehen erhalten bleiben (96 nur, falls der Browser 192 nicht kann)
+    var cfg = { codec: "mp4a.40.2", sampleRate: rate, numberOfChannels: 1, bitrate: 192000, aac: { format: "aac" } };
+    if (!(await AudioEncoder.isConfigSupported(cfg)).supported) cfg.bitrate = 96000;
     if (!(await AudioEncoder.isConfigSupported(cfg)).supported) throw new Error("Dieser Browser kann den Ton nicht verkleinern \u2013 nimm Teilen/AirDrop.");
     var pk = 0; for (var i = 0; i < x.length; i++) { var a = Math.abs(x[i]); if (a > pk) pk = a; }
     var g = pk > 1e-6 ? Math.min(30, 0.9 / pk) : 1;
@@ -4079,6 +4171,8 @@ function aufnahmeStarten(root, hilfe) {
   $("mode").onchange = function () { S.mode = this.value; saveS(); };
   $("mirror").onchange = function () { S.mirror = this.checked; applyLook(); saveS(); };
   $("ns").onchange = function () { S.ns = this.checked; saveS(); };
+  // einmalig: der Rauschfilter des Browsers war vorher an und macht die Stimme dumpf -> aus
+  if (!S.nsAus1) { S.ns = false; S.nsAus1 = true; $("ns").checked = false; saveS(); }
   $("top").onclick = function () { if (active) return; $("scroller").scrollTop = 0; markDone(0); };
   function oeffneEditor() {
     var ta = $("ta"); if (active) return;
