@@ -395,7 +395,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 4.10. · Atmer & Klicks</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 4.10. · lange Atmer</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -3748,9 +3748,10 @@ function aufnahmeStarten(root, hilfe) {
   // ---------- Atmer & Klicks: kurze, leise Geraeusche zwischen den Saetzen stumm machen ----------
   var gStellen = [];   // zum Anzeigen in der Welle, bis zum naechsten Schnitt
   var G_MODI = {
-    vorsichtig: { abstand: 16, maxS: 0.45 },
-    normal: { abstand: 12, maxS: 0.65 },
-    kraeftig: { abstand: 8, maxS: 0.9 }
+    // abstand/maxS: kurze Geraeusche (Klicks, kurze Atmer); atem/atemS: lange, flache Atmer (sehr leise, bis 2 s)
+    vorsichtig: { abstand: 16, maxS: 0.45, atem: 22, atemS: 1.6 },
+    normal: { abstand: 12, maxS: 0.65, atem: 18, atemS: 2.0 },
+    kraeftig: { abstand: 8, maxS: 0.9, atem: 14, atemS: 2.5 }
   };
   if (S.gModus && G_MODI[S.gModus]) $("gmodus").value = S.gModus; else $("gmodus").value = "normal";
   $("gmodus").onchange = function () { S.gModus = this.value; saveS(); };
@@ -3764,22 +3765,31 @@ function aufnahmeStarten(root, hilfe) {
     var so = Array.prototype.slice.call(pw).sort(function (a, c) { return a - c; });
     var boden = so[Math.floor(nb * 0.1)] + 1e-12, laut = so[Math.floor(nb * 0.9)] + 1e-12;
     var schwelle = Math.max(boden * Math.pow(10, 0.6), Math.min(boden * Math.pow(10, 1.0), laut * Math.pow(10, -2.0)));
-    var grenze = laut * Math.pow(10, -mod.abstand / 10);
-    // Inseln aus Nicht-Stille finden (kleine Luecken unter 40 ms zaehlen nicht als Trennung)
+    var grenze = laut * Math.pow(10, -mod.abstand / 10), atemGrenze = laut * Math.pow(10, -mod.atem / 10);
+    // Inseln aus Nicht-Stille finden (Luecken unter 30 ms zaehlen nicht als Trennung)
     var inseln = [], st = -1, luecke = 0;
     for (var k = 0; k <= nb; k++) {
       var still = k === nb || pw[k] < schwelle;
       if (!still) { if (st < 0) st = k; luecke = 0; }
-      else if (st >= 0) { luecke++; if (luecke >= 4 || k === nb) { inseln.push([st, k - luecke + 1]); st = -1; luecke = 0; } }
+      else if (st >= 0) { luecke++; if (luecke >= 3 || k === nb) { inseln.push([st, k - luecke + 1]); st = -1; luecke = 0; } }
     }
+    inseln.forEach(function (ins) { var pk = 0; for (var q = ins[0]; q < ins[1]; q++) if (pw[q] > pk) pk = pw[q]; ins.push(pk); });
+    // ein flacher Atmer zerfaellt oft in mehrere leise Stuecke: leise Nachbarn mit kleiner Luecke zusammenfassen
+    var gruppen = [];
+    inseln.forEach(function (ins) {
+      var letzte = gruppen[gruppen.length - 1];
+      if (letzte && letzte[2] < grenze && ins[2] < grenze && (ins[0] - letzte[1]) * bl / sr < 0.12) {
+        letzte[1] = ins[1]; letzte[2] = Math.max(letzte[2], ins[2]);
+      } else gruppen.push(ins.slice());
+    });
     var treffer = [];
-    for (var j = 0; j < inseln.length; j++) {
-      var a = inseln[j][0], e = inseln[j][1], dauerS = (e - a) * bl / sr;
-      if (dauerS > mod.maxS) continue;
-      var vor = j > 0 ? (a - inseln[j - 1][1]) * bl / sr : 9, nach = j < inseln.length - 1 ? (inseln[j + 1][0] - e) * bl / sr : 9;
-      if (vor < 0.2 || nach < 0.04) continue;           // nur Geraeusche, die in einer Pause stehen (ein T/D am Wortende haengt naeher dran)
-      var pk = 0; for (var q = a; q < e; q++) if (pw[q] > pk) pk = pw[q];
-      if (pk >= grenze) continue;                       // so laut wie Sprache: bleibt
+    for (var j = 0; j < gruppen.length; j++) {
+      var a = gruppen[j][0], e = gruppen[j][1], pk = gruppen[j][2], dauerS = (e - a) * bl / sr;
+      var vor = j > 0 ? (a - gruppen[j - 1][1]) * bl / sr : 9, nach = j < gruppen.length - 1 ? (gruppen[j + 1][0] - e) * bl / sr : 9;
+      if (vor < 0.2 || nach < 0.03) continue;           // nur Geraeusche, die in einer Pause stehen (ein T/D am Wortende haengt naeher dran)
+      var kurzUndLeise = dauerS <= mod.maxS && pk < grenze;
+      var flacherAtmer = dauerS <= mod.atemS && pk < atemGrenze;
+      if (!kurzUndLeise && !flacherAtmer) continue;
       treffer.push([Math.max(0, a * bl - Math.round(0.008 * sr)), Math.min(raw.length, e * bl + Math.round(0.008 * sr))]);
     }
     if (!treffer.length) { status("Keine leisen Ger\u00e4usche in den Pausen gefunden."); return; }
