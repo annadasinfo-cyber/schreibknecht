@@ -360,6 +360,21 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
     aufnahmeWeg: async (pfad) => {
       const s = await frisch();
       await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, { method: "DELETE", headers: kopf(s) });
+      try { await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad.replace(/\.m4a$/, ".json")}`, { method: "DELETE", headers: kopf(s) }); } catch (e) {}
+    },
+    // kleine Begleitdatei zur Aufnahme (z. B. die Versprecher-Faehnchen)
+    aufnahmeMeta: async (pfad, daten) => {
+      const s = await frisch();
+      await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad.replace(/\.m4a$/, ".json")}`, {
+        method: "POST", headers: { ...kopf(s, "application/json"), "x-upsert": "true" }, body: JSON.stringify(daten),
+      });
+    },
+    aufnahmeMetaHolen: async (pfad) => {
+      try {
+        const s = await frisch();
+        const r = await fetch(`${URL_DB}/storage/v1/object/authenticated/${EIMER}/${pfad.replace(/\.m4a$/, ".json")}`, { headers: kopf(s) });
+        return r.ok ? await r.json() : null;
+      } catch (e) { return null; }
     },
   }), [textHilfe, frisch, kopf, URL_DB]);
   aufnahmenFach.current = aufnHilfe();
@@ -395,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 4.10. · lange Atmer</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 5.10. · Fähnchen bleiben</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2699,6 +2714,7 @@ const AU_HTML = `
         <button id="au_mvor" title="zur n&auml;chsten Markierung springen">&#128681; &#9654;</button>
         <button id="au_mweg" title="die Markierung beim Zeiger l&ouml;schen">&#10005; &#128681;</button>
         <span class="au-luft"></span>
+        <button id="au_weiter" title="weiter aufnehmen: das Neue kommt hinten an diese Aufnahme">&#9210; Aufnahme fortsetzen</button>
         <button id="au_dazuende" title="eine oder mehrere Dateien hinten an die Aufnahme h&auml;ngen">&#10133; ans Ende</button>
         <button id="au_dazukopf" title="eine oder mehrere Dateien an der Stelle des Zeigers einf&uuml;gen">&#10133; am Zeiger</button>
         <input id="au_dazu" type="file" accept="audio/*,.wav" multiple hidden>
@@ -3166,10 +3182,22 @@ function aufnahmeStarten(root, hilfe) {
     b.disabled = state === "busy" || state === "count";
     $("marke").hidden = state !== "rec";
   }
+  // "Aufnahme fortsetzen": das Neue kommt hinten an die offene Aufnahme, mit ihren Faehnchen
+  var fortsetzen = null;
+  $("weiter").onclick = function () {
+    if (!raw || state !== "idle") return;
+    hoerStop();
+    fortsetzen = { raw: raw, marken: marken.slice() };
+    aufnahmeStarten();
+  };
   $("rec").onclick = async function () {
     if (state === "rec") { stopAll(); return; }
     if (state !== "idle") return;
     if (!darfErsetzen()) return;
+    fortsetzen = null;
+    aufnahmeStarten();
+  };
+  async function aufnahmeStarten() {
     if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
     ac.resume();
     state = "busy"; setBtn(); $("take").hidden = true; schliesseEditor(false);
@@ -3187,7 +3215,8 @@ function aufnahmeStarten(root, hilfe) {
     dbTun("stuecke", "readwrite", function (os) { return os.clear(); }).catch(function () {});
     sicherUhr = setInterval(zwischenSichern, 5000);
     startPrompter();
-  };
+    if (fortsetzen) status("Aufnahme wird fortgesetzt \u2013 das Neue kommt hinten an. Versprecher: W");
+  }
   var gesichertBis = 0, sicherUhr = null;
   function zwischenSichern() {
     if (gesichertBis >= chunks.length) return;
@@ -3202,7 +3231,25 @@ function aufnahmeStarten(root, hilfe) {
     capturing = false; stopPrompter(); raw = closeMic(); inApp = false;
     if (wake) { try { wake.release(); } catch (e) {} wake = null; }
     state = "idle"; setBtn();
-    if (raw.length < sr * 0.5) { status("Die Aufnahme war zu kurz."); raw = null; return; }
+    var fort = fortsetzen; fortsetzen = null;
+    if (raw.length < sr * 0.5) {
+      if (fort) { raw = fort.raw; marken = fort.marken; cache = {}; showTake(); status("Die Fortsetzung war zu kurz \u2013 die Aufnahme ist unver\u00e4ndert."); return; }
+      status("Die Aufnahme war zu kurz."); raw = null; return;
+    }
+    if (fort) {
+      // hinten anhaengen, die Naht ganz kurz weich, Faehnchen mitverschieben; mit \u21b6 ist die Fortsetzung wieder weg
+      var neuT = raw, f = Math.min(Math.round(0.005 * sr), neuT.length);
+      for (var fi = 0; fi < f; fi++) neuT[fi] *= fi / f;
+      var ganz = new Float32Array(fort.raw.length + neuT.length);
+      ganz.set(fort.raw, 0); ganz.set(neuT, fort.raw.length);
+      raw = ganz;
+      marken = fort.marken.concat(recMarken.map(function (m) { return m + fort.raw.length; }));
+      cache = {}; showTake();   // setzt das Rueckgaengig zurueck, darum danach eintragen
+      rueck.push({ voll: fort.raw, m: fort.marken });
+      kopf = fort.raw.length / sr; knoepfe(); zeichneWelle();
+      status("Fortgesetzt: " + zeitText(neuT.length / sr) + " angeh\u00e4ngt, jetzt " + zeitText(raw.length / sr) + " lang." + (recMarken.length ? " " + recMarken.length + " neue Versprecher markiert." : "") + " Mit \u21b6 ist das Neue wieder weg.");
+      return;
+    }
     marken = recMarken.slice();
     cache = {}; showTake();
     // gleich pruefen, ob ueberhaupt etwas angekommen ist
@@ -4003,7 +4050,15 @@ function aufnahmeStarten(root, hilfe) {
         b.onclick = async function () {
           if (!darfErsetzen()) return;
           $("liste").hidden = true; status("Wird geholt \u2026");
-          try { await tonLaden(await (await hilfe.aufnahmeHolen(a.pfad)).arrayBuffer(), true); }
+          try {
+            await tonLaden(await (await hilfe.aufnahmeHolen(a.pfad)).arrayBuffer(), true);
+            var meta = hilfe.aufnahmeMetaHolen ? await hilfe.aufnahmeMetaHolen(a.pfad) : null;
+            if (meta && Array.isArray(meta.marken) && meta.marken.length) {
+              marken = meta.marken.map(function (t) { return Math.round(t * sr); }).filter(function (m) { return m >= 0 && m < raw.length; });
+              knoepfe(); zeichneWelle(); kopieMerken();
+              status("Ge\u00f6ffnet \u2013 mit " + marken.length + " Versprecher-F\u00e4hnchen.");
+            }
+          }
           catch (e) { status("\u00d6ffnen ging nicht: " + (e.message || e)); }
         };
         var w = document.createElement("button"); w.textContent = "\u2715"; w.title = "aus der App l\u00f6schen";
@@ -4115,7 +4170,9 @@ function aufnahmeStarten(root, hilfe) {
       var blob = await alsM4a(raw, sr);
       if (blob.size > 49 * 1048576) throw new Error("Die Aufnahme ist zu lang f\u00fcr ein St\u00fcck (\u00fcber 50 MB). Teil sie auf oder nimm Speichern.");
       status("Wird hochgeladen \u2026 (" + (blob.size / 1048576).toFixed(1).replace(".", ",") + " MB)");
-      await hilfe.aufnahmeHoch(blob, dateiNameFuer());
+      var pfadNeu = await hilfe.aufnahmeHoch(blob, dateiNameFuer());
+      // die Faehnchen in Sekunden daneben legen, damit sie beim naechsten Oeffnen wieder da sind
+      if (hilfe.aufnahmeMeta) { try { await hilfe.aufnahmeMeta(pfadNeu, { marken: marken.map(function (m) { return m / sr; }) }); } catch (e) {} }
       inAppMerken(true);
       status("In der App gespeichert \u2013 \u00fcber \ud83d\udcc2 auf jedem Ger\u00e4t zu \u00f6ffnen.");
     } catch (e) { status(e.message || String(e)); }
