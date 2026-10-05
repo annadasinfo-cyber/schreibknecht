@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 5.10. · Fähnchen bleiben</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 5.10. · Mikro-Alarm</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2697,6 +2697,12 @@ const AU_HTML = `
     <div class="au-mark"></div>
     <div id="au_scroller" class="au-scroller"><div id="au_words" class="au-words"></div></div>
     <div id="au_count" class="au-count"></div>
+    <div id="au_alarm" class="au-alarm" hidden>
+      <div class="au-alarm-t">&#9888; Mikrofon verloren!</div>
+      <div id="au_alarmtext" class="au-alarm-s"></div>
+      <div class="au-alarm-s">An der Stelle steht ein F&auml;hnchen. Stopp dr&uuml;cken, Mikro pr&uuml;fen und mit &bdquo;Aufnahme fortsetzen&ldquo; weitermachen.</div>
+      <button id="au_alarmok">verstanden</button>
+    </div>
     <textarea id="au_ta" class="au-ta" hidden placeholder="Hier deinen Text einf&uuml;gen. Leerzeile = neuer Absatz."></textarea>
   </div>
   <div class="au-meter"><i id="au_meter"></i></div>
@@ -3128,6 +3134,7 @@ function aufnahmeStarten(root, hilfe) {
       status("Das gew\u00e4hlte Mikrofon ist nicht angeschlossen \u2013 ich nehme das vom Mac.");
     }
     mikListe();
+    wacheStarten();
     if (ac.state !== "running") await ac.resume();
     sr = ac.sampleRate; chunks = [];
     srcNode = ac.createMediaStreamSource(stream);
@@ -3146,7 +3153,57 @@ function aufnahmeStarten(root, hilfe) {
     muteNode = ac.createGain(); muteNode.gain.value = 0;
     srcNode.connect(recNode); recNode.connect(muteNode); muteNode.connect(ac.destination);
   }
+  // ---------- Alarmanlage: passt auf, dass das Mikro waehrend der Aufnahme nicht verloren geht ----------
+  var wache = { an: false, id: "", label: "", alarm: false };
+  function ohneVorsatz(l) { return String(l || "").replace(/^(Standard|Default)\s*[-\u2013:]\s*/i, "").trim(); }
+  function wacheStarten() {
+    var tr = stream && stream.getAudioTracks()[0];
+    if (!tr) return;
+    var st = tr.getSettings ? tr.getSettings() : {};
+    wache = { an: true, id: st.deviceId || "", label: ohneVorsatz(tr.label), alarm: false };
+    tr.onended = function () { mikAlarm("Die Verbindung zum Mikrofon ist abgerissen."); };
+    tr.onmute = function () {
+      setTimeout(function () { if (tr.muted) mikAlarm("Das Mikrofon liefert keinen Ton mehr."); }, 1500);
+    };
+  }
+  async function geraeteWechsel() {
+    if (!wache.an || state !== "rec") return;
+    try {
+      var l = (await navigator.mediaDevices.enumerateDevices()).filter(function (d) { return d.kind === "audioinput"; });
+      if (wache.id && wache.id !== "default" && !l.some(function (d) { return d.deviceId === wache.id; })) {
+        mikAlarm("\u201e" + (wache.label || "Dein Mikrofon") + "\u201c ist nicht mehr angeschlossen."); return;
+      }
+      // folgt das Studio dem Mac: hat der Mac auf ein anderes Mikro umgeschaltet?
+      var std = l.filter(function (d) { return d.deviceId === "default"; })[0];
+      if (std && wache.label && ohneVorsatz(std.label) && ohneVorsatz(std.label) !== wache.label) {
+        mikAlarm("Der Mac hat von \u201e" + wache.label + "\u201c auf \u201e" + ohneVorsatz(std.label) + "\u201c umgeschaltet.");
+      }
+    } catch (e) {}
+  }
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener("devicechange", geraeteWechsel);
+  function piepen() {
+    try {
+      var t0 = ac.currentTime + 0.05;
+      for (var i = 0; i < 3; i++) {
+        var o = ac.createOscillator(), g = ac.createGain();
+        o.frequency.value = 880; g.gain.setValueAtTime(0, t0 + i * 0.35);
+        g.gain.linearRampToValueAtTime(0.25, t0 + i * 0.35 + 0.02); g.gain.linearRampToValueAtTime(0, t0 + i * 0.35 + 0.22);
+        o.connect(g); g.connect(ac.destination); o.start(t0 + i * 0.35); o.stop(t0 + i * 0.35 + 0.25);
+      }
+    } catch (e) {}
+  }
+  function mikAlarm(grund) {
+    if (!wache.an || wache.alarm || state !== "rec") return;
+    wache.alarm = true;
+    recMarken.push(chunks.length * 2048);   // Faehnchen an die Stelle
+    $("alarmtext").textContent = grund;
+    $("alarm").hidden = false;
+    piepen();
+    status("\u26a0 " + grund + " Stopp dr\u00fccken und das Mikro pr\u00fcfen.");
+  }
+  $("alarmok").onclick = function () { $("alarm").hidden = true; };
   function closeMic() {
+    wache.an = false; $("alarm").hidden = true;
     try { srcNode.disconnect(); recNode.disconnect(); muteNode.disconnect(); } catch (e) {}
     if (recNode && recNode.port) recNode.port.onmessage = null;
     if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
@@ -3247,7 +3304,8 @@ function aufnahmeStarten(root, hilfe) {
       cache = {}; showTake();   // setzt das Rueckgaengig zurueck, darum danach eintragen
       rueck.push({ voll: fort.raw, m: fort.marken });
       kopf = fort.raw.length / sr; knoepfe(); zeichneWelle();
-      status("Fortgesetzt: " + zeitText(neuT.length / sr) + " angeh\u00e4ngt, jetzt " + zeitText(raw.length / sr) + " lang." + (recMarken.length ? " " + recMarken.length + " neue Versprecher markiert." : "") + " Mit \u21b6 ist das Neue wieder weg.");
+      if (wache.alarm) status("\u26a0 W\u00e4hrend der Fortsetzung ist das Mikro verloren gegangen \u2013 ein F\u00e4hnchen markiert die Stelle.");
+      else status("Fortgesetzt: " + zeitText(neuT.length / sr) + " angeh\u00e4ngt, jetzt " + zeitText(raw.length / sr) + " lang." + (recMarken.length ? " " + recMarken.length + " neue Versprecher markiert." : "") + " Mit \u21b6 ist das Neue wieder weg.");
       return;
     }
     marken = recMarken.slice();
@@ -3257,6 +3315,7 @@ function aufnahmeStarten(root, hilfe) {
     var db = Math.round(20 * Math.log10(pk + 1e-9));
     if (pk < 0.004) status("Achtung: Die Aufnahme ist fast stumm (lauteste Stelle " + db + " dB). Schau bitte, welches Mikrofon oben ausgew\u00e4hlt ist.");
     else status("Aufnahme fertig \u2013 lauteste Stelle " + db + " dB." + (marken.length ? " " + marken.length + (marken.length === 1 ? " Versprecher" : " Versprecher") + " markiert." : ""));
+    if (wache.alarm) status("\u26a0 W\u00e4hrend der Aufnahme ist das Mikro verloren gegangen \u2013 ein F\u00e4hnchen markiert die Stelle. Ab dort am besten neu aufnehmen.");
   }
 
   /* ---------- Klangkette ---------- */
@@ -4277,6 +4336,7 @@ function aufnahmeStarten(root, hilfe) {
     document.removeEventListener("keydown", onKey);
     document.removeEventListener("keydown", onTasteSchnitt);
     document.removeEventListener("keydown", onTasteMarke);
+    if (navigator.mediaDevices && navigator.mediaDevices.removeEventListener) navigator.mediaDevices.removeEventListener("devicechange", geraeteWechsel);
     window.removeEventListener("resize", onGroesse);
     if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
     if (wake) { try { wake.release(); } catch (e) {} }
@@ -4493,6 +4553,12 @@ function StudioStil() {
 .au button.au-rec{background:var(--st-rot); border-color:var(--st-rot); color:#fff; padding:12px 20px; font-size:17px}
 .au button.au-rec.stop{background:#0b0907; color:var(--st-rot)}
 .au button.au-marke{padding:12px 16px; font-size:16px}
+.au-alarm{position:absolute; inset:8% 6%; z-index:30; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; text-align:center;
+  background:rgba(120,10,15,.94); border:3px solid #ff5a4a; border-radius:12px; padding:24px; animation:au-alarm 1s ease-in-out infinite alternate}
+.au-alarm[hidden]{display:none}
+.au-alarm-t{font-size:clamp(28px,5vw,54px); font-weight:700; color:#fff}
+.au-alarm-s{font-size:clamp(16px,2vw,22px); color:#ffe2dc; max-width:40em}
+@keyframes au-alarm{from{box-shadow:0 0 0 0 rgba(255,80,60,.6)}to{box-shadow:0 0 40px 10px rgba(255,80,60,.9)}}
 .au-status{color:var(--st-dim); font-size:13px; flex:1}
 .au-take{padding:8px 12px 14px; background:#110d09; border-top:1px solid var(--st-linie)}
 .au-take[hidden]{display:none}
