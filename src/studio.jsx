@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 7.10. · Prüfanzeige</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 7.10. · Abspielen über Audio</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -3598,7 +3598,8 @@ function aufnahmeStarten(root, hilfe) {
     pw.sort(function (a, b) { return b - a; });
     var oben = pw.slice(0, Math.max(1, Math.floor(pw.length / 2))), mittel = 0;
     oben.forEach(function (v) { mittel += v; }); mittel = Math.sqrt(mittel / Math.max(1, oben.length));
-    lautFaktor = mittel > 0.000001 ? Math.min(40, 0.07 / mittel) : 1;
+    // auch sehr leise Aufnahmen (z. B. ohne den Browser-Filter) auf normale Hoerlautstaerke bringen
+    lautFaktor = mittel > 0.0000001 ? Math.min(2000, 0.07 / mittel) : 1;
   }
   function schnittNeu() {
     hoerStop(); rueck = []; wahlA = wahlB = null; kopf = 0;
@@ -4023,7 +4024,7 @@ function aufnahmeStarten(root, hilfe) {
 
   // Probehoeren der rohen Aufnahme, in Stuecken von 10 Sekunden
   var hoerer = null;
-  var hac = null;
+  var hac = null, hacWeg = null, hacEl = null;
   function hoerStart(ab) {
     hoerStop();
     if (!raw) return;
@@ -4035,13 +4036,24 @@ function aufnahmeStarten(root, hilfe) {
     if (!hac) hac = new (window.AudioContext || window.webkitAudioContext)();
     hac.resume();
     var ac = hac;
+    // Ausgabe ueber ein normales Audio-Element: Safari leitet das zuverlaessig an den Lautsprecher,
+    // so wie bei der fertigen Fassung unten (der direkte Weg blieb bei dir stumm)
+    var ziel = ac.destination;
+    try {
+      if (!hacWeg) {
+        hacWeg = ac.createMediaStreamDestination();
+        hacEl = new Audio(); hacEl.autoplay = true; hacEl.srcObject = hacWeg.stream;
+      }
+      hacEl.play().catch(function () {});
+      ziel = hacWeg;
+    } catch (e) { ziel = ac.destination; }
     var STUECK = 10, t0 = ac.currentTime + 0.05, k = 0, quellen = [];
     function planen() {
       while (t0 + k * STUECK - ac.currentTime < 20) {
         var a = Math.floor((ab + k * STUECK) * sr); if (a >= raw.length) break;
         var b = Math.min(raw.length, a + STUECK * sr), buf = ac.createBuffer(1, b - a, sr), d = buf.getChannelData(0);
         for (var i = 0; i < b - a; i++) { var v = raw[a + i] * lautFaktor; d[i] = v > 0.98 ? 0.98 : v < -0.98 ? -0.98 : (v === v ? v : 0); }
-        var q = ac.createBufferSource(); q.buffer = buf; q.connect(ac.destination); q.start(t0 + k * STUECK);
+        var q = ac.createBufferSource(); q.buffer = buf; q.connect(ziel); q.start(t0 + k * STUECK);
         quellen.push(q); k++;
       }
     }
