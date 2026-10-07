@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 5.10. · Mikro-Alarm</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 5.10. · Abspielen</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -3556,9 +3556,11 @@ function aufnahmeStarten(root, hilfe) {
     for (var j = 0; j < x.length; j++) { var v = x[j]; vy = v - vx + R * vy; vx = v; y[j] = vy; }
     return y;
   }
+  // kaputte Werte (NaN/unendlich) in der Aufnahme wuerden das Abspielen stumm machen: auf 0 setzen
+  function heilen(x) { for (var i = 0; i < x.length; i++) { var v = x[i]; if (!(v > -10 && v < 10)) x[i] = 0; } return x; }
   async function showTake() {
     $("take").hidden = false; markPreset();
-    raw = gleichAus(raw); cache = {};
+    raw = gleichAus(heilen(raw)); cache = {};
     schnittNeu();
     await renderPreset(S.preset);
   }
@@ -4024,6 +4026,10 @@ function aufnahmeStarten(root, hilfe) {
   function hoerStart(ab) {
     hoerStop();
     if (!raw) return;
+    // steht der Zeiger am Ende, von vorn beginnen (sonst bliebe es still)
+    if (!(ab >= 0) || ab >= dauer() - 0.1) { ab = 0; kopf = 0; }
+    // haengt der Ton-Motor noch an einem alten Ausgabegeraet (z. B. nach einem Geraetewechsel), neu anlegen
+    if (ac && (ac.state === "closed" || ac.state === "interrupted") && !stream) { try { ac.close(); } catch (e) {} ac = null; }
     if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
     ac.resume();
     var STUECK = 10, t0 = ac.currentTime + 0.05, k = 0, quellen = [];
@@ -4031,7 +4037,7 @@ function aufnahmeStarten(root, hilfe) {
       while (t0 + k * STUECK - ac.currentTime < 20) {
         var a = Math.floor((ab + k * STUECK) * sr); if (a >= raw.length) break;
         var b = Math.min(raw.length, a + STUECK * sr), buf = ac.createBuffer(1, b - a, sr), d = buf.getChannelData(0);
-        for (var i = 0; i < b - a; i++) { var v = raw[a + i] * lautFaktor; d[i] = v > 0.98 ? 0.98 : v < -0.98 ? -0.98 : v; }
+        for (var i = 0; i < b - a; i++) { var v = raw[a + i] * lautFaktor; d[i] = v > 0.98 ? 0.98 : v < -0.98 ? -0.98 : (v === v ? v : 0); }
         var q = ac.createBufferSource(); q.buffer = buf; q.connect(ac.destination); q.start(t0 + k * STUECK);
         quellen.push(q); k++;
       }
