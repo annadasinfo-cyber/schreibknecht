@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 7.10. · Abspielen über Audio</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 7.10. · Pause ohne Brummen</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -4040,10 +4040,8 @@ function aufnahmeStarten(root, hilfe) {
     // so wie bei der fertigen Fassung unten (der direkte Weg blieb bei dir stumm)
     var ziel = ac.destination;
     try {
-      if (!hacWeg) {
-        hacWeg = ac.createMediaStreamDestination();
-        hacEl = new Audio(); hacEl.autoplay = true; hacEl.srcObject = hacWeg.stream;
-      }
+      if (!hacWeg) { hacWeg = ac.createMediaStreamDestination(); hacEl = new Audio(); }
+      hacEl.srcObject = hacWeg.stream;
       hacEl.play().catch(function () {});
       ziel = hacWeg;
     } catch (e) { ziel = ac.destination; }
@@ -4059,16 +4057,6 @@ function aufnahmeStarten(root, hilfe) {
     }
     planen();
     hoerer = { uhr: setInterval(planen, 1000), quellen: quellen };
-    // Pruefanzeige: was geht wirklich an den Lautsprecher?
-    try {
-      var b0 = quellen[0] && quellen[0].buffer, pk0 = 0;
-      if (b0) { var dd = b0.getChannelData(0); for (var ii = 0; ii < dd.length; ii += 3) { var aa = Math.abs(dd[ii]); if (aa > pk0) pk0 = aa; } }
-      var pkRaw = 0; for (var jj = 0; jj < raw.length; jj += 97) { var rr = Math.abs(raw[jj]); if (rr > pkRaw) pkRaw = rr; }
-      setTimeout(function () {
-        status("Pr\u00fcfung: Aufnahme lauteste Stelle " + Math.round(20 * Math.log10(pkRaw + 1e-9)) + " dB \u00b7 Verst\u00e4rkung \u00d7" + lautFaktor.toFixed(1) +
-          " \u00b7 zum Lautsprecher " + Math.round(20 * Math.log10(pk0 + 1e-9)) + " dB \u00b7 Motor " + ac.state + ", " + ac.sampleRate + " Hz, Aufnahme " + sr + " Hz");
-      }, 600);
-    } catch (e) { status("Pr\u00fcfung ging nicht: " + (e.message || e)); }
     $("hoer").innerHTML = "&#10073;&#10073; stopp";
     (function lauf() {
       if (!hoerer || dead) return;
@@ -4082,8 +4070,10 @@ function aufnahmeStarten(root, hilfe) {
   function hoerStop() {
     if (!hoerer) return;
     clearInterval(hoerer.uhr);
-    hoerer.quellen.forEach(function (q) { try { q.stop(); } catch (e) {} });
+    hoerer.quellen.forEach(function (q) { try { q.stop(); try { q.disconnect(); } catch (e2) {} } catch (e) {} });
     hoerer = null;
+    // Safari wiederholt sonst im Audio-Element endlos das letzte Stueckchen ("ddddd"): Element anhalten und leeren
+    if (hacEl) { try { hacEl.pause(); hacEl.srcObject = null; } catch (e) {} }
     if (!dead) $("hoer").innerHTML = "&#9654; h&ouml;ren";
   }
   $("hoer").onclick = function () {
