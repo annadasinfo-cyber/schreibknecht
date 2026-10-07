@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 7.10. · Pause ohne Brummen</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 8.10. · Rauschen leiser</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2751,6 +2751,14 @@ const AU_HTML = `
         <button id="au_gzurueck" hidden title="die gr&uuml;ne Stelle, in der der Zeiger steht, wieder herstellen">&#8634; Stelle zur&uuml;ck</button>
         <span class="au-klein">am besten vor dem Pausenk&uuml;rzen</span>
       </div>
+      <div class="au-row au-pausen">
+        <button id="au_rauschen" title="das Grundrauschen nur in den Pausen leiser machen, die Stimme bleibt unber&uuml;hrt">&#127787; Rauschen in Pausen leiser</button>
+        <select id="au_rmodus">
+          <option value="8">sanft</option>
+          <option value="14">normal</option>
+          <option value="24">stark</option>
+        </select>
+      </div>
       <div id="au_zeit" class="au-zeit"></div>
     </div>
     <div class="au-row">
@@ -3573,7 +3581,10 @@ function aufnahmeStarten(root, hilfe) {
   var wahlA = null, wahlB = null, kopf = 0;  // Auswahl und Abspielkopf in Sekunden
   var rueck = [], lautFaktor = 1, bildFaktor = 1;
   function dauer() { return raw ? raw.length / sr : 0; }
+  var pegelDb = null;   // lauteste Stelle der Aufnahme, fuer die Anzeige (Ziel etwa -12 bis -6 dB)
   function spitzenBauen() {
+    var pk = 0; for (var pi = 0; pi < raw.length; pi += 7) { var pv = raw[pi] < 0 ? -raw[pi] : raw[pi]; if (pv > pk) pk = pv; }
+    pegelDb = Math.round(20 * Math.log10(pk + 1e-9));
     var n = Math.ceil(raw.length / BLOCK), mn = new Float32Array(n), mx = new Float32Array(n), gross = 0;
     for (var b = 0; b < n; b++) {
       var lo = 1, hi = -1, e = Math.min(raw.length, (b + 1) * BLOCK);
@@ -3639,7 +3650,7 @@ function aufnahmeStarten(root, hilfe) {
     $("schnitt").disabled = !hat; $("undo").disabled = !rueck.length;
     $("mzahl").textContent = String(marken.length);
     $("mvor").disabled = $("mzurueck").disabled = $("mweg").disabled = !marken.length;
-    var z = "L\u00e4nge " + zeitText(dauer()) + "  \u00b7  Kopf " + zeitText(kopf);
+    var z = "L\u00e4nge " + zeitText(dauer()) + (pegelDb !== null ? "  \u00b7  lauteste Stelle " + pegelDb + " dB" : "") + "  \u00b7  Kopf " + zeitText(kopf);
     if (hat) { var a = Math.min(wahlA, wahlB), b = Math.max(wahlA, wahlB); z += "  \u00b7  Auswahl " + zeitText(a) + " \u2013 " + zeitText(b) + " (" + (b - a).toFixed(1).replace(".", ",") + " s)"; }
     $("zeit").textContent = z;
     var frei = dauer() - sichtLang;
@@ -3918,6 +3929,55 @@ function aufnahmeStarten(root, hilfe) {
     status(treffer.length + " Ger\u00e4usche stumm gemacht (gr\u00fcn markiert). Einzelne holst du mit \u201eStelle zur\u00fcck\u201c, alle mit \u21b6.");
   }
   $("geraeusch").onclick = geraeuscheEntfernen;
+
+  // ---------- Rauschen in Pausen leiser (die Stimme bleibt unberuehrt) ----------
+  if (S.rModus) $("rmodus").value = S.rModus; else $("rmodus").value = "14";
+  $("rmodus").onchange = function () { S.rModus = this.value; saveS(); };
+  $("rauschen").onclick = function () {
+    if (!raw || state !== "idle") return;
+    hoerStop();
+    var minusDb = parseFloat($("rmodus").value) || 14, tief = Math.pow(10, -minusDb / 20);
+    var bl = Math.max(1, Math.round(0.01 * sr)), nb = Math.floor(raw.length / bl), pw = new Float32Array(nb);
+    for (var b = 0; b < nb; b++) { var m = 0; for (var i = b * bl; i < (b + 1) * bl; i++) m += raw[i] * raw[i]; pw[b] = m / bl; }
+    if (nb < 50) return;
+    var so = Array.prototype.slice.call(pw).sort(function (a, c) { return a - c; });
+    var boden = so[Math.floor(nb * 0.1)] + 1e-12, laut = so[Math.floor(nb * 0.9)] + 1e-12;
+    var schwelle = Math.max(boden * Math.pow(10, 0.6), Math.min(boden * Math.pow(10, 1.0), laut * Math.pow(10, -2.0)));
+    // Stimme = alles ueber der Schwelle, etwas frueher anfangen und etwas spaeter aufhoeren,
+    // damit Wortanfaenge und ausklingende Silben nicht angeknabbert werden
+    var stimme = new Uint8Array(nb);
+    for (var k = 0; k < nb; k++) if (pw[k] >= schwelle) {
+      for (var v = Math.max(0, k - 3); v <= Math.min(nb - 1, k + 8); v++) stimme[v] = 1;
+    }
+    // nur Pausen ab 0,15 s absenken (kurze Luecken mitten im Satz bleiben)
+    var ziel = new Float32Array(nb), st = -1, abgesenkt = 0;
+    for (var q = 0; q <= nb; q++) {
+      if (q < nb && !stimme[q]) { if (st < 0) st = q; continue; }
+      if (st >= 0) {
+        var lang = q - st;
+        for (var r = st; r < q; r++) ziel[r] = lang >= 15 ? 1 : 0;
+        if (lang >= 15) abgesenkt++;
+        st = -1;
+      }
+    }
+    if (!abgesenkt) { status("Keine Pausen gefunden, die man leiser machen k\u00f6nnte."); return; }
+    // weich: Verstaerkung je Block langsam an- und abgleiten lassen (etwa 40 ms)
+    var g = new Float32Array(nb), aktuell = 1, schritt = 1 / 4;
+    for (var t2 = 0; t2 < nb; t2++) {
+      var soll = ziel[t2] ? tief : 1;
+      if (aktuell < soll) aktuell = Math.min(soll, aktuell + schritt); else if (aktuell > soll) aktuell = Math.max(soll, aktuell - schritt);
+      g[t2] = aktuell;
+    }
+    rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+    var neu = new Float32Array(raw.length);
+    for (var b2 = 0; b2 < nb; b2++) {
+      var g0 = g[b2], g1 = b2 + 1 < nb ? g[b2 + 1] : g0;
+      for (var j = 0; j < bl; j++) { var idx = b2 * bl + j; neu[idx] = raw[idx] * (g0 + (g1 - g0) * j / bl); }
+    }
+    for (var rest = nb * bl; rest < raw.length; rest++) neu[rest] = raw[rest] * g[nb - 1];
+    raw = neu; nachSchnitt(kopf);
+    status(abgesenkt + " Pausen um " + minusDb + " dB leiser gemacht. Mit \u21b6 ist alles wie vorher.");
+  };
   // eine einzelne gruene Stelle wiederherstellen: die, in der der Zeiger steht (oder die naechste daneben)
   $("gzurueck").onclick = function () {
     if (!raw || !gStellen.length) return;
