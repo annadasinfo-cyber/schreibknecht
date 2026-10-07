@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 5.10. · Abspielen</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 5.10. · eigener Abspieler</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -4023,15 +4023,18 @@ function aufnahmeStarten(root, hilfe) {
 
   // Probehoeren der rohen Aufnahme, in Stuecken von 10 Sekunden
   var hoerer = null;
+  var hac = null;
   function hoerStart(ab) {
     hoerStop();
     if (!raw) return;
     // steht der Zeiger am Ende, von vorn beginnen (sonst bliebe es still)
     if (!(ab >= 0) || ab >= dauer() - 0.1) { ab = 0; kopf = 0; }
-    // haengt der Ton-Motor noch an einem alten Ausgabegeraet (z. B. nach einem Geraetewechsel), neu anlegen
-    if (ac && (ac.state === "closed" || ac.state === "interrupted") && !stream) { try { ac.close(); } catch (e) {} ac = null; }
-    if (!ac) ac = new (window.AudioContext || window.webkitAudioContext)();
-    ac.resume();
+    // eigener Ton-Motor nur zum Abhoeren, getrennt von dem fuers Mikrofon:
+    // Safari laesst den Mikrofon-Motor nach einer Aufnahme manchmal stumm
+    if (hac && (hac.state === "closed" || hac.state === "interrupted")) { try { hac.close(); } catch (e) {} hac = null; }
+    if (!hac) hac = new (window.AudioContext || window.webkitAudioContext)();
+    hac.resume();
+    var ac = hac;
     var STUECK = 10, t0 = ac.currentTime + 0.05, k = 0, quellen = [];
     function planen() {
       while (t0 + k * STUECK - ac.currentTime < 20) {
