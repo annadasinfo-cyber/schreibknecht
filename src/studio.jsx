@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 8.10. · Rauschen leiser</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 8.10. · Rauschfilter</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2752,6 +2752,15 @@ const AU_HTML = `
         <span class="au-klein">am besten vor dem Pausenk&uuml;rzen</span>
       </div>
       <div class="au-row au-pausen">
+        <button id="au_filter" title="lernt den Klang deines Rauschens und rechnet ihn aus der ganzen Aufnahme heraus, auch unter der Stimme">&#129529; Rauschfilter</button>
+        <select id="au_fmodus">
+          <option value="8">sanft</option>
+          <option value="12">normal</option>
+          <option value="18">stark</option>
+        </select>
+        <span class="au-klein">lernt aus der leisesten Stelle, oder aus deiner Auswahl</span>
+      </div>
+      <div class="au-row au-pausen">
         <button id="au_rauschen" title="das Grundrauschen nur in den Pausen leiser machen, die Stimme bleibt unber&uuml;hrt">&#127787; Rauschen in Pausen leiser</button>
         <select id="au_rmodus">
           <option value="8">sanft</option>
@@ -3929,6 +3938,103 @@ function aufnahmeStarten(root, hilfe) {
     status(treffer.length + " Ger\u00e4usche stumm gemacht (gr\u00fcn markiert). Einzelne holst du mit \u201eStelle zur\u00fcck\u201c, alle mit \u21b6.");
   }
   $("geraeusch").onclick = geraeuscheEntfernen;
+
+  // ---------- Rauschfilter wie im Tonstudio (Spektral-Filter) ----------
+  // Lernt das Spektrum des Rauschens und senkt in jedem Frequenzband nur das ab, was nicht lauter als das Rauschen ist.
+  var FN = 2048, FH = 512, fftCos = null, fftSin = null, fftRev = null, fftFenster = null;
+  function fftVorbereiten() {
+    if (fftCos) return;
+    fftCos = new Float32Array(FN / 2); fftSin = new Float32Array(FN / 2);
+    for (var i = 0; i < FN / 2; i++) { fftCos[i] = Math.cos(2 * Math.PI * i / FN); fftSin[i] = -Math.sin(2 * Math.PI * i / FN); }
+    fftRev = new Uint16Array(FN); var bits = Math.round(Math.log(FN) / Math.LN2);
+    for (var j = 0; j < FN; j++) { var r = 0, x = j; for (var b = 0; b < bits; b++) { r = (r << 1) | (x & 1); x >>= 1; } fftRev[j] = r; }
+    fftFenster = new Float32Array(FN);
+    for (var k = 0; k < FN; k++) fftFenster[k] = Math.sqrt(0.5 - 0.5 * Math.cos(2 * Math.PI * k / FN));   // Wurzel-Hann
+  }
+  function fft(re, im, rueckwaerts) {
+    var n = FN, i, j;
+    for (i = 0; i < n; i++) { j = fftRev[i]; if (j > i) { var t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (var len = 2; len <= n; len <<= 1) {
+      var halb = len >> 1, schritt = n / len;
+      for (i = 0; i < n; i += len) {
+        for (var k = 0; k < halb; k++) {
+          var wr = fftCos[k * schritt], wi = rueckwaerts ? -fftSin[k * schritt] : fftSin[k * schritt];
+          var a = i + k, b = a + halb;
+          var xr = re[b] * wr - im[b] * wi, xi = re[b] * wi + im[b] * wr;
+          re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi;
+        }
+      }
+    }
+  }
+  var filterLaeuft = false;
+  $("fmodus").value = S.fModus || "12";
+  $("fmodus").onchange = function () { S.fModus = this.value; saveS(); };
+  $("filter").onclick = async function () {
+    if (!raw || state !== "idle" || filterLaeuft) return;
+    hoerStop(); fftVorbereiten();
+    filterLaeuft = true; $("filter").disabled = true;
+    try {
+      var minusDb = parseFloat($("fmodus").value) || 12, tief = Math.pow(10, -minusDb / 20);
+      var n = raw.length, nFr = Math.max(1, Math.floor((n - FN) / FH) + 1);
+      var re = new Float32Array(FN), im = new Float32Array(FN), halbN = FN / 2 + 1;
+      // 1) Rauschprofil: aus der Auswahl, sonst aus den leisesten Stellen der Aufnahme
+      var kandidaten = [];
+      var hatWahl = wahlA !== null && Math.abs(wahlB - wahlA) > 0.3;
+      if (hatWahl) {
+        var a0 = Math.floor(Math.min(wahlA, wahlB) * sr), a1 = Math.floor(Math.max(wahlA, wahlB) * sr);
+        for (var p0 = a0; p0 + FN <= a1; p0 += FH) kandidaten.push(p0);
+      } else {
+        var en = new Float32Array(nFr);
+        for (var f = 0; f < nFr; f++) { var e = 0, s0 = f * FH; for (var q = 0; q < FN; q += 4) e += raw[s0 + q] * raw[s0 + q]; en[f] = e; }
+        var sortiert = Array.prototype.slice.call(en).sort(function (x, y) { return x - y; });
+        var grenzeE = sortiert[Math.floor(nFr * 0.1)];
+        for (var f2 = 0; f2 < nFr && kandidaten.length < 600; f2++) if (en[f2] <= grenzeE && en[f2] > 0) kandidaten.push(f2 * FH);
+      }
+      if (kandidaten.length < 4) { status("Ich finde keine ruhige Stelle zum Lernen. Markier eine Pause ohne Stimme und versuch es noch einmal."); return; }
+      var profil = new Float32Array(halbN);
+      kandidaten.forEach(function (st) {
+        for (var i = 0; i < FN; i++) { re[i] = raw[st + i] * fftFenster[i]; im[i] = 0; }
+        fft(re, im, false);
+        for (var b = 0; b < halbN; b++) profil[b] += Math.sqrt(re[b] * re[b] + im[b] * im[b]);
+      });
+      for (var b1 = 0; b1 < halbN; b1++) profil[b1] = profil[b1] / kandidaten.length * 2.2;   // Schwelle etwas ueber dem Rauschen
+      // 2) die ganze Aufnahme Rahmen fuer Rahmen filtern
+      rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+      var aus = new Float32Array(n), gAlt = new Float32Array(halbN).fill(1), gNeu = new Float32Array(halbN), gGl = new Float32Array(halbN);
+      var t0 = performance.now();
+      for (var fr = 0; fr < nFr; fr++) {
+        var st2 = fr * FH;
+        for (var i2 = 0; i2 < FN; i2++) { re[i2] = raw[st2 + i2] * fftFenster[i2]; im[i2] = 0; }
+        fft(re, im, false);
+        for (var b2 = 0; b2 < halbN; b2++) {
+          var mag = Math.sqrt(re[b2] * re[b2] + im[b2] * im[b2]);
+          gNeu[b2] = mag > profil[b2] ? 1 : tief;
+        }
+        // ueber Nachbarbaender und mit dem vorigen Rahmen glaetten: kein "Zwitschern"
+        for (var b3 = 0; b3 < halbN; b3++) {
+          var sum = 0, cnt = 0;
+          for (var d = -2; d <= 2; d++) { var bb = b3 + d; if (bb >= 0 && bb < halbN) { sum += gNeu[bb]; cnt++; } }
+          var ziel = sum / cnt;
+          gGl[b3] = ziel > gAlt[b3] ? ziel : gAlt[b3] * 0.6 + ziel * 0.4;   // schnell auf, langsam zu
+          gAlt[b3] = gGl[b3];
+        }
+        for (var b4 = 0; b4 < halbN; b4++) {
+          re[b4] *= gGl[b4]; im[b4] *= gGl[b4];
+          if (b4 > 0 && b4 < FN / 2) { re[FN - b4] = re[b4]; im[FN - b4] = -im[b4]; }
+        }
+        fft(re, im, true);
+        for (var i3 = 0; i3 < FN; i3++) aus[st2 + i3] += re[i3] / FN * fftFenster[i3] / 2;
+        if (performance.now() - t0 > 120) {
+          status("\ud83e\uddf9 Rauschfilter rechnet \u2026 " + Math.round(fr / nFr * 100) + " %");
+          await new Promise(function (r) { setTimeout(r, 0); });
+          if (dead) return;
+          t0 = performance.now();
+        }
+      }
+      raw = aus; nachSchnitt(kopf);
+      status("Rauschfilter fertig (" + minusDb + " dB, gelernt aus " + (hatWahl ? "deiner Auswahl" : "den leisesten Stellen") + "). Mit \u21b6 ist alles wie vorher.");
+    } finally { filterLaeuft = false; if (!dead) $("filter").disabled = false; }
+  };
 
   // ---------- Rauschen in Pausen leiser (die Stimme bleibt unberuehrt) ----------
   if (S.rModus) $("rmodus").value = S.rModus; else $("rmodus").value = "14";
