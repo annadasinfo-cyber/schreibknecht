@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 8.10. · Rauschfilter</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 21.10. · Atmer neu</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -2748,6 +2748,7 @@ const AU_HTML = `
           <option value="normal">normal</option>
           <option value="kraeftig">kr&auml;ftig</option>
         </select>
+        <button id="au_gnaechste" hidden title="zur n&auml;chsten gr&uuml;nen Stelle springen und anh&ouml;ren (Taste N)">&#9654; n&auml;chste gr&uuml;ne</button>
         <button id="au_gzurueck" hidden title="die gr&uuml;ne Stelle, in der der Zeiger steht, wieder herstellen">&#8634; Stelle zur&uuml;ck</button>
         <span class="au-klein">am besten vor dem Pausenk&uuml;rzen</span>
       </div>
@@ -3887,40 +3888,53 @@ function aufnahmeStarten(root, hilfe) {
   function geraeuscheEntfernen() {
     if (!raw || state !== "idle") return;
     hoerStop();
-    var mod = G_MODI[$("gmodus").value] || G_MODI.normal;
-    var bl = Math.max(1, Math.round(0.01 * sr)), nb = Math.floor(raw.length / bl), pw = new Float32Array(nb);
-    for (var b = 0; b < nb; b++) { var m = 0; for (var i = b * bl; i < (b + 1) * bl; i++) m += raw[i] * raw[i]; pw[b] = m / bl; }
+    // an echten Aufnahmen abgestimmt (Sennheiser, nah besprochen):
+    // A) Atmer = rauschartig (viele Hoehen, keine Stimmlage) und deutlich leiser als die Stimme, mindestens 0,15 s,
+    //    auch wenn sie direkt vor einem Wort sitzen
+    // B) kurze Klicks/Schmatzer, die allein in einer Pause stehen
+    var M = { vorsichtig: { leiser: 20, kurzLeiser: 16 }, normal: { leiser: 17, kurzLeiser: 13 }, kraeftig: { leiser: 14, kurzLeiser: 10 } }[$("gmodus").value] || { leiser: 17, kurzLeiser: 13 };
+    var bl = Math.max(1, Math.round(0.01 * sr)), nb = Math.floor(raw.length / bl), pw = new Float32Array(nb), rr = new Float32Array(nb);
+    for (var b = 0; b < nb; b++) {
+      var m = 0, dd = 0, o = b * bl;
+      for (var i = 0; i < bl; i++) { var v = raw[o + i]; m += v * v; if (i) { var dv = v - raw[o + i - 1]; dd += dv * dv; } }
+      pw[b] = m / bl; rr[b] = dd / (m + 1e-15);
+    }
     if (nb < 50) return;
     var so = Array.prototype.slice.call(pw).sort(function (a, c) { return a - c; });
     var boden = so[Math.floor(nb * 0.1)] + 1e-12, laut = so[Math.floor(nb * 0.9)] + 1e-12;
     var schwelle = Math.max(boden * Math.pow(10, 0.6), Math.min(boden * Math.pow(10, 1.0), laut * Math.pow(10, -2.0)));
-    var grenze = laut * Math.pow(10, -mod.abstand / 10), atemGrenze = laut * Math.pow(10, -mod.atem / 10);
-    // Inseln aus Nicht-Stille finden (Luecken unter 30 ms zaehlen nicht als Trennung)
-    var inseln = [], st = -1, luecke = 0;
+    var bloecke = [];
+    var atemGrenze = laut * Math.pow(10, -M.leiser / 10), st = -1, luecke = 0;
     for (var k = 0; k <= nb; k++) {
-      var still = k === nb || pw[k] < schwelle;
-      if (!still) { if (st < 0) st = k; luecke = 0; }
-      else if (st >= 0) { luecke++; if (luecke >= 3 || k === nb) { inseln.push([st, k - luecke + 1]); st = -1; luecke = 0; } }
+      var at = k < nb && pw[k] >= schwelle && pw[k] < atemGrenze && rr[k] > 0.06;
+      if (at) { if (st < 0) st = k; luecke = 0; }
+      else if (st >= 0) {
+        luecke++;
+        if (luecke > 2 || k === nb) { var e0 = k - luecke + 1; if ((e0 - st) * bl / sr >= 0.15) bloecke.push([st, e0]); st = -1; luecke = 0; }
+      }
     }
-    inseln.forEach(function (ins) { var pk = 0; for (var q = ins[0]; q < ins[1]; q++) if (pw[q] > pk) pk = pw[q]; ins.push(pk); });
-    // ein flacher Atmer zerfaellt oft in mehrere leise Stuecke: leise Nachbarn mit kleiner Luecke zusammenfassen
-    var gruppen = [];
-    inseln.forEach(function (ins) {
-      var letzte = gruppen[gruppen.length - 1];
-      if (letzte && letzte[2] < grenze && ins[2] < grenze && (ins[0] - letzte[1]) * bl / sr < 0.12) {
-        letzte[1] = ins[1]; letzte[2] = Math.max(letzte[2], ins[2]);
-      } else gruppen.push(ins.slice());
-    });
+    var kurzGrenze = laut * Math.pow(10, -M.kurzLeiser / 10), inseln = [];
+    st = -1; luecke = 0;
+    for (var k2 = 0; k2 <= nb; k2++) {
+      var still = k2 === nb || pw[k2] < schwelle;
+      if (!still) { if (st < 0) st = k2; luecke = 0; }
+      else if (st >= 0) { luecke++; if (luecke >= 3 || k2 === nb) { inseln.push([st, k2 - luecke + 1]); st = -1; luecke = 0; } }
+    }
+    for (var j = 0; j < inseln.length; j++) {
+      var a = inseln[j][0], e = inseln[j][1];
+      if ((e - a) * bl / sr > 0.12) continue;
+      var vor = j > 0 ? (a - inseln[j - 1][1]) * bl / sr : 9, nach = j < inseln.length - 1 ? (inseln[j + 1][0] - e) * bl / sr : 9;
+      if (vor < 0.12 || nach < 0.03) continue;   // ein t/s am Wortende haengt dichter dran
+      var pk = 0; for (var q = a; q < e; q++) if (pw[q] > pk) pk = pw[q];
+      if (pk < kurzGrenze) bloecke.push([a, e]);
+    }
+    bloecke.sort(function (x, y) { return x[0] - y[0]; });
     var treffer = [];
-    for (var j = 0; j < gruppen.length; j++) {
-      var a = gruppen[j][0], e = gruppen[j][1], pk = gruppen[j][2], dauerS = (e - a) * bl / sr;
-      var vor = j > 0 ? (a - gruppen[j - 1][1]) * bl / sr : 9, nach = j < gruppen.length - 1 ? (gruppen[j + 1][0] - e) * bl / sr : 9;
-      if (vor < 0.2 || nach < 0.03) continue;           // nur Geraeusche, die in einer Pause stehen (ein T/D am Wortende haengt naeher dran)
-      var kurzUndLeise = dauerS <= mod.maxS && pk < grenze;
-      var flacherAtmer = dauerS <= mod.atemS && pk < atemGrenze;
-      if (!kurzUndLeise && !flacherAtmer) continue;
-      treffer.push([Math.max(0, a * bl - Math.round(0.008 * sr)), Math.min(raw.length, e * bl + Math.round(0.008 * sr))]);
-    }
+    bloecke.forEach(function (t) {
+      var a1 = Math.max(0, t[0] * bl - Math.round(0.008 * sr)), e1 = Math.min(raw.length, t[1] * bl + Math.round(0.008 * sr));
+      var l = treffer[treffer.length - 1];
+      if (l && a1 <= l[1]) l[1] = Math.max(l[1], e1); else treffer.push([a1, e1]);
+    });
     if (!treffer.length) { status("Keine leisen Ger\u00e4usche in den Pausen gefunden."); return; }
     rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
     var neu = raw.slice(), f = Math.round(0.01 * sr);
@@ -3934,10 +3948,31 @@ function aufnahmeStarten(root, hilfe) {
     });
     raw = neu; nachSchnitt(kopf);
     gStellen = treffer.map(function (t, i) { return [t[0], t[1], orig[i]]; }); zeichneWelle();
-    $("gzurueck").hidden = false;
+    $("gzurueck").hidden = false; $("gnaechste").hidden = false;
     status(treffer.length + " Ger\u00e4usche stumm gemacht (gr\u00fcn markiert). Einzelne holst du mit \u201eStelle zur\u00fcck\u201c, alle mit \u21b6.");
   }
   $("geraeusch").onclick = geraeuscheEntfernen;
+  // durch die gruenen Stellen gehen: springen und ab kurz davor anhoeren
+  var zuletztGruen = null;
+  function naechsteGruene() {
+    if (!raw || !gStellen.length) return;
+    var p = kopf * sr + 1.2 * sr + 1, z = null;
+    for (var i = 0; i < gStellen.length; i++) if (gStellen[i][0] > p) { z = gStellen[i]; break; }
+    if (!z) { status("Das war die letzte gr\u00fcne Stelle."); return; }
+    zuletztGruen = z;
+    status("Gr\u00fcne Stelle " + (gStellen.indexOf(z) + 1) + " von " + gStellen.length + " \u2013 behalten? \u201eStelle zur\u00fcck\u201c. Weiter: N");
+    var t = z[0] / sr;
+    if (sichtLang > 30) sichtLang = Math.min(dauer(), 12);
+    sicht0 = Math.max(0, Math.min(dauer() - sichtLang, t - sichtLang * 0.4));
+    hoerStart(Math.max(0, t - 1));
+  }
+  $("gnaechste").onclick = naechsteGruene;
+  document.addEventListener("keydown", function (e) {
+    if (e.code !== "KeyN" || e.metaKey || e.ctrlKey || e.altKey || !gStellen.length || state !== "idle") return;
+    var el = document.activeElement;
+    if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.type !== "range" && el.type !== "checkbox") return;
+    e.preventDefault(); naechsteGruene();
+  });
 
   // ---------- Rauschfilter wie im Tonstudio (Spektral-Filter) ----------
   // Lernt das Spektrum des Rauschens und senkt in jedem Frequenzband nur das ab, was nicht lauter als das Rauschen ist.
@@ -4089,7 +4124,9 @@ function aufnahmeStarten(root, hilfe) {
     if (!raw || !gStellen.length) return;
     hoerStop();
     var p = kopf * sr, best = -1, abst = Infinity;
-    gStellen.forEach(function (gs, i) {
+    // gerade per "naechste gruene" angehoert? dann genau die
+    if (zuletztGruen && gStellen.indexOf(zuletztGruen) >= 0 && Math.abs(p - zuletztGruen[0]) < 4 * sr) { best = gStellen.indexOf(zuletztGruen); abst = 0; }
+    else gStellen.forEach(function (gs, i) {
       var d = p < gs[0] ? gs[0] - p : (p > gs[1] ? p - gs[1] : 0);
       if (d < abst) { abst = d; best = i; }
     });
@@ -4173,7 +4210,7 @@ function aufnahmeStarten(root, hilfe) {
     raw = neu; nachSchnitt(u.pos / sr);
   }
   function nachSchnitt(t) {
-    if (typeof gStellen !== "undefined") { gStellen = []; var gz = $("gzurueck"); if (gz) gz.hidden = true; }
+    if (typeof gStellen !== "undefined") { gStellen = []; var gz = $("gzurueck"); if (gz) gz.hidden = true; var gn = $("gnaechste"); if (gn) gn.hidden = true; }
     wahlA = wahlB = null; kopf = Math.min(t, dauer()); inApp = false; kopieMerken();
     spitzenBauen();
     sichtLang = Math.min(sichtLang, dauer()); sicht0 = Math.max(0, Math.min(sicht0, dauer() - sichtLang));
