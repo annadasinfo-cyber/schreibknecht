@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 21.10. · flüssig schneiden</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 21.10. · ohne Haken</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -3643,15 +3643,28 @@ function aufnahmeStarten(root, hilfe) {
   }
   // die Arbeitskopie im Browser: nach jeder Aenderung (kurz verzoegert)
   var kopieUhr = 0, inApp = false, neuUhr = 0;
+  // schwere Arbeiten (Sicherheitskopie, fertige Fassung) nur, wenn du gerade wirklich Pause machst:
+  // nicht beim Abhoeren und nicht, solange du in den letzten Sekunden geklickt oder getippt hast
+  var letzteAktion = Date.now();
+  root.addEventListener("pointerdown", function () { letzteAktion = Date.now(); }, true);
+  root.addEventListener("keydown", function () { letzteAktion = Date.now(); }, true);
+  root.addEventListener("wheel", function () { letzteAktion = Date.now(); }, { capture: true, passive: true });
+  function wennRuhig(fn) {
+    return function nochmal() {
+      if (dead) return;
+      if ((typeof hoerer !== "undefined" && hoerer) || Date.now() - letzteAktion < 8000) { setTimeout(nochmal, 3000); return; }
+      fn();
+    };
+  }
   function kopieMerken() {
     clearTimeout(kopieUhr);
-    kopieUhr = setTimeout(function () {
+    kopieUhr = setTimeout(wennRuhig(function () {
       if (!raw) return;
       var k = einpacken(raw); k.sr = sr; k.inApp = inApp; k.marken = marken.slice();
       dbTun("kopie", "readwrite", function (os) { return os.put(k, "aktuell"); })
         .then(function () { return dbTun("stuecke", "readwrite", function (os) { return os.clear(); }); })
         .catch(function () {});
-    }, 8000);   // erst nach 8 s Ruhe sichern, damit Schneiden fluessig bleibt
+    }), 8000);   // erst nach 8 s Ruhe sichern, damit Schneiden fluessig bleibt
   }
   function inAppMerken(wert) {
     inApp = wert;
@@ -4243,7 +4256,7 @@ function aufnahmeStarten(root, hilfe) {
     status("Geschnitten.");
     // die fertige Fassung unten kurz nach dem letzten Schnitt still neu machen
     // erst wenn eine Weile nicht mehr geschnitten wurde, sonst stockt das Arbeiten
-    clearTimeout(neuUhr); neuUhr = setTimeout(function () { renderPreset("fertig", true); }, 25000);
+    clearTimeout(neuUhr); neuUhr = setTimeout(wennRuhig(function () { if (!curUrl) renderPreset("fertig", true); }), 25000);
   }
   $("schnitt").onclick = schneiden;
   $("undo").onclick = zuruecknehmen;
