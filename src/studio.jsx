@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 21.10. · Atmer neu</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 21.10. · flüssig schneiden</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -3592,6 +3592,20 @@ function aufnahmeStarten(root, hilfe) {
   var rueck = [], lautFaktor = 1, bildFaktor = 1;
   function dauer() { return raw ? raw.length / sr : 0; }
   var pegelDb = null;   // lauteste Stelle der Aufnahme, fuer die Anzeige (Ziel etwa -12 bis -6 dB)
+  // nach einem einzelnen Schnitt: nur die Wellen-Bloecke ab der Schnittstelle neu rechnen,
+  // Lautstaerke-Werte bleiben (aendern sich durch einen Schnitt kaum) - dadurch ohne Wartezeit
+  function spitzenAb(abProbe) {
+    if (!spitzen || !(abProbe >= 0)) { spitzenBauen(); return; }
+    var n = Math.ceil(raw.length / BLOCK), b0 = Math.max(0, Math.floor(abProbe / BLOCK) - 1);
+    var mn = new Float32Array(n), mx = new Float32Array(n);
+    mn.set(spitzen.mn.subarray(0, Math.min(b0, spitzen.mn.length))); mx.set(spitzen.mx.subarray(0, Math.min(b0, spitzen.mx.length)));
+    for (var b = b0; b < n; b++) {
+      var lo = 1, hi = -1, e = Math.min(raw.length, (b + 1) * BLOCK);
+      for (var i = b * BLOCK; i < e; i++) { var v = raw[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+      mn[b] = lo; mx[b] = hi;
+    }
+    spitzen = { mn: mn, mx: mx };
+  }
   function spitzenBauen() {
     var pk = 0; for (var pi = 0; pi < raw.length; pi += 7) { var pv = raw[pi] < 0 ? -raw[pi] : raw[pi]; if (pv > pk) pk = pv; }
     pegelDb = Math.round(20 * Math.log10(pk + 1e-9));
@@ -3637,7 +3651,7 @@ function aufnahmeStarten(root, hilfe) {
       dbTun("kopie", "readwrite", function (os) { return os.put(k, "aktuell"); })
         .then(function () { return dbTun("stuecke", "readwrite", function (os) { return os.clear(); }); })
         .catch(function () {});
-    }, 800);
+    }, 8000);   // erst nach 8 s Ruhe sichern, damit Schneiden fluessig bleibt
   }
   function inAppMerken(wert) {
     inApp = wert;
@@ -3803,7 +3817,7 @@ function aufnahmeStarten(root, hilfe) {
     neu.set(raw.subarray(0, pos), 0);
     for (var i = 0; i < x; i++) { var t = (i + 0.5) / x; neu[pos + i] = raw[pos + i] * (1 - t) + raw[b + i] * t; }
     neu.set(raw.subarray(b + x), pos + x);
-    raw = neu; nachSchnitt(a / sr);
+    raw = neu; nachSchnitt(a / sr, true);
   }
   /* Pausen kuerzen: stille Stellen finden (gemessen am Grundrauschen dieser
      Aufnahme), jede, die laenger ist als "laenger als", wird auf "auf" gekuerzt —
@@ -3905,8 +3919,14 @@ function aufnahmeStarten(root, hilfe) {
     var schwelle = Math.max(boden * Math.pow(10, 0.6), Math.min(boden * Math.pow(10, 1.0), laut * Math.pow(10, -2.0)));
     var bloecke = [];
     var atemGrenze = laut * Math.pow(10, -M.leiser / 10), st = -1, luecke = 0;
+    // Schutz fuer Woerter: alles Laute und alles Stimmhafte (auch ein leises n am Ende) bekommt
+    // 40 ms davor und 150 ms danach eine Schonzone, damit Wortenden (t, n, s) nie angefasst werden
+    var schutz = new Uint8Array(nb);
+    for (var ks = 0; ks < nb; ks++) if (pw[ks] >= atemGrenze || (pw[ks] >= schwelle * 4 && rr[ks] < 0.03)) {
+      for (var zs = Math.max(0, ks - 4); zs <= Math.min(nb - 1, ks + 15); zs++) schutz[zs] = 1;
+    }
     for (var k = 0; k <= nb; k++) {
-      var at = k < nb && pw[k] >= schwelle && pw[k] < atemGrenze && rr[k] > 0.06;
+      var at = k < nb && !schutz[k] && pw[k] >= schwelle && pw[k] < atemGrenze && rr[k] > 0.06;
       if (at) { if (st < 0) st = k; luecke = 0; }
       else if (st >= 0) {
         luecke++;
@@ -3923,6 +3943,8 @@ function aufnahmeStarten(root, hilfe) {
     for (var j = 0; j < inseln.length; j++) {
       var a = inseln[j][0], e = inseln[j][1];
       if ((e - a) * bl / sr > 0.12) continue;
+      var frei = true; for (var qs = a; qs < e; qs++) if (schutz[qs]) { frei = false; break; }
+      if (!frei) continue;
       var vor = j > 0 ? (a - inseln[j - 1][1]) * bl / sr : 9, nach = j < inseln.length - 1 ? (inseln[j + 1][0] - e) * bl / sr : 9;
       if (vor < 0.12 || nach < 0.03) continue;   // ein t/s am Wortende haengt dichter dran
       var pk = 0; for (var q = a; q < e; q++) if (pw[q] > pk) pk = pw[q];
@@ -3931,7 +3953,7 @@ function aufnahmeStarten(root, hilfe) {
     bloecke.sort(function (x, y) { return x[0] - y[0]; });
     var treffer = [];
     bloecke.forEach(function (t) {
-      var a1 = Math.max(0, t[0] * bl - Math.round(0.008 * sr)), e1 = Math.min(raw.length, t[1] * bl + Math.round(0.008 * sr));
+      var a1 = t[0] * bl, e1 = Math.min(raw.length, t[1] * bl);
       var l = treffer[treffer.length - 1];
       if (l && a1 <= l[1]) l[1] = Math.max(l[1], e1); else treffer.push([a1, e1]);
     });
@@ -4201,18 +4223,18 @@ function aufnahmeStarten(root, hilfe) {
     if (u.dazu) {
       var ohne = new Float32Array(raw.length - u.dazu);
       ohne.set(raw.subarray(0, u.pos), 0); ohne.set(raw.subarray(u.pos + u.dazu), u.pos);
-      raw = ohne; nachSchnitt(u.pos / sr); status("Eingef\u00fcgtes wieder raus."); return;
+      raw = ohne; nachSchnitt(u.pos / sr, true); status("Eingef\u00fcgtes wieder raus."); return;
     }
     var neu = new Float32Array(raw.length - u.x + u.weg.length);
     neu.set(raw.subarray(0, u.pos), 0);
     neu.set(u.weg, u.pos);
     neu.set(raw.subarray(u.pos + u.x), u.pos + u.weg.length);
-    raw = neu; nachSchnitt(u.pos / sr);
+    raw = neu; nachSchnitt(u.pos / sr, true);
   }
-  function nachSchnitt(t) {
+  function nachSchnitt(t, nurAb) {
     if (typeof gStellen !== "undefined") { gStellen = []; var gz = $("gzurueck"); if (gz) gz.hidden = true; var gn = $("gnaechste"); if (gn) gn.hidden = true; }
     wahlA = wahlB = null; kopf = Math.min(t, dauer()); inApp = false; kopieMerken();
-    spitzenBauen();
+    if (nurAb) spitzenAb(Math.floor(t * sr)); else spitzenBauen();
     sichtLang = Math.min(sichtLang, dauer()); sicht0 = Math.max(0, Math.min(sicht0, dauer() - sichtLang));
     // die fertige Fassung stimmt nicht mehr — beim naechsten Anhoeren/Speichern neu machen
     cache = {}; lastBlob = null; $("player").removeAttribute("src");
@@ -4220,7 +4242,8 @@ function aufnahmeStarten(root, hilfe) {
     knoepfe(); zeichneWelle();
     status("Geschnitten.");
     // die fertige Fassung unten kurz nach dem letzten Schnitt still neu machen
-    clearTimeout(neuUhr); neuUhr = setTimeout(function () { renderPreset("fertig", true); }, 1500);
+    // erst wenn eine Weile nicht mehr geschnitten wurde, sonst stockt das Arbeiten
+    clearTimeout(neuUhr); neuUhr = setTimeout(function () { renderPreset("fertig", true); }, 25000);
   }
   $("schnitt").onclick = schneiden;
   $("undo").onclick = zuruecknehmen;
@@ -4492,6 +4515,8 @@ function aufnahmeStarten(root, hilfe) {
   };
   if (navigator.canShare) $("share").hidden = false;
   $("player").addEventListener("play", function () { hoerStop(); });
+  // fertige Fassung noch nicht neu gemacht (nach Schnitten)? Beim Antippen des Players gleich machen
+  $("player").addEventListener("pointerdown", function () { if (!curUrl && raw) { clearTimeout(neuUhr); renderPreset("fertig", true); } });
   $("share").onclick = async function () {
     if (!raw) return;
     if (!lastBlob) await renderPreset(S.preset);
