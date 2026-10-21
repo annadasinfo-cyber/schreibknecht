@@ -410,7 +410,7 @@ export default function Studio({ api, zugang, URL_DB, KEY_DB, zurueck, start }) 
           </button>
         )}
         <span className="st-luft" />
-        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 21.10. · ohne Haken</span>
+        <span className="st-stand" title="welche Fassung des Studios gerade läuft">Stand 22.10. · sichere Kopie</span>
         <button className={"st-knopf" + (ansicht !== "aufnahme" ? " an" : "")}
           onClick={() => setAnsicht(filmId && ansicht === "aufnahme" ? "film" : "liste")}>🎞 filme</button>
         <button className={"st-knopf" + (ansicht === "aufnahme" ? " an" : "")}
@@ -3298,7 +3298,7 @@ function aufnahmeStarten(root, hilfe) {
     var neu = chunks.slice(gesichertBis); gesichertBis = chunks.length;
     var n = 0; neu.forEach(function (c) { n += c.length; });
     var x = new Float32Array(n), o = 0; neu.forEach(function (c) { x.set(c, o); o += c.length; });
-    var st = einpacken(x); st.sr = sr;
+    var st = einpacken(x); st.sr = sr; st.zeit = Date.now();
     dbTun("stuecke", "readwrite", function (os) { return os.add(st); }).catch(function () {});
   }
   function stopAll() {
@@ -3320,7 +3320,7 @@ function aufnahmeStarten(root, hilfe) {
       raw = ganz;
       marken = fort.marken.concat(recMarken.map(function (m) { return m + fort.raw.length; }));
       cache = {}; showTake();   // setzt das Rueckgaengig zurueck, darum danach eintragen
-      rueck.push({ voll: fort.raw, m: fort.marken });
+      rueckVoll(fort.raw, fort.marken);
       kopf = fort.raw.length / sr; knoepfe(); zeichneWelle();
       if (wache.alarm) status("\u26a0 W\u00e4hrend der Fortsetzung ist das Mikro verloren gegangen \u2013 ein F\u00e4hnchen markiert die Stelle.");
       else status("Fortgesetzt: " + zeitText(neuT.length / sr) + " angeh\u00e4ngt, jetzt " + zeitText(raw.length / sr) + " lang." + (recMarken.length ? " " + recMarken.length + " neue Versprecher markiert." : "") + " Mit \u21b6 ist das Neue wieder weg.");
@@ -3591,6 +3591,12 @@ function aufnahmeStarten(root, hilfe) {
   var wahlA = null, wahlB = null, kopf = 0;  // Auswahl und Abspielkopf in Sekunden
   var rueck = [], lautFaktor = 1, bildFaktor = 1;
   function dauer() { return raw ? raw.length / sr : 0; }
+  // ein Rueckgaengig-Schritt, der die GANZE Aufnahme braucht (Atmer, Pausen, Rauschfilter ...):
+  // davon nur den letzten behalten, sonst frisst eine Stunde Aufnahme mehrere GB und Safari wirft das Studio raus
+  function rueckVoll(alt, m) {
+    // aeltere Schritte passen danach nicht mehr sicher zusammen, darum beginnt das Gedaechtnis hier neu
+    rueck = [{ voll: alt, m: m }];
+  }
   var pegelDb = null;   // lauteste Stelle der Aufnahme, fuer die Anzeige (Ziel etwa -12 bis -6 dB)
   // nach einem einzelnen Schnitt: nur die Wellen-Bloecke ab der Schnittstelle neu rechnen,
   // Lautstaerke-Werte bleiben (aendern sich durch einen Schnitt kaum) - dadurch ohne Wartezeit
@@ -3656,14 +3662,30 @@ function aufnahmeStarten(root, hilfe) {
       fn();
     };
   }
+  // Sicherheitskopie im Browser: in Teilen zu 5 Minuten, damit Safari nicht auf einmal
+  // mehrere hundert MB schlucken muss. Klappt es nicht, sagt das Studio es deutlich.
+  var kopieLaeuft = false;
   function kopieMerken() {
     clearTimeout(kopieUhr);
-    kopieUhr = setTimeout(wennRuhig(function () {
-      if (!raw) return;
-      var k = einpacken(raw); k.sr = sr; k.inApp = inApp; k.marken = marken.slice();
-      dbTun("kopie", "readwrite", function (os) { return os.put(k, "aktuell"); })
-        .then(function () { return dbTun("stuecke", "readwrite", function (os) { return os.clear(); }); })
-        .catch(function () {});
+    kopieUhr = setTimeout(wennRuhig(async function () {
+      if (!raw || kopieLaeuft) return;
+      kopieLaeuft = true;
+      var x = raw, rate = sr, TEIL = 5 * 60 * rate, n = Math.ceil(x.length / TEIL);
+      try {
+        for (var i = 0; i < n; i++) {
+          var teil = einpacken(x.subarray(i * TEIL, Math.min(x.length, (i + 1) * TEIL)));
+          await dbTun("kopie", "readwrite", function (os) { return os.put(teil, "teil-" + i); });
+          await new Promise(function (r) { setTimeout(r, 0); });
+          if (dead || x !== raw) { kopieLaeuft = false; if (!dead) kopieMerken(); return; }   // inzwischen geschnitten: neu anfangen
+        }
+        var meta = { teile: n, sr: rate, inApp: inApp, marken: marken.slice(), zeit: Date.now(), laenge: x.length };
+        await dbTun("kopie", "readwrite", function (os) { return os.put(meta, "aktuell"); });
+        await dbTun("stuecke", "readwrite", function (os) { return os.clear(); });
+        await dbTun("kopie", "readwrite", function (os) { for (var j = n; j < n + 40; j++) os.delete("teil-" + j); return null; });
+      } catch (e) {
+        status("\u26a0 Die Sicherheitskopie im Browser hat nicht geklappt (" + ((e && e.name) || "Speicher voll") + "). Bitte speichere zwischendurch \u201ein die App\u201c, damit nichts verloren geht.");
+      }
+      kopieLaeuft = false;
     }), 8000);   // erst nach 8 s Ruhe sichern, damit Schneiden fluessig bleibt
   }
   function inAppMerken(wert) {
@@ -3884,7 +3906,7 @@ function aufnahmeStarten(root, hilfe) {
       for (var q = 0; q < x; q++) { var t = (q + 0.5) / x; neu[pos - x + q] = neu[pos - x + q] * (1 - t) + seg[q] * t; }
       neu.set(seg.subarray(x), pos); pos += seg.length - x;
     });
-    rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+    rueckVoll(raw, marken.slice());
     // Markierungen mitwandern lassen
     marken = marken.map(function (p) {
       var minus = 0;
@@ -3971,7 +3993,7 @@ function aufnahmeStarten(root, hilfe) {
       if (l && a1 <= l[1]) l[1] = Math.max(l[1], e1); else treffer.push([a1, e1]);
     });
     if (!treffer.length) { status("Keine leisen Ger\u00e4usche in den Pausen gefunden."); return; }
-    rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+    rueckVoll(raw, marken.slice());
     var neu = raw.slice(), f = Math.round(0.01 * sr);
     var orig = treffer.map(function (t) { return raw.slice(t[0], t[1]); });
     treffer.forEach(function (t) {
@@ -4069,7 +4091,7 @@ function aufnahmeStarten(root, hilfe) {
       });
       for (var b1 = 0; b1 < halbN; b1++) profil[b1] = profil[b1] / kandidaten.length * 2.2;   // Schwelle etwas ueber dem Rauschen
       // 2) die ganze Aufnahme Rahmen fuer Rahmen filtern
-      rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+      rueckVoll(raw, marken.slice());
       var aus = new Float32Array(n), gAlt = new Float32Array(halbN).fill(1), gNeu = new Float32Array(halbN), gGl = new Float32Array(halbN);
       var t0 = performance.now();
       for (var fr = 0; fr < nFr; fr++) {
@@ -4144,7 +4166,7 @@ function aufnahmeStarten(root, hilfe) {
       if (aktuell < soll) aktuell = Math.min(soll, aktuell + schritt); else if (aktuell > soll) aktuell = Math.max(soll, aktuell - schritt);
       g[t2] = aktuell;
     }
-    rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+    rueckVoll(raw, marken.slice());
     var neu = new Float32Array(raw.length);
     for (var b2 = 0; b2 < nb; b2++) {
       var g0 = g[b2], g1 = b2 + 1 < nb ? g[b2 + 1] : g0;
@@ -4167,7 +4189,7 @@ function aufnahmeStarten(root, hilfe) {
     });
     if (best < 0 || abst > 0.5 * sr) { status("Setz den Zeiger in die gr\u00fcne Stelle, die du behalten willst."); return; }
     var gs = gStellen[best];
-    rueck.push({ voll: raw, m: marken.slice() }); if (rueck.length > 30) rueck.shift();
+    rueckVoll(raw, marken.slice());
     var neu = raw.slice(); neu.set(gs[2], gs[0]); raw = neu;
     var rest = gStellen.slice(0, best).concat(gStellen.slice(best + 1));
     nachSchnitt(kopf);
@@ -4502,18 +4524,33 @@ function aufnahmeStarten(root, hilfe) {
   (async function () {
     try {
       var st = await dbTun("stuecke", "readonly", function (os) { return os.getAll(); });
-      if (dead) return;
-      if (st && st.length) {
+      var k = await dbTun("kopie", "readonly", function (os) { return os.get("aktuell"); });
+      if (dead || raw) return;
+      var stZeit = st && st.length ? (st[st.length - 1].zeit || 0) : -1;
+      var kZeit = k ? (k.zeit || 1) : -1;
+      // die neuere von beiden nehmen: eine abgebrochene Aufnahme nur, wenn sie juenger ist als die Kopie
+      if (st && st.length && stZeit > kZeit) {
         raw = auspacken(st); sr = st[0].sr; cache = {}; inApp = false; marken = [];
         await showTake();
-        status("Die Aufnahme wurde unterbrochen \u2013 alles bis dahin Aufgenommene ist wieder da.");
+        status("Die Aufnahme wurde unterbrochen \u2013 alles bis dahin Aufgenommene ist wieder da (" + zeitText(raw.length / sr) + ").");
         return;
       }
-      var k = await dbTun("kopie", "readonly", function (os) { return os.get("aktuell"); });
-      if (dead || !k || raw) return;
-      raw = auspacken([k]); sr = k.sr; cache = {}; inApp = !!k.inApp; marken = (k.marken || []).slice();
+      if (!k) return;
+      if (k.teile) {
+        var teile = [];
+        for (var ti = 0; ti < k.teile; ti++) {
+          var tt = await dbTun("kopie", "readonly", function (os) { return os.get("teil-" + ti); });
+          if (!tt) { status("\u26a0 Die Sicherheitskopie im Browser ist unvollst\u00e4ndig. Bitte \u00f6ffne deine Aufnahme \u00fcber \ud83d\udcc2."); return; }
+          teile.push(tt);
+        }
+        if (dead || raw) return;
+        raw = auspacken(teile);
+      } else raw = auspacken([k]);
+      sr = k.sr; cache = {}; inApp = !!k.inApp; marken = (k.marken || []).slice();
       await showTake();
-      status(inApp ? "Deine letzte Aufnahme ist noch da." : "Deine letzte Aufnahme ist noch da \u2013 sie liegt noch nicht in der App.");
+      var wann = k.zeit ? new Date(k.zeit) : null;
+      status((inApp ? "Deine letzte Aufnahme ist wieder da" : "Deine letzte Aufnahme ist wieder da \u2013 sie liegt noch nicht in der App") +
+        " (" + zeitText(raw.length / sr) + (wann ? ", Stand " + wann.toLocaleDateString("de-DE") + " " + wann.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "") + ").");
     } catch (e) {}
   })();
   root.querySelectorAll("[data-p]").forEach(function (b) {
@@ -4541,7 +4578,8 @@ function aufnahmeStarten(root, hilfe) {
   $("discard").onclick = function () {
     if (!inApp && !confirm("Aufnahme wirklich verwerfen? Sie ist nicht in der App gespeichert.")) return;
     hoerStop(); rueck = []; clearTimeout(kopieUhr); inApp = false;
-    dbTun("kopie", "readwrite", function (os) { return os.delete("aktuell"); }).catch(function () {});
+    dbTun("kopie", "readwrite", function (os) { return os.clear(); }).catch(function () {});
+    dbTun("stuecke", "readwrite", function (os) { return os.clear(); }).catch(function () {});
     raw = null; cache = {}; lastBlob = null; $("take").hidden = true;
     $("player").removeAttribute("src"); if (curUrl) { URL.revokeObjectURL(curUrl); curUrl = null; }
     status("");
