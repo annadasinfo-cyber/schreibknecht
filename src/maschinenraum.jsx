@@ -847,7 +847,8 @@ function StickPlatte({ api, sag }) {
   const [zug, setZug] = useState(0);          // wie stark gestrichen wird, 0..1
   const [name, setName] = useState("");
 
-  const z = useRef({ x: 0, y: 0, t: 0, tempo: 0, stand: [0, 0, 0] });
+  const z = useRef({ x: 0, y: 0, t: 0, tempo: 0, stand: [0, 0, 0],
+                     winkel: 0, strecke: 0 });
 
   // solange gestrichen wird, laufen die ziffern — im tempo der hand
   useEffect(() => {
@@ -858,10 +859,17 @@ function StickPlatte({ api, sag }) {
       if (w.tempo < 0.02) w.tempo = 0;
       const schritt = Math.round(w.tempo * 9);
       if (schritt > 0) {
+        // jede walze zieht aus etwas anderem, was die hand tut:
+        //   erste  — wie schnell gestrichen wird
+        //   zweite — in welche richtung
+        //   dritte — wie weit insgesamt
+        const a = schritt;
+        const b = 1 + Math.round(Math.abs(w.winkel) / Math.PI * 11);
+        const c = 1 + (Math.round(w.strecke) % 13);
         w.stand = [
-          (w.stand[0] + schritt) % 100,
-          (w.stand[1] + schritt * 3) % 100,
-          (w.stand[2] + schritt * 7) % 100,
+          (w.stand[0] + a) % 100,
+          (w.stand[1] + b) % 100,
+          (w.stand[2] + c) % 100,
         ];
         setRate(w.stand);
       }
@@ -875,15 +883,19 @@ function StickPlatte({ api, sag }) {
     const t = performance.now();
     if (w.t) {
       const dt = Math.max(t - w.t, 1);
-      const weg = Math.hypot(e.clientX - w.x, e.clientY - w.y);
+      const dx = e.clientX - w.x, dy = e.clientY - w.y;
+      const weg = Math.hypot(dx, dy);
       // pixel je millisekunde, geglaettet
       w.tempo = Math.min(2.5, (weg / dt) * 0.55 + w.tempo * 0.45);
+      if (weg > 0.5) w.winkel = Math.atan2(dy, dx);
+      w.strecke += weg;
     }
     w.x = e.clientX; w.y = e.clientY; w.t = t;
   };
 
   const anfangen = (e) => {
     z.current = { x: e.clientX, y: e.clientY, t: performance.now(), tempo: 0,
+                  winkel: 0, strecke: 0,
                   stand: gehalten ? [...gehalten] : [...rate] };
     setGehalten(null);
     setLaeuft(true);
