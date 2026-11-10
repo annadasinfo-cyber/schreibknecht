@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import Studio from "./studio.jsx";
+import Maschinenraum from "./maschinenraum.jsx";
 
 // ============================================================
 // SCHREIBKNECHT · "write or die!" dr. wicked
@@ -2842,7 +2843,7 @@ function Suchfeld({ suche, setSuche, imProjekt }) {
 }
 
 // ---------- Deckblatt ----------
-function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert, studio,
+function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, sichert, studio, maschine,
                     zurueckspielen, spieltZurueck, dateiFeld, platz, zaehlt, nachsehen, eindampfen, dampft, allesAufraeumen, raeumtAlles,
                     suche, setSuche, fern, suchtFern, springe, wohin }) {
   // Bei jedem Oeffnen werden drei Karten vom Stapel gezogen und zwischen
@@ -2902,6 +2903,13 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
           <span className="tuerbogen">🚪</span>
           <span className="kachelname">studio</span>
           <span className="kachelzeile"><span>bild · zoom · ton</span></span>
+        </button>
+        {/* die zweite tuer — in den maschinenraum */}
+        <button className="kachel tuer eisen" onClick={maschine}
+          title="in den maschinenraum: operationen, sigillen, raten">
+          <span className="tuerbogen">⚙️</span>
+          <span className="kachelname">maschinenraum</span>
+          <span className="kachelzeile"><span>sigille · rate · puls</span></span>
         </button>
         {projekte.length === 0 && gezogen.map((k) =>
           <img key={k.id} className="knechtkarte" src={k.bild} alt=""
@@ -3045,6 +3053,7 @@ export default function Schreibknecht() {
   const [laeutet, setLaeutet] = useState(false);   // die glocke schwingt gerade
   const [studio, setStudio] = useState(false);     // hinter der tuer: das studio
   const [studioStart, setStudioStart] = useState("liste");   // womit das studio aufgeht
+  const [mraum, setMraum] = useState(false);                 // hinter der zweiten tuer: der maschinenraum
   const zuletztUhr = useRef(null);
 
   // die kartenbilder gleich beim start vorbereiten, nicht erst
@@ -3919,6 +3928,7 @@ fortfahren?`
                   } />
               : <Deckblatt projekte={projekte} anlegen={projektAnlegen}
                   studio={() => { setStudioStart("liste"); setStudio(true); }}
+                  maschine={() => setMraum(true)}
                   oeffnen={setOffen} weg={projektWeg} kopieren={projektKopieren}
                   sicherung={sicherung} sichert={sichert}
                   zurueckspielen={zurueckspielen} spieltZurueck={spieltZurueck}
@@ -3970,6 +3980,10 @@ fortfahren?`
       {sitzung && studio && (
         <Studio api={api} zugang={() => sitzungRef.current} URL_DB={URL_DB} KEY_DB={KEY_DB}
           zurueck={() => setStudio(false)} start={studioStart} />
+      )}
+      {sitzung && mraum && (
+        <Maschinenraum api={api} zugang={() => sitzungRef.current} URL_DB={URL_DB} KEY_DB={KEY_DB}
+          zurueck={() => setMraum(false)} />
       )}
     </div>
   );
@@ -4283,6 +4297,12 @@ function Stil() {
 }
 .kachel.tuer .kachelzeile{justify-content:center; white-space:nowrap; font-size:10px; letter-spacing:.04em}
 @media(max-width:700px){ .kachel.tuer{min-height:150px} }
+/* die zweite tuer: eisen statt holz, dahinter liegt der maschinenraum */
+.kachel.tuer.eisen{
+  border-color:rgba(111,174,156,.45);
+  background:linear-gradient(180deg, rgba(34,62,55,.6), rgba(10,18,15,.8));
+}
+.kachel.tuer.eisen:hover{border-color:rgba(111,174,156,.8)}
 .tuerbogen{font-size:24px; line-height:1; filter:sepia(.45) saturate(.8)}
 .leerwort{color:var(--nebel); font-style:italic; margin-top:22px}
 .truhe{
