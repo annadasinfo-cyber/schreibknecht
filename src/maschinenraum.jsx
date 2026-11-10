@@ -618,14 +618,18 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
                 + (aktiv && aktiv.id === b.id ? " amzug" : "")
                 + (gewaehlt === b.id ? " gewaehlt" : "")}
               style={{ left: b.x + "%", top: b.y + "%" }}
+              title={b.bezeichnung || ""}
               onPointerDown={(e) => griffAn(e, b)}>
               <span className="mnummer">{b.nummer}</span>
+              {/* das art-zeichen bleibt sichtbar, auch wenn ein bild drin liegt */}
+              <span className="martkreis">
+                {(ARTEN.find((a) => a.wert === b.art) || ARTEN[2]).zeichen}
+              </span>
               {b.bild && bilder[b.bild]
                 ? <img src={bilder[b.bild]} alt="" draggable={false} />
                 : <span className="mzeichen">
                     {(ARTEN.find((a) => a.wert === b.art) || ARTEN[2]).zeichen}
                   </span>}
-              <span className="mbez">{b.bezeichnung || "—"}</span>
             </div>
           ))}
         </div>
@@ -1411,12 +1415,14 @@ function MaschinenStil() {
 .mleitung{position:absolute; inset:0; width:100%; height:100%; pointer-events:none}
 .mleitung line{stroke:rgba(184,115,51,.75); stroke-width:1.6px; stroke-dasharray:5 4;
   filter:drop-shadow(0 0 2px rgba(0,0,0,.6))}
-.mleitung line.zurueck{stroke:rgba(111,174,156,.4); stroke-dasharray:2 7}
+/* die leitung vom letzten zurueck zum ersten — der kreis ist zu */
+.mleitung line.zurueck{stroke:rgba(111,174,156,.85); stroke-width:2px; stroke-dasharray:8 5}
 
 .mbauteil{
   position:absolute; transform:translate(-50%,-50%); cursor:grab;
-  display:flex; flex-direction:column; align-items:center; gap:3px;
-  width:74px; padding:7px 5px 5px; border-radius:4px; touch-action:none;
+  display:flex; align-items:center; justify-content:center;
+  width:74px; height:74px; padding:0; border-radius:4px;
+  touch-action:none;
   background:linear-gradient(rgba(22,30,26,.96), rgba(12,17,15,.98));
   border:1px solid rgba(184,115,51,.4);
   box-shadow:0 3px 10px rgba(0,0,0,.6);
@@ -1430,20 +1436,30 @@ function MaschinenStil() {
   border-color:var(--glut);
   box-shadow:0 0 0 1px var(--glut), 0 0 22px rgba(228,100,44,.45);
 }
-.mbauteil img{width:46px; height:46px; object-fit:contain; border-radius:2px; pointer-events:none}
+/* das bild fuellt das ganze kaestchen */
+.mbauteil img{
+  width:100%; height:100%; object-fit:cover; display:block;
+  border-radius:3px; pointer-events:none;
+}
 .mzeichen{font-size:26px; line-height:1.3; color:var(--span2)}
 .mbauteil.trend .mzeichen{color:var(--messing)}
 .mbauteil.verstaerker .mzeichen{color:var(--kupfer2)}
 .mnummer{
   position:absolute; top:-8px; left:-8px; width:19px; height:19px; border-radius:50%;
   font-size:10px; line-height:19px; text-align:center; color:var(--grund);
-  background:var(--kupfer); font-weight:700;
+  background:var(--kupfer); font-weight:700; z-index:2;
 }
+/* das art-zeichen als eigener kleiner kreis neben der nummer —
+   so bleibt es lesbar, auch wenn ein bild das kaestchen fuellt */
+.martkreis{
+  position:absolute; top:-8px; left:13px; width:19px; height:19px; border-radius:50%;
+  font-size:10px; line-height:18px; text-align:center; z-index:1;
+  background:#0b100e; border:1px solid rgba(184,115,51,.55); color:var(--kupfer2);
+}
+.mbauteil.target .martkreis{color:var(--span2); border-color:rgba(111,174,156,.6)}
+.mbauteil.trend  .martkreis{color:var(--messing); border-color:rgba(196,167,71,.6)}
 .mnummer.gross{position:static; width:26px; height:26px; line-height:26px; font-size:12px}
-.mbez{
-  font-size:9.5px; letter-spacing:.04em; max-width:68px; text-align:center;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--asche);
-}
+.mzeichen{line-height:1}
 
 /* ---- die seitenwand ---- */
 .mwand{
@@ -1633,11 +1649,10 @@ function MaschinenStil() {
   .mschaltung{min-height:320px; flex:0 0 auto; width:100%}
   .mschaltung.hatplan{min-height:0}
   /* kleinere kaestchen — auf schmalem schirm verdecken sie sonst die tafel */
-  .mbauteil{width:58px; padding:5px 3px 4px}
-  .mbauteil img{width:34px; height:34px}
+  .mbauteil{width:58px; height:58px}
   .mzeichen{font-size:20px}
-  .mbez{font-size:8.5px; max-width:54px}
   .mnummer{width:17px; height:17px; line-height:17px; font-size:9px; top:-6px; left:-6px}
+  .martkreis{width:17px; height:17px; line-height:16px; font-size:9px; top:-6px; left:11px}
   .mkachel{width:100%}
   .mkachelhuelle{width:100%}
   .msatzwort{font-size:13px; padding-top:3px}
