@@ -1413,10 +1413,10 @@ function MaschinenStil() {
 .mgrundleer small{font-size:10.5px; max-width:300px; line-height:1.6}
 
 .mleitung{position:absolute; inset:0; width:100%; height:100%; pointer-events:none}
-.mleitung line{stroke:rgba(184,115,51,.75); stroke-width:1.6px; stroke-dasharray:5 4;
+.mleitung line{stroke:rgba(216,140,66,.95); stroke-width:2px; stroke-dasharray:8 5;
   filter:drop-shadow(0 0 2px rgba(0,0,0,.6))}
-/* die leitung vom letzten zurueck zum ersten — der kreis ist zu */
-.mleitung line.zurueck{stroke:rgba(111,174,156,.85); stroke-width:2px; stroke-dasharray:8 5}
+/* die leitung vom letzten zurueck zum ersten ist eine leitung wie
+   jede andere — der stromkreis ist geschlossen, nicht halb */
 
 .mbauteil{
   position:absolute; transform:translate(-50%,-50%); cursor:grab;
