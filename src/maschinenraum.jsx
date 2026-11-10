@@ -77,7 +77,12 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   const [meldung, setMeldung] = useState("");
   const [laedt, setLaedt] = useState(true);
 
-  const sag = (t) => { setMeldung(t); if (t) setTimeout(() => setMeldung(""), 5000); };
+  // MUSS stabil bleiben: der lade-effekt der operation haengt daran.
+  // sonst holt jede tasteneingabe die ganze schaltung neu vom server.
+  const sag = useCallback((t) => {
+    setMeldung(t);
+    if (t) setTimeout(() => setMeldung(""), 5000);
+  }, []);
 
   // ---------- bilder ----------
   const holBilder = useCallback(async (pfade) => {
@@ -172,7 +177,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   // ---------- operationen ----------
   const operationAnlegen = async () => {
     const neu = {
-      id: neueId(), intention: "", target: "", takt: 60,
+      id: neueId(), titel: "", intention: "", target: "", takt: 60,
       aktiv: false, zuletzt: new Date().toISOString(),
     };
     try {
@@ -182,13 +187,43 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
     } catch (e) { sag(String(e.message)); }
   };
 
-  const operationAendern = async (id, was) => {
+  // Text wird gebremst weggeschrieben — sonst eine anfrage je buchstabe.
+  // Schalter, takt und datum gehen sofort, da wartet man nicht gern.
+  const uhren = useRef({});
+  const offenes = useRef({});
+
+  const operationAendern = (id, was) => {
     setOperationen((l) => l.map((o) => (o.id === id ? { ...o, ...was } : o)));
-    try {
-      await api("PATCH", `/rest/v1/operationen?id=eq.${id}`,
-        { ...was, zuletzt: new Date().toISOString() });
-    } catch (e) { sag(String(e.message)); }
+    const schreiben = (stoff) => api("PATCH", `/rest/v1/operationen?id=eq.${id}`,
+      { ...stoff, zuletzt: new Date().toISOString() }).catch((e) => sag(String(e.message)));
+
+    const nurText = Object.keys(was).every(
+      (k) => k === "intention" || k === "target" || k === "titel");
+    if (!nurText) {
+      const stoff = { ...offenes.current[id], ...was };
+      offenes.current[id] = null;
+      clearTimeout(uhren.current[id]);
+      schreiben(stoff);
+      return;
+    }
+    offenes.current[id] = { ...offenes.current[id], ...was };
+    clearTimeout(uhren.current[id]);
+    uhren.current[id] = setTimeout(() => {
+      const stoff = offenes.current[id];
+      offenes.current[id] = null;
+      if (stoff) schreiben(stoff);
+    }, 700);
   };
+
+  // was noch offen ist, beim verlassen wegschreiben
+  useEffect(() => () => {
+    Object.keys(uhren.current).forEach((id) => {
+      clearTimeout(uhren.current[id]);
+      const stoff = offenes.current[id];
+      if (stoff) api("PATCH", `/rest/v1/operationen?id=eq.${id}`,
+        { ...stoff, zuletzt: new Date().toISOString() }).catch(() => {});
+    });
+  }, [api]);
 
   const operationWeg = async (id) => {
     const o = operationen.find((x) => x.id === id);
@@ -200,7 +235,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
     catch (e) { sag(String(e.message)); }
   };
 
-  const dieOffene = operationen.find((o) => o.id === offen) || null;
+  const dieOffene = (!schrank && operationen.find((o) => o.id === offen)) || null;
 
   // ---------- anzeige ----------
   return (
@@ -214,9 +249,11 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
           else zurueck();
         }}>‹ {schrank ? "maschinenraum" : offen ? "operationen" : "zurück"}</button>
 
-        <span className="mtitel">
-          {schrank ? schrank : offen ? "operation" : "maschinenraum"}
-        </span>
+        {dieOffene
+          ? <input className="mtitel mtitelfeld" value={dieOffene.titel || ""}
+              placeholder="operation" spellCheck={false}
+              onChange={(e) => operationAendern(dieOffene.id, { titel: e.target.value })} />
+          : <span className="mtitel">{schrank ? schrank : "maschinenraum"}</span>}
 
         <span className="mfuell" />
 
@@ -271,7 +308,7 @@ function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg }) {
   const kippung = (id) => {
     let z = 0;
     for (let i = 0; i < id.length; i++) z = (z * 31 + id.charCodeAt(i)) % 1000;
-    return ((z % 180) - 90) / 90 * 1.1;
+    return ((z % 180) - 90) / 90 * 2.2;
   };
 
   return (
@@ -282,7 +319,7 @@ function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg }) {
       </button>
 
       {operationen.map((o) => {
-        const satz = o.intention || "ohne absicht";
+        const satz = o.titel || o.intention || "ohne titel";
         const puls = pulsJetzt(o);
         const gesund = lebt(o);
         return (
@@ -344,6 +381,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
   const feldRef = useRef(null);
   const zugRef = useRef(null);
   const uhren = useRef({});
+  const [form, setForm] = useState(null);   // seitenverhaeltnis des schaltplans
 
   // ---------- laden ----------
   useEffect(() => {
@@ -388,11 +426,27 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     uhren.current[id] = setTimeout(schreiben, 800);
   };
 
+  // position waehlen heisst tauschen — sonst gaebe es luecken oder doppelte
+  const nummerSetzen = (id, zahl) => {
+    const b = bauteile.find((x) => x.id === id);
+    if (!b || b.nummer === zahl) return;
+    const anderer = bauteile.find((x) => x.id !== id && x.nummer === zahl);
+    bauteilAendern(id, { nummer: zahl }, true);
+    if (anderer) bauteilAendern(anderer.id, { nummer: b.nummer }, true);
+  };
+
   const bauteilWeg = async (id) => {
-    setBauteile((l) => l.filter((b) => b.id !== id));
+    const weg = bauteile.find((b) => b.id === id);
+    const rest = bauteile.filter((b) => b.id !== id);
+    setBauteile(rest);
     if (gewaehlt === id) setGewaehlt(null);
-    try { await api("DELETE", `/rest/v1/bauteile?id=eq.${id}`); }
-    catch (e) { sag(String(e.message)); }
+    try {
+      await api("DELETE", `/rest/v1/bauteile?id=eq.${id}`);
+      // die luecke in der reihenfolge schliessen
+      if (weg) for (const b of rest) {
+        if ((b.nummer || 0) > (weg.nummer || 0)) bauteilAendern(b.id, { nummer: b.nummer - 1 }, true);
+      }
+    } catch (e) { sag(String(e.message)); }
   };
 
   // ---------- ziehen auf dem schaltplan ----------
@@ -416,12 +470,11 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     const feld = feldRef.current;
     if (!z || !feld) return;
     const kasten = feld.getBoundingClientRect();
-    const x = ((e.clientX - z.dx - kasten.left) / kasten.width) * 100;
-    const y = ((e.clientY - z.dy - kasten.top) / kasten.height) * 100;
+    const x = Math.max(1, Math.min(99, ((e.clientX - z.dx - kasten.left) / kasten.width) * 100));
+    const y = Math.max(1, Math.min(99, ((e.clientY - z.dy - kasten.top) / kasten.height) * 100));
     z.bewegt = true;
-    setBauteile((l) => l.map((b) => (b.id === z.id
-      ? { ...b, x: Math.max(1, Math.min(99, x)), y: Math.max(1, Math.min(99, y)) }
-      : b)));
+    z.x = x; z.y = y;          // im zug mitfuehren — der state ist noch nicht nachgezogen
+    setBauteile((l) => l.map((b) => (b.id === z.id ? { ...b, x, y } : b)));
   };
 
   const griffLos = () => {
@@ -429,9 +482,21 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     zugRef.current = null;
     if (!z) return;
     if (!z.bewegt) { setGewaehlt(z.id); return; }
-    const b = bauteile.find((x) => x.id === z.id);
-    if (b) bauteilAendern(b.id, { x: b.x, y: b.y }, true);
+    // die lage kommt aus dem zug, nicht aus dem state: bei schnellem
+    // loslassen stuende dort noch der alte wert und wuerde zurueckgeschrieben
+    bauteilAendern(z.id, { x: z.x, y: z.y }, true);
   };
+
+  // wer draussen loslaesst, soll nicht weiterziehen muessen
+  useEffect(() => {
+    const auf = () => griffLos();
+    window.addEventListener("pointerup", auf);
+    window.addEventListener("pointercancel", auf);
+    return () => {
+      window.removeEventListener("pointerup", auf);
+      window.removeEventListener("pointercancel", auf);
+    };
+  });
 
   // ---------- an und aus ----------
   const anschalten = () => {
@@ -478,6 +543,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     try {
       sag("bild wird hochgeladen …");
       const pfad = await hochladen(datei, "schaltungen");
+      setForm(null);
       aendern({ hintergrund: pfad });
       sag("");
     } catch (e) { sag(String(e.message)); }
@@ -493,23 +559,33 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
 
       {/* ---------- der satz ---------- */}
       <div className="msatz">
-        <span className="msatzwort">meine absicht ist</span>
-        <textarea className="mintention" value={op.intention} rows={2}
-          placeholder="… was eintreten soll, so wie du es prüfen würdest"
-          onChange={(e) => aendern({ intention: e.target.value })} />
-        <span className="msatzwort">für das ziel</span>
-        <input className="mtarget" value={op.target}
-          placeholder="… wer oder was"
-          onChange={(e) => aendern({ target: e.target.value })} />
+        <label className="mhaelfte">
+          <span className="msatzwort">meine absicht ist</span>
+          <textarea className="mfeldgross" value={op.intention} rows={2}
+            placeholder="… was eintreten soll, so wie du es prüfen würdest"
+            onChange={(e) => aendern({ intention: e.target.value })} />
+        </label>
+        <label className="mhaelfte">
+          <span className="msatzwort">für das ziel</span>
+          <textarea className="mfeldgross ziel" value={op.target} rows={2}
+            placeholder="… wer oder was"
+            onChange={(e) => aendern({ target: e.target.value })} />
+        </label>
       </div>
 
       {/* ---------- der maschinenteil ---------- */}
       <div className="mmaschine">
-        <div className="mschaltung" ref={feldRef}
+        <div className={"mschaltung" + (form ? " hatplan" : "")} ref={feldRef}
+          style={form ? { aspectRatio: String(form) } : undefined}
           onPointerMove={griffZieht} onPointerUp={griffLos} onPointerCancel={griffLos}>
 
           {op.hintergrund && bilder[op.hintergrund]
-            ? <img className="mgrund" src={bilder[op.hintergrund]} alt="" draggable={false} />
+            ? <img className="mgrund" src={bilder[op.hintergrund]} alt="" draggable={false}
+                onLoad={(e) => {
+                  const b = e.target;
+                  if (b.naturalWidth && b.naturalHeight)
+                    setForm(b.naturalWidth / b.naturalHeight);
+                }} />
             : <div className="mgrundleer">
                 <span>kein schaltplan</span>
                 <small>lege unten ein bild ein — hieronymus-tafel, eigene zeichnung, was du willst</small>
@@ -595,8 +671,8 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
               onChange={(e) => aendern({ test_am: e.target.value || null })} />
           </label>
 
-          <label className="mfeldchen datei">
-            <span>schaltplan</span>
+          <label className="mdateiknopf">
+            {op.hintergrund ? "schaltplan wechseln" : "schaltplan einlegen"}
             <input type="file" accept="image/*"
               onChange={(e) => hintergrundWaehlen(e.target.files && e.target.files[0])} />
           </label>
@@ -628,7 +704,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         ))}
       </div>
 
-      {platte && <StickPlatte raten={raten} api={api} sag={sag} />}
+      {platte && <StickPlatte api={api} sag={sag} />}
 
       {/* ---------- das gewählte bauteil ---------- */}
       {dasBauteil && (
@@ -636,7 +712,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
           b={dasBauteil} aendern={bauteilAendern} weg={bauteilWeg}
           zu={() => setGewaehlt(null)} sigillen={sigillen} raten={raten}
           bilder={bilder} hochladen={hochladen} sag={sag}
-          hoechste={bauteile.reduce((m, x) => Math.max(m, x.nummer || 0), 0)}
+          anzahl={bauteile.length} nummerSetzen={nummerSetzen}
         />
       )}
 
@@ -684,7 +760,8 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
 // ============================================================
 // DAS BLATT FÜR EIN BAUTEIL
 // ============================================================
-function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, bilder, hochladen, sag, hoechste }) {
+function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, bilder, hochladen, sag,
+                        anzahl, nummerSetzen }) {
   const bildWaehlen = async (datei) => {
     if (!datei) return;
     try {
@@ -715,8 +792,8 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, bilder, hochladen,
         <label className="mfeldchen">
           <span>position</span>
           <select value={b.nummer}
-            onChange={(e) => aendern(b.id, { nummer: Number(e.target.value) }, true)}>
-            {Array.from({ length: Math.max(hoechste, b.nummer) + 1 }, (_, i) => i + 1)
+            onChange={(e) => nummerSetzen(b.id, Number(e.target.value))}>
+            {Array.from({ length: Math.max(anzahl, b.nummer) }, (_, i) => i + 1)
               .map((n) => <option key={n} value={n}>{n}</option>)}
           </select>
         </label>
@@ -741,8 +818,8 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, bilder, hochladen,
       </div>
 
       <div className="mblattreihe">
-        <label className="mfeldchen datei">
-          <span>eigenes bild</span>
+        <label className="mdateiknopf">
+          {b.bild ? "bild wechseln" : "eigenes bild"}
           <input type="file" accept="image/*"
             onChange={(e) => bildWaehlen(e.target.files && e.target.files[0])} />
         </label>
@@ -758,61 +835,84 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, bilder, hochladen,
 
 // ============================================================
 // DIE STICK-PLATTE
-// Die platte misst keinen widerstand — sie misst DEIN streichen.
-// Wo du langsamer wirst, haelt sie die rate fest, die gerade stand.
+// Die platte erzeugt keinen widerstand — sie misst DEIN streichen.
+// Schnell streichen laesst die ziffern rasen, langsamer werden laesst
+// sie kriechen, anhalten haelt sie fest. Was beim abheben steht, ist
+// die rate.
 // ============================================================
-function StickPlatte({ raten, api, sag }) {
+function StickPlatte({ api, sag }) {
   const [laeuft, setLaeuft] = useState(false);
   const [rate, setRate] = useState([0, 0, 0]);
   const [gehalten, setGehalten] = useState(null);
+  const [zug, setZug] = useState(0);          // wie stark gestrichen wird, 0..1
   const [name, setName] = useState("");
 
-  const zustand = useRef({ letztX: 0, letztY: 0, letztT: 0, tempo: 0, zaehler: 0 });
-  const uhr = useRef(null);
+  const z = useRef({ x: 0, y: 0, t: 0, tempo: 0, stand: [0, 0, 0] });
 
-  // solange gestrichen wird, laufen die ziffern
+  // solange gestrichen wird, laufen die ziffern — im tempo der hand
   useEffect(() => {
     if (!laeuft) return;
-    uhr.current = setInterval(() => {
-      const z = zustand.current;
-      z.zaehler++;
-      // je schneller du streichst, desto schneller laufen die ziffern
-      if (z.tempo > 0.15) {
-        setRate((r) => r.map((_, i) =>
-          Math.floor(Math.random() * (i === 0 ? 100 : 100))));
+    const uhr = setInterval(() => {
+      const w = z.current;
+      w.tempo *= 0.74;                        // ohne nachschub wird es ruhig
+      if (w.tempo < 0.02) w.tempo = 0;
+      const schritt = Math.round(w.tempo * 9);
+      if (schritt > 0) {
+        w.stand = [
+          (w.stand[0] + schritt) % 100,
+          (w.stand[1] + schritt * 3) % 100,
+          (w.stand[2] + schritt * 7) % 100,
+        ];
+        setRate(w.stand);
       }
-      z.tempo *= 0.82;    // ohne bewegung wird es ruhig
-    }, 90);
-    return () => clearInterval(uhr.current);
+      setZug(Math.min(w.tempo, 1));
+    }, 60);
+    return () => clearInterval(uhr);
   }, [laeuft]);
 
   const streichen = (e) => {
-    const z = zustand.current;
-    const t = Date.now();
-    if (z.letztT) {
-      const dt = Math.max(t - z.letztT, 1);
-      const weg = Math.hypot(e.clientX - z.letztX, e.clientY - z.letztY);
-      z.tempo = Math.min(3, (weg / dt) * 0.6 + z.tempo * 0.4);
+    const w = z.current;
+    const t = performance.now();
+    if (w.t) {
+      const dt = Math.max(t - w.t, 1);
+      const weg = Math.hypot(e.clientX - w.x, e.clientY - w.y);
+      // pixel je millisekunde, geglaettet
+      w.tempo = Math.min(2.5, (weg / dt) * 0.55 + w.tempo * 0.45);
     }
-    z.letztX = e.clientX; z.letztY = e.clientY; z.letztT = t;
+    w.x = e.clientX; w.y = e.clientY; w.t = t;
   };
 
   const anfangen = (e) => {
-    setLaeuft(true); setGehalten(null);
-    zustand.current = { letztX: e.clientX, letztY: e.clientY, letztT: Date.now(), tempo: 1, zaehler: 0 };
+    z.current = { x: e.clientX, y: e.clientY, t: performance.now(), tempo: 0,
+                  stand: gehalten ? [...gehalten] : [...rate] };
+    setGehalten(null);
+    setLaeuft(true);
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
   };
 
   const aufhoeren = () => {
     if (!laeuft) return;
     setLaeuft(false);
-    setGehalten([...rate]);
+    setZug(0);
+    setGehalten([...z.current.stand]);
     try { if (navigator.vibrate) navigator.vibrate(18); } catch {}
   };
 
+  // auch wer draussen loslaesst, soll die rate bekommen
+  useEffect(() => {
+    if (!laeuft) return;
+    const auf = () => aufhoeren();
+    window.addEventListener("pointerup", auf);
+    window.addEventListener("pointercancel", auf);
+    return () => {
+      window.removeEventListener("pointerup", auf);
+      window.removeEventListener("pointercancel", auf);
+    };
+  });
+
   const speichern = async () => {
     if (!gehalten) return;
-    const ziffern = gehalten.join("-");
+    const ziffern = gehalten.map((n) => String(n).padStart(2, "0")).join("-");
     const neu = {
       id: neueId(), name: name.trim() || ("rate " + ziffern),
       ziffern, beschreibung: "", herkunft: "selbst ertastet",
@@ -824,43 +924,44 @@ function StickPlatte({ raten, api, sag }) {
     } catch (e) { sag(String(e.message)); }
   };
 
-  const tempo = zustand.current.tempo;
+  const zeigt = gehalten || rate;
 
   return (
     <div className="mplatte">
       <div className="mplattekopf">
         <span className="mwandtitel">stick-platte</span>
-        <span className="mziffern">
-          {(gehalten || rate).map((n, i) =>
-            <b key={i}>{String(n).padStart(2, "0")}</b>)}
+        <span className={"mziffern" + (gehalten ? " haelt" : "")}>
+          {zeigt.map((n, i) => <b key={i}>{String(n).padStart(2, "0")}</b>)}
         </span>
       </div>
 
       <div className={"mflaeche" + (laeuft ? " laeuft" : "") + (gehalten ? " haelt" : "")}
-        style={laeuft ? { filter: `brightness(${1 - Math.min(tempo, 1) * 0.3})` } : undefined}
+        style={laeuft ? { "--zug": zug } : undefined}
         onPointerDown={anfangen}
-        onPointerMove={(e) => laeuft && streichen(e)}
-        onPointerUp={aufhoeren}
-        onPointerLeave={aufhoeren}
-        onPointerCancel={aufhoeren}>
+        onPointerMove={(e) => { if (laeuft) streichen(e); }}
+        onPointerUp={aufhoeren}>
         <span className="mflaechentext">
-          {gehalten ? "hier bist du hängengeblieben" : laeuft ? "…" : "streichen"}
+          {gehalten ? "hier bist du h\u00e4ngengeblieben" : laeuft ? "" : "streichen"}
         </span>
+        {laeuft && <span className="mspur" style={{ opacity: 0.25 + zug * 0.6 }} />}
       </div>
 
       {gehalten && (
         <div className="mzeile">
-          <input value={name} placeholder="name für diese rate"
+          <input value={name} placeholder="name f\u00fcr diese rate"
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") speichern(); }} />
           <button className="mbtn" onClick={speichern}>in die datenbank</button>
-          <button className="mbtn" onClick={() => setGehalten(null)}>nochmal</button>
+          <button className="mbtn" onClick={() => { setGehalten(null); setRate([0,0,0]); }}>
+            nochmal
+          </button>
         </div>
       )}
 
       <p className="mhinweis">
-        die platte erzeugt keinen widerstand — sie misst dein streichen.
-        wo du langsamer wirst, hält sie fest, was gerade stand.
+        die platte erzeugt keinen widerstand \u2014 sie misst dein streichen.
+        schnell streichen l\u00e4sst die ziffern rasen, langsamer werden l\u00e4sst sie
+        kriechen. wo du anh\u00e4ltst, bleibt die rate stehen.
       </p>
     </div>
   );
@@ -874,6 +975,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
   const [suche, setSuche] = useState("");
   const [verweise, setVerweise] = useState({});   // id -> [operationsnamen]
   const uhren = useRef({});
+
+  // woran man merkt, dass sich an den operationen wirklich etwas geaendert hat
+  const kennung = operationen.map((o) => o.id + "|" + o.intention).join("~");
 
   const liste = art === "sigillen" ? sigillen : art === "raten" ? raten : quellen;
   const setListe = art === "sigillen" ? setSigillen : art === "raten" ? setRaten : setQuellen;
@@ -908,7 +1012,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
       } catch {}
     })();
     return () => { fort = true; };
-  }, [art, api, operationen]);
+    // nicht an [operationen] haengen — das array ist nach jedem puls neu,
+    // obwohl sich an den namen nichts geaendert hat
+  }, [art, api, kennung]);
 
   const anlegen = async () => {
     const neu = art === "raten"
@@ -1103,6 +1209,8 @@ function MaschinenStil() {
   -webkit-mask-image:radial-gradient(70% 60% at 50% 40%, #000 20%, transparent 80%);
 }
 .mraum > *{position:relative; z-index:1}
+/* nicht auf die uebrige app verlassen: hier rechnet alles mit rahmen */
+.mraum, .mraum *, .mraum *::before, .mraum *::after{box-sizing:border-box}
 
 /* ---- kopfzeile ---- */
 .mkopf{
@@ -1116,6 +1224,15 @@ function MaschinenStil() {
   letter-spacing:.2em; color:var(--messing);
 }
 .mfuell{flex:1}
+/* der titel in der leiste — sieht aus wie beschriftung, ist aber ein feld */
+.mtitelfeld{
+  flex:1 1 220px; max-width:420px; min-width:0;
+  background:transparent; border:1px solid transparent; border-radius:3px;
+  padding:4px 8px; transition:.15s;
+}
+.mtitelfeld::placeholder{color:var(--messing); opacity:.45}
+.mtitelfeld:hover{border-color:rgba(196,167,71,.25)}
+.mtitelfeld:focus{outline:none; border-color:var(--messing); background:rgba(0,0,0,.3)}
 
 .mbtn{
   font-family:inherit; font-size:11.5px; letter-spacing:.08em;
@@ -1182,7 +1299,8 @@ function MaschinenStil() {
 .mkachelhuelle{position:relative}
 .mkachel{
   display:flex; flex-direction:column; gap:7px; align-items:flex-start;
-  width:265px; min-height:124px; padding:14px 16px; cursor:pointer; text-align:left;
+  width:265px; height:150px; padding:14px 16px; cursor:pointer; text-align:left;
+  overflow:hidden;
   font-family:inherit; color:var(--asche); border-radius:4px;
   background:linear-gradient(rgba(20,28,24,.9), rgba(11,16,14,.95));
   border:1px solid rgba(184,115,51,.28);
@@ -1200,6 +1318,8 @@ function MaschinenStil() {
 .mkachelsatz{
   font-family:'IM Fell English SC', Georgia, serif; font-size:15px; line-height:1.35;
   color:var(--messing); letter-spacing:.02em;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+  overflow:hidden; max-width:100%;
 }
 .mkachelziel{font-size:11px; color:var(--span2); opacity:.9}
 .mkachelzeile{
@@ -1208,7 +1328,7 @@ function MaschinenStil() {
 }
 .mtest{color:var(--messing); opacity:1}
 .mkachel.neu{
-  min-height:124px; width:170px; align-items:center; justify-content:center;
+  height:150px; width:170px; align-items:center; justify-content:center;
   border-style:dashed; border-color:rgba(74,124,111,.4);
 }
 .mplus{font-size:26px; color:var(--span2); line-height:1}
@@ -1225,33 +1345,31 @@ function MaschinenStil() {
 .mop{padding:20px clamp(12px,2vw,26px); max-width:1500px; margin:0 auto}
 
 .msatz{
-  display:flex; flex-wrap:wrap; align-items:flex-start; gap:10px 14px;
+  display:flex; flex-wrap:wrap; align-items:stretch; gap:10px 16px;
   padding:18px 20px; border-radius:4px; margin-bottom:18px;
   background:linear-gradient(rgba(20,28,24,.75), rgba(11,16,14,.9));
   border:1px solid rgba(196,167,71,.22);
 }
+/* absicht und ziel sind gleich gross — zwei haelften nebeneinander */
+.mhaelfte{display:flex; flex-direction:column; gap:6px; flex:1 1 320px; min-width:0}
 .msatzwort{
   font-family:'IM Fell English SC', Georgia, serif; font-size:15px;
-  letter-spacing:.1em; color:var(--messing); padding-top:7px; white-space:nowrap;
+  letter-spacing:.1em; color:var(--messing); white-space:nowrap;
 }
-.mintention{
-  flex:1 1 340px; min-width:0; resize:vertical;
+.mfeldgross{
+  width:100%; min-width:0; resize:vertical; min-height:70px;
   font-family:'IM Fell English SC', Georgia, serif; font-size:17px; line-height:1.5;
-  padding:6px 10px; border-radius:3px; color:#e0d7bc;
+  padding:8px 11px; border-radius:3px; color:#e0d7bc;
   background:rgba(0,0,0,.3); border:1px solid rgba(196,167,71,.25);
 }
-.mtarget{
-  flex:1 1 200px; min-width:0;
-  font-family:'IM Fell English SC', Georgia, serif; font-size:17px;
-  padding:7px 10px; border-radius:3px; color:#cfe8df;
-  background:rgba(0,0,0,.3); border:1px solid rgba(74,124,111,.3);
-}
-.mintention:focus, .mtarget:focus{outline:none; border-color:var(--messing)}
+.mfeldgross.ziel{color:#cfe8df; border-color:rgba(74,124,111,.3)}
+.mfeldgross:focus{outline:none; border-color:var(--messing)}
 
 /* ---- maschinenteil ---- */
 .mmaschine{display:flex; gap:16px; align-items:stretch; flex-wrap:wrap}
 .mschaltung{
   position:relative; flex:1 1 560px; min-width:0; min-height:420px;
+  align-self:flex-start;
   border-radius:4px; overflow:hidden; touch-action:none;
   background:
     radial-gradient(70% 60% at 50% 45%, rgba(74,124,111,.07), transparent 70%),
@@ -1259,6 +1377,9 @@ function MaschinenStil() {
   border:1px solid rgba(184,115,51,.3);
   box-shadow:inset 0 0 50px rgba(0,0,0,.8);
 }
+/* mit plan nimmt das feld dessen form an — dann deckt sich prozent
+   im feld mit prozent auf der tafel, auf jedem schirm */
+.mschaltung.hatplan{min-height:0; height:auto; flex-basis:auto}
 .mgrund{
   position:absolute; inset:0; width:100%; height:100%;
   object-fit:contain; opacity:.72; pointer-events:none; user-select:none;
@@ -1272,8 +1393,9 @@ function MaschinenStil() {
 .mgrundleer small{font-size:10.5px; max-width:300px; line-height:1.6}
 
 .mleitung{position:absolute; inset:0; width:100%; height:100%; pointer-events:none}
-.mleitung line{stroke:rgba(184,115,51,.35); stroke-width:1.3px; stroke-dasharray:4 4}
-.mleitung line.zurueck{stroke:rgba(74,124,111,.22); stroke-dasharray:2 6}
+.mleitung line{stroke:rgba(184,115,51,.75); stroke-width:1.6px; stroke-dasharray:5 4;
+  filter:drop-shadow(0 0 2px rgba(0,0,0,.6))}
+.mleitung line.zurueck{stroke:rgba(111,174,156,.4); stroke-dasharray:2 7}
 
 .mbauteil{
   position:absolute; transform:translate(-50%,-50%); cursor:grab;
@@ -1347,7 +1469,15 @@ function MaschinenStil() {
   color:var(--span2); background:rgba(0,0,0,.35);
   border:1px solid rgba(74,124,111,.3);
 }
-.mfeldchen.datei input[type=file]{font-size:10px; color:var(--asche)}
+/* der eigene datei-knopf — der vom browser heisst "Choose File" */
+.mdateiknopf{
+  display:block; text-align:center; cursor:pointer;
+  font-size:11.5px; letter-spacing:.08em; padding:8px 12px; border-radius:3px;
+  color:var(--kupfer2); background:rgba(184,115,51,.08);
+  border:1px dashed rgba(184,115,51,.45); transition:.15s;
+}
+.mdateiknopf:hover{background:rgba(184,115,51,.18); border-style:solid; color:#eab680}
+.mdateiknopf input{display:none}
 .mfeldchen select option{background:#0d1310}
 
 .mquellen{display:flex; flex-direction:column; gap:5px}
@@ -1403,6 +1533,15 @@ function MaschinenStil() {
 .mflaeche:active, .mflaeche.laeuft{cursor:grabbing; border-color:var(--span2)}
 .mflaeche.haelt{border-color:var(--messing); box-shadow:inset 0 0 30px rgba(196,167,71,.12)}
 .mflaechentext{font-size:11px; letter-spacing:.2em; opacity:.5; pointer-events:none}
+.mziffern.haelt b{color:var(--glut); border-color:rgba(228,100,44,.4)}
+.mspur{
+  position:absolute; inset:0; pointer-events:none;
+  background:repeating-linear-gradient(90deg,
+    rgba(111,174,156,.35) 0 1px, transparent 1px 5px);
+  animation:mwandert .5s linear infinite;
+}
+@keyframes mwandert{to{background-position:20px 0}}
+.mflaeche{position:relative; overflow:hidden}
 
 /* ---- logbuch ---- */
 .mlog{
@@ -1475,11 +1614,19 @@ function MaschinenStil() {
   .mop, .mschrank, .mfeld{padding-left:10px; padding-right:10px}
   .mmaschine{flex-direction:column}
   .mwand{flex:1 1 auto; width:100%}
-  .mschaltung{min-height:320px}
+  .mschaltung{min-height:320px; flex:0 0 auto; width:100%}
+  .mschaltung.hatplan{min-height:0}
+  /* kleinere kaestchen — auf schmalem schirm verdecken sie sonst die tafel */
+  .mbauteil{width:58px; padding:5px 3px 4px}
+  .mbauteil img{width:34px; height:34px}
+  .mzeichen{font-size:20px}
+  .mbez{font-size:8.5px; max-width:54px}
+  .mnummer{width:17px; height:17px; line-height:17px; font-size:9px; top:-6px; left:-6px}
   .mkachel{width:100%}
   .mkachelhuelle{width:100%}
   .msatzwort{font-size:13px; padding-top:3px}
-  .mintention, .mtarget{flex:1 1 100%; font-size:16px}
+  .mhaelfte{flex:1 1 100%}
+  .mfeldgross{font-size:16px}
   .mstueckleib{flex-direction:column}
   .mratenblock{flex:1 1 auto}
   .mbtn{padding:9px 13px}
