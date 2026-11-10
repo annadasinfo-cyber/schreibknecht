@@ -244,10 +244,11 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
 
       <div className="mkopf">
         <button className="mbtn" onClick={() => {
-          if (schrank) setSchrank(null);
+          if (schrank) setSchrank(null);     // zurueck in die offene operation
           else if (offen) setOffen(null);
           else zurueck();
-        }}>‹ {schrank ? "maschinenraum" : offen ? "operationen" : "zurück"}</button>
+        }}>‹ {schrank ? (offen ? "operation" : "maschinenraum")
+              : offen ? "operationen" : "zurück"}</button>
 
         {dieOffene
           ? <input className="mtitel mtitelfeld" value={dieOffene.titel || ""}
@@ -257,7 +258,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
 
         <span className="mfuell" />
 
-        {!offen && !schrank && (
+        {!schrank && (
           <>
             <button className="mbtn" onClick={() => setSchrank("sigillen")}>sigillen</button>
             <button className="mbtn" onClick={() => setSchrank("raten")}>raten</button>
@@ -294,6 +295,8 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
           aendern={(was) => operationAendern(dieOffene.id, was)}
           sigillen={sigillen} raten={raten} quellen={quellen}
           bilder={bilder} hochladen={hochladen} holBilder={holBilder}
+          rateDazu={(r) => setRaten((l) => [...l, r].sort(
+            (a, b) => a.name.localeCompare(b.name, "de")))}
         />
       )}
     </div>
@@ -371,7 +374,7 @@ function Led({ an, takt, gesund }) {
 // EINE OPERATION
 // ============================================================
 function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen,
-                           bilder, hochladen, holBilder }) {
+                           bilder, hochladen, holBilder, rateDazu }) {
   const [bauteile, setBauteile] = useState([]);
   const [eintraege, setEintraege] = useState([]);
   const [meine, setMeine] = useState([]);        // quellen-ids an dieser operation
@@ -704,7 +707,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         ))}
       </div>
 
-      {platte && <StickPlatte api={api} sag={sag} />}
+      {platte && <StickPlatte api={api} sag={sag} rateDazu={rateDazu} />}
 
       {/* ---------- das gewählte bauteil ---------- */}
       {dasBauteil && (
@@ -840,7 +843,7 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, bilder, hochladen,
 // sie kriechen, anhalten haelt sie fest. Was beim abheben steht, ist
 // die rate.
 // ============================================================
-function StickPlatte({ api, sag }) {
+function StickPlatte({ api, sag, rateDazu }) {
   const [laeuft, setLaeuft] = useState(false);
   const [rate, setRate] = useState([0, 0, 0]);
   const [gehalten, setGehalten] = useState(null);
@@ -931,7 +934,8 @@ function StickPlatte({ api, sag }) {
     };
     try {
       await api("POST", "/rest/v1/raten", neu);
-      sag("rate gespeichert: " + neu.name);
+      rateDazu(neu);                      // sofort in die liste, nicht erst nach neuladen
+      sag("rate gespeichert: " + neu.name + " — steht jetzt im raten-schrank");
       setName(""); setGehalten(null);
     } catch (e) { sag(String(e.message)); }
   };
