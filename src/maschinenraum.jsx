@@ -331,7 +331,7 @@ function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg }) {
               style={{ transform: `rotate(${kippung(o.id)}deg)` }}
               onClick={() => oeffnen(o.id)}>
               <span className="mkachelkopf">
-                <Led an={o.aktiv} takt={o.takt} gesund={gesund} />
+                <Led an={o.aktiv} takt={o.takt} gestartet={o.gestartet} gesund={gesund} />
                 <span className="mkachelzustand">
                   {o.aktiv ? (gesund ? "läuft" : "puls stockt") : o.beendet ? "beendet" : "aus"}
                 </span>
@@ -359,12 +359,36 @@ function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg }) {
 // ============================================================
 // DIE LED — glüht auf, klingt nach. im takt der frequenz.
 // ============================================================
-function Led({ an, takt, gesund }) {
-  const dauer = Math.max(0.6, Math.min(takt || 60, 600));
+function Led({ an, takt, gestartet, gesund }) {
+  const [schlaegt, setSchlaegt] = useState(false);
+
+  // Der schlag liegt auf dem WIRKLICHEN takt: gestartet + n mal takt.
+  // Vorher lief eine CSS-uhr mit eigener rechnung, die mit dem puls in
+  // der datenbank nichts zu tun hatte.
+  useEffect(() => {
+    if (!an) { setSchlaegt(false); return; }
+    const t = Math.max(takt || 60, 1) * 1000;
+    const start = gestartet ? new Date(gestartet).getTime() : Date.now();
+    const hell = Math.min(650, t * 0.45);
+    let takten, loeschen;
+
+    const schlagen = () => {
+      setSchlaegt(true);
+      loeschen = setTimeout(() => setSchlaegt(false), hell);
+      takten = setTimeout(schlagen, t);
+    };
+
+    // bis zum naechsten takt-moment warten, nicht sofort losschlagen
+    const seit = Date.now() - start;
+    takten = setTimeout(schlagen, t - (((seit % t) + t) % t));
+
+    return () => { clearTimeout(takten); clearTimeout(loeschen); };
+  }, [an, takt, gestartet]);
+
   return (
-    <span className={"mled" + (an ? " an" : "") + (an && !gesund ? " krank" : "")}
-      style={an ? { animationDuration: dauer + "s" } : undefined}
-      title={an ? (gesund ? "puls läuft" : "der puls stockt — nachsehen") : "aus"}>
+    <span className={"mled" + (an ? " an" : "") + (an && !gesund ? " krank" : "")
+                     + (schlaegt && gesund ? " schlaegt" : "")}
+      title={an ? (gesund ? "puls läuft im takt" : "der puls stockt — nachsehen") : "aus"}>
       <i />
     </span>
   );
@@ -638,7 +662,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         <div className="mwand">
 
           <div className="mschalter">
-            <Led an={op.aktiv} takt={op.takt} gesund={gesund} />
+            <Led an={op.aktiv} takt={op.takt} gestartet={op.gestartet} gesund={gesund} />
             <button className={"mhebel" + (op.aktiv ? " an" : "")}
               onClick={op.aktiv ? ausschalten : anschalten}>
               {op.aktiv ? "abschalten" : "anschalten"}
@@ -1296,20 +1320,28 @@ function MaschinenStil() {
 .mled i{
   width:7px; height:7px; border-radius:50%; background:#2a322e; display:block;
 }
+/* an heisst: glimmt leise. im takt kommt ein kurzer schlag dazu —
+   schlagartig hell, dann langsam aus, wie eine roehre */
 .mled.an i{
-  background:var(--glut);
-  animation-name:mpuls; animation-timing-function:ease-out;
-  animation-iteration-count:infinite;
+  background:var(--glut); opacity:.34;
+  box-shadow:0 0 4px 1px rgba(228,100,44,.2);
+  transition:opacity .85s ease-out, box-shadow .85s ease-out;
 }
 .mled.an{box-shadow:inset 0 1px 2px rgba(0,0,0,.9), 0 0 0 1px rgba(228,100,44,.3)}
-.mled.krank i{background:#6b3520; animation-name:mstockt; animation-duration:2.2s !important}
-@keyframes mpuls{
-  0%{box-shadow:0 0 0 0 rgba(228,100,44,.9), 0 0 9px 3px rgba(228,100,44,.75); opacity:1}
-  14%{box-shadow:0 0 0 0 rgba(228,100,44,.3), 0 0 4px 1px rgba(228,100,44,.3); opacity:.8}
-  100%{box-shadow:none; opacity:.42}
+.mled.an.schlaegt i{
+  opacity:1;
+  box-shadow:0 0 0 1px rgba(255,170,110,.9), 0 0 13px 4px rgba(228,100,44,.85);
+  transition:opacity .04s linear, box-shadow .04s linear;
 }
-@keyframes mstockt{0%,100%{opacity:.3}50%{opacity:.6}}
-@media(prefers-reduced-motion:reduce){.mled.an i{animation:none; opacity:.9}}
+.mled.krank i{
+  background:#6b3520; opacity:.3;
+  animation:mstockt 2.2s ease-in-out infinite; box-shadow:none;
+}
+@keyframes mstockt{0%,100%{opacity:.22}50%{opacity:.55}}
+@media(prefers-reduced-motion:reduce){
+  .mled.an i, .mled.an.schlaegt i{transition:none}
+  .mled.krank i{animation:none; opacity:.4}
+}
 
 /* ---- übersicht ---- */
 .mfeld{
