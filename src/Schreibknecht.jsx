@@ -5251,7 +5251,7 @@ function Stil() {
   .kartenplatz{height:auto; width:auto; page-break-inside:avoid; perspective:none}
   .karte{transform:none !important; height:auto; transform-style:flat}
   .seite{position:static; box-shadow:none; border-color:#bbb; height:auto}
-  .seite.bild, .seite.text textarea, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .grund, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis,
+  .seite.bild, .seite.text textarea, .kartentitel, .fuss, .verbrennen, .spalt, .ascheleiste, .griff, .amfinger, .knechtkarte, .funkenfeld, .knechtsagt, .glocke, .fassung, .grund, .truhe, .pultplatz, .warteleiste, .platzleiste, .unsicherleiste, .verdeckthinweis,
   .abschnittzwischen, .abschnitthandleiste, .abschnittablage, .spaltplus, .spinne,
   .suche, .trefferliste, .trefferzahl, .deckkopf, .absuche, .nachoben{display:none !important}
   .bogenfeld, .bogenfuss, .bogenkopf .klein, .bogenlinks,
@@ -5267,8 +5267,37 @@ function Stil() {
   .druckkopie img{display:block; max-width:70mm; margin:0 0 8px; border:1px solid #ccc}
   .blatt.ohnebild .druckkopie img{display:none}
   .draufleiste{display:none !important}
-  .reihe{display:block; margin:0}
-  .auslage{overflow:visible}
+
+  /* ======= DIE ZWEI GRUENDE FUER LEERE BLAETTER =======
+     1. die karten tragen content-visibility:auto - was nicht im
+        sichtfeld liegt, wird gar nicht erst gezeichnet. beim drucken
+        sind das fast alle. also hier ausschalten.
+     2. eine reihe ist width:max-content breit - bei 60 karten
+        dreizehntausend pixel. alles ausser den ersten landet neben
+        dem papier. also auf normale breite zurueck und umbrechen. */
+  .kartenplatz{
+    content-visibility:visible !important;
+    contain-intrinsic-size:auto !important;
+    contain:none !important;
+    display:block !important; width:auto !important; height:auto !important;
+    float:none !important; break-inside:avoid; page-break-inside:avoid;
+  }
+  .reihe{
+    display:block !important; margin:0 !important;
+    width:auto !important; min-width:0 !important; max-width:100% !important;
+    flex-wrap:wrap !important; overflow:visible !important;
+  }
+  .auslage{
+    overflow:visible !important; width:auto !important; max-width:100% !important;
+    padding-bottom:0;
+  }
+  .abschnitt, .blatt, .tisch{
+    overflow:visible !important; width:auto !important; max-width:100% !important;
+  }
+  .karte{width:auto !important; height:auto !important}
+  .seite.text{width:auto !important; height:auto !important; min-height:0 !important}
+  /* beim drucken steht nichts in bewegung */
+  .kartenplatz, .kartenplatz *{animation:none !important; transition:none !important}
   .bogen{border:0; background:none; box-shadow:none; min-height:0}
   .pult{position:static; max-height:none; padding:0; border:0; background:none; box-shadow:none}
   .strichtitel{color:#111; border:0; width:auto !important; font-weight:700}
