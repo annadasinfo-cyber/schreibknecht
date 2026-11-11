@@ -34,7 +34,7 @@ function bildKleinrechnen(datei, kante) {
   ]);
 
   const malen = async () => {
-    if (!/^image\//.test(datei.type || "")) return null;
+    if (!/^image\//.test(datei.type || "")) return null;   // datei ist hier ein blob
     if (!datei.size || datei.size < 80 * 1024) return null;   // schon klein genug
 
     // bild holen: erst der kurze weg, sonst der alte ueber FileReader
@@ -211,11 +211,24 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   const hochladen = useCallback(async (datei, unterordner) => {
     if (!datei) throw new Error("gar keine datei angekommen");
     const kB = (n) => Math.round(n / 1024).toLocaleString("de") + " kB";
+    const name = datei.name || "bild";
+    const typ = datei.type || "application/octet-stream";
 
-    sag(`1/4 ${datei.name} · ${kB(datei.size)} · wird vorbereitet …`, "laeuft");
-    const klein = await bildKleinrechnen(datei, KANTE[unterordner] || 1000);
-    const inhalt = klein ? klein.blob : datei;
-    const endung = klein ? klein.endung : (datei.name.split(".").pop() || "png").toLowerCase();
+    // ZUERST in den speicher holen. Eine datei aus einem eingabefeld ist
+    // nur ein verweis auf die platte; sobald react das feld neu zeichnet
+    // — und das tut es bei jeder meldung — kann safari den verweis
+    // fallenlassen, und der upload scheitert mit "Load failed".
+    let roh;
+    try {
+      roh = new Blob([await datei.arrayBuffer()], { type: typ });
+    } catch (e) {
+      throw new Error("die datei liess sich nicht lesen: " + String(e && e.message));
+    }
+
+    sag(`1/4 ${name} · ${kB(roh.size)} · wird vorbereitet …`, "laeuft");
+    const klein = await bildKleinrechnen(roh, KANTE[unterordner] || 1000);
+    const inhalt = klein ? klein.blob : roh;
+    const endung = klein ? klein.endung : (name.split(".").pop() || "png").toLowerCase();
 
     const s = await zugang();
     if (!s) throw new Error("nicht angemeldet");
@@ -226,26 +239,36 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
 
     // Ohne zeitlimit haengt eine stockende leitung stumm, und man sitzt
     // vor einer meldung, die sich nicht mehr ruehrt.
-    const abbruch = new AbortController();
-    const uhr = setTimeout(() => abbruch.abort(), 90000);
+    const schicken = async () => {
+      const abbruch = new AbortController();
+      const uhr = setTimeout(() => abbruch.abort(), 90000);
+      try {
+        return await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer " + s.access_token,
+            apikey: KEY_DB,
+            "Content-Type": inhalt.type || "application/octet-stream",
+            "x-upsert": "true",
+          },
+          body: inhalt,
+          signal: abbruch.signal,
+        });
+      } catch (e) {
+        if (abbruch.signal.aborted)
+          throw new Error("hochladen hat 90 sekunden nicht geantwortet — abgebrochen");
+        throw e;
+      } finally { clearTimeout(uhr); }
+    };
+
     let r;
-    try {
-      r = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer " + s.access_token,
-          apikey: KEY_DB,
-          "Content-Type": inhalt.type || "application/octet-stream",
-          "x-upsert": "true",
-        },
-        body: inhalt,
-        signal: abbruch.signal,
-      });
-    } catch (e) {
-      throw new Error(abbruch.signal.aborted
-        ? "hochladen hat 90 sekunden nicht geantwortet — abgebrochen"
-        : "hochladen ging nicht: " + String(e && e.message));
-    } finally { clearTimeout(uhr); }
+    try { r = await schicken(); }
+    catch (e) {
+      // ein abgewiesener versuch darf einmal wiederholt werden
+      sag("2/4 erster versuch misslungen, zweiter läuft …", "laeuft");
+      try { r = await schicken(); }
+      catch (e2) { throw new Error("hochladen ging nicht: " + String(e2 && e2.message)); }
+    }
 
     if (!r.ok)
       throw new Error(`hochladen abgelehnt (${r.status}): ` + (await r.text()).slice(0, 140));
@@ -392,16 +415,34 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
     await pruefe("spalte bauteile.target_id",
       () => api("GET", "/rest/v1/bauteile?select=target_id&limit=1"));
 
+    // den eimer selbst fragen, nicht seinen inhalt: eine leere liste
+    // kommt auch dann freundlich zurueck, wenn es ihn gar nicht gibt
     await pruefe("ablagefach " + EIMER, async () => {
       const si = await zugang();
       if (!si) throw new Error("nicht angemeldet");
-      const r = await fetch(`${URL_DB}/storage/v1/object/list/${EIMER}`, {
+      const r = await fetch(`${URL_DB}/storage/v1/bucket/${EIMER}`, {
+        headers: { Authorization: "Bearer " + si.access_token, apikey: KEY_DB },
+      });
+      if (!r.ok) throw new Error(`(${r.status}) ` + (await r.text()).slice(0, 100));
+    });
+
+    // und einmal wirklich etwas hineinschreiben — nur so zeigt sich,
+    // ob die zugriffsregel das hochladen erlaubt
+    await pruefe("hineinschreiben dürfen", async () => {
+      const si = await zugang();
+      if (!si) throw new Error("nicht angemeldet");
+      const pfad = `${si.user.id}/probe/${neueId()}.txt`;
+      const r = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
         method: "POST",
         headers: { Authorization: "Bearer " + si.access_token, apikey: KEY_DB,
-                   "Content-Type": "application/json" },
-        body: JSON.stringify({ prefix: "", limit: 1 }),
+                   "Content-Type": "text/plain", "x-upsert": "true" },
+        body: new Blob(["probe"], { type: "text/plain" }),
       });
-      if (!r.ok) throw new Error((await r.text()).slice(0, 110));
+      if (!r.ok) throw new Error(`(${r.status}) ` + (await r.text()).slice(0, 100));
+      await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + si.access_token, apikey: KEY_DB },
+      }).catch(() => {});
     });
 
     await pruefe("der puls in der datenbank",
