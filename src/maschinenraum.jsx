@@ -94,6 +94,15 @@ function bildKleinrechnen(datei, kante) {
 // eine sigille sitzt auf einem kaestchen
 const KANTE = { schaltungen: 1800, sigillen: 1000, targets: 1000, bauteile: 1000 };
 
+// Hashtags: jedes #wort in name, beschreibung, notiz oder herkunft.
+const tagsAus = (x) => {
+  const text = [x.name, x.beschreibung, x.notiz, x.herkunft].filter(Boolean).join(" ");
+  const gefunden = text.match(/#[\p{L}\p{N}_-]+/gu) || [];
+  return [...new Set(gefunden.map((g) => g.toLowerCase()))];
+};
+const SCHRAENKE = ["sigillen", "raten", "quellen", "hintergruende", "targets"];
+const schrankName = (a) => (a === "hintergruende" ? "hintergründe" : a);
+
 const ARTEN = [
   { wert: "target",      name: "target",     zeichen: "◎" },
   { wert: "trend",       name: "trend",      zeichen: "➜" },
@@ -141,7 +150,58 @@ const taktText = (sek) => {
 };
 
 // ============================================================
-export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) {
+export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB, zurueck }) {
+  // SCHREIBEN GEHT HIER DIREKT, nicht ueber das sicherheitsnetz des hauses.
+  // Das netz legt einen gescheiterten schreibvorgang still in eine
+  // warteschlange, wenn der fehler nach funkloch klingt — und safari nennt
+  // JEDEN fehler "Load failed". Dann steht ein eintrag auf dem schirm,
+  // der nie gespeichert wurde, und niemand sagt es. In diesem raum gilt:
+  // ein schreibvorgang gelingt, oder er meldet sich mit seinem grund.
+  const api = useCallback(async (methode, pfad, koerper, extra) => {
+    if (methode === "GET" || pfad.startsWith("/storage/")) return apiVomHaus(methode, pfad, koerper, extra);
+
+    const einmal = async () => {
+      const s = await zugang();
+      if (!s) throw new Error("nicht angemeldet");
+      const abbruch = new AbortController();
+      const uhr = setTimeout(() => abbruch.abort(), 20000);
+      try {
+        const r = await fetch(URL_DB + pfad, {
+          method: methode,
+          headers: { apikey: KEY_DB, Authorization: "Bearer " + s.access_token,
+                     "Content-Type": "application/json" },
+          body: koerper === undefined ? undefined : JSON.stringify(koerper),
+          signal: abbruch.signal,
+        });
+        if (!r.ok) {
+          const e = new Error(`speichern abgelehnt (${r.status}): ` + (await r.text()).slice(0, 160));
+          e.status = r.status;
+          throw e;
+        }
+        const text = await r.text();
+        return text ? JSON.parse(text) : null;
+      } catch (e) {
+        if (abbruch.signal.aborted) throw new Error("speichern: keine antwort nach 20 sekunden");
+        throw e;
+      } finally { clearTimeout(uhr); }
+    };
+
+    try { return await einmal(); }
+    catch (e) {
+      // zugang abgelaufen? ein lesender ruf ueber das haus erneuert ihn
+      if (e.status === 401) {
+        try { await apiVomHaus("GET", "/rest/v1/operationen?select=id&limit=1"); } catch {}
+        return await einmal();
+      }
+      if (e.status) throw e;                       // die datenbank hat nein gesagt: so weitergeben
+      // kein status: die anfrage kam gar nicht durch — einmal wiederholen
+      try { return await einmal(); }
+      catch (e2) {
+        throw new Error("speichern ging nicht durch (" + String(e2 && e2.message)
+          + ") — " + methode + " " + pfad.split("?")[0].replace("/rest/v1/", ""));
+      }
+    }
+  }, [apiVomHaus, zugang, URL_DB, KEY_DB]);
   const [operationen, setOperationen] = useState([]);
   const [sigillen, setSigillen] = useState([]);
   const [raten, setRaten] = useState([]);
@@ -149,6 +209,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   const [plaene, setPlaene] = useState([]);       // schaltplaene zum wiederverwenden
   const [ziele, setZiele] = useState([]);         // targets: wer oder was, mit zeugen-bild
   const [offen, setOffen] = useState(null);       // id der offenen operation
+  const [tagMit, setTagMit] = useState("");       // hashtag, der in den naechsten schrank mitgeht
   const [schrank, setSchrank] = useState(null);   // "sigillen" | "raten" | "quellen"
   const [bilder, setBilder] = useState({});       // pfad -> signierte adresse
   const [meldung, setMeldung] = useState(null);
@@ -488,11 +549,11 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
 
         {!schrank && (
           <>
-            <button className="mbtn" onClick={() => setSchrank("sigillen")}>sigillen</button>
-            <button className="mbtn" onClick={() => setSchrank("raten")}>raten</button>
-            <button className="mbtn" onClick={() => setSchrank("quellen")}>quellen</button>
-            <button className="mbtn" onClick={() => setSchrank("hintergruende")}>hintergründe</button>
-            <button className="mbtn" onClick={() => setSchrank("targets")}>targets</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("sigillen"); }}>sigillen</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("raten"); }}>raten</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("quellen"); }}>quellen</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("hintergruende"); }}>hintergründe</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("targets"); }}>targets</button>
           </>
         )}
       </div>
@@ -507,8 +568,10 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
       {laedt && <p className="mleer">wird geholt …</p>}
 
       {!laedt && schrank && (
-        <Schrank
-          art={schrank} api={api} sag={sag}
+        <Schrank key={schrank + "|" + tagMit}
+          art={schrank} api={api} sag={sag} vorgabe={tagMit}
+          wechseln={(a, tag) => { setTagMit(tag); setSchrank(a); }}
+          alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele }}
           sigillen={sigillen} setSigillen={setSigillen}
           raten={raten} setRaten={setRaten}
           quellen={quellen} setQuellen={setQuellen}
@@ -651,6 +714,7 @@ function Led({ an, takt, gestartet, gesund }) {
                      + (schlaegt && gesund ? " schlaegt" : "")}
       title={an ? (gesund ? "puls läuft im takt" : "der puls stockt — nachsehen") : "aus"}>
       <i />
+      <b />
     </span>
   );
 }
@@ -703,7 +767,11 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     setBauteile((l) => [...l, neu]);
     setGewaehlt(neu.id);
     try { await api("POST", "/rest/v1/bauteile", neu); }
-    catch (e) { sag(String(e.message), "schlimm"); }
+    catch (e) {
+      setBauteile((l) => l.filter((b) => b.id !== neu.id));
+      setGewaehlt(null);
+      sag(String(e.message), "schlimm");
+    }
   };
 
   const bauteilAendern = (id, was, sofort) => {
@@ -1342,10 +1410,32 @@ function StickPlatte({ api, sag, rateDazu }) {
 // ============================================================
 function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                    quellen, setQuellen, plaene, setPlaene, ziele, setZiele,
-                   operationen, bilder, hochladen }) {
-  const [suche, setSuche] = useState("");
+                   operationen, bilder, hochladen, vorgabe, wechseln, alle }) {
+  const [suche, setSuche] = useState(vorgabe || "");
   const [verweise, setVerweise] = useState({});   // id -> [operationsnamen]
   const [kaputt, setKaputt] = useState({});       // bildpfad -> adresse da, bild laedt nicht
+  const [offenIds, setOffenIds] = useState({});   // id -> steht nur auf dem schirm, nicht in der datenbank
+  const nachfragen = useRef({});
+
+  // Ein eintrag gilt erst als gespeichert, wenn die datenbank ihn auf
+  // nachfrage zurueckgibt. Vorher traegt er ein sichtbares zeichen —
+  // sonst merkt man erst beim naechsten oeffnen, dass etwas fehlt.
+  const sichern = (id, was) => {
+    setOffenIds((o) => ({ ...o, [id]: true }));
+    clearTimeout(nachfragen.current[id]);
+    const fragen = async (versuch) => {
+      try {
+        const r = await api("GET", `/rest/v1/${tabelle}?id=eq.${id}&select=*`);
+        const da = r && r[0];
+        const stimmt = da && Object.keys(was || {}).every((k) => (da[k] ?? null) === (was[k] ?? null));
+        if (stimmt) { setOffenIds((o) => { const n = { ...o }; delete n[id]; return n; }); return; }
+      } catch {}
+      if (versuch < 4) nachfragen.current[id] = setTimeout(() => fragen(versuch + 1), 2500);
+      else sag("ein eintrag ist nicht in der datenbank angekommen — er steht nur hier auf dem schirm. "
+             + "netz prüfen und die seite offen lassen.", "schlimm");
+    };
+    nachfragen.current[id] = setTimeout(() => fragen(1), 1200);
+  };
   const uhren = useRef({});
 
   // woran man merkt, dass sich an den operationen wirklich etwas geaendert hat
@@ -1418,18 +1508,43 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
             ? { id: neueId(), name: "neues target", beschreibung: "" }
             : { id: neueId(), name: "neue quelle", notiz: "" };
     setListe((l) => [neu, ...l]);
-    try { await api("POST", `/rest/v1/${tabelle}`, neu); }
-    catch (e) { sag(String(e.message), "schlimm"); }
+    try { await api("POST", `/rest/v1/${tabelle}`, neu); sichern(neu.id, {}); }
+    catch (e) {
+      // nicht gespeichert heisst: auch nicht anzeigen
+      setListe((l) => l.filter((x) => x.id !== neu.id));
+      sag(String(e.message), "schlimm");
+    }
   };
 
+  // Was noch nicht weggeschrieben ist, wird je eintrag GESAMMELT. Vorher
+  // galt nur die letzte aenderung: wer name und beschreibung kurz
+  // nacheinander tippte, verlor die erste.
+  const haengig = useRef({});
   const aendern = (id, was, sofort) => {
     setListe((l) => l.map((x) => (x.id === id ? { ...x, ...was } : x)));
-    const schreiben = () => api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, was)
-      .catch((e) => sag(String(e.message), "schlimm"));
+    haengig.current[id] = { ...haengig.current[id], ...was };
+    const schreiben = () => {
+      const stoff = haengig.current[id];
+      if (!stoff) return;
+      haengig.current[id] = null;
+      api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, stoff)
+        .then(() => sichern(id, stoff))
+        .catch((e) => sag(String(e.message), "schlimm"));
+    };
     clearTimeout(uhren.current[id]);
+    setOffenIds((o) => ({ ...o, [id]: true }));
     if (sofort) { schreiben(); return; }
     uhren.current[id] = setTimeout(schreiben, 700);
   };
+
+  // beim verlassen des schranks nichts liegenlassen
+  useEffect(() => () => {
+    Object.keys(haengig.current).forEach((id) => {
+      const stoff = haengig.current[id];
+      if (stoff) api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, stoff).catch(() => {});
+    });
+    Object.values(nachfragen.current).forEach(clearTimeout);
+  }, [api, tabelle]);
 
   const weg = async (id) => {
     const x = liste.find((e) => e.id === id);
@@ -1475,20 +1590,54 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
   const gefiltert = liste.filter((x) => {
     const s = suche.trim().toLowerCase();
     if (!s) return true;
+    if (s.startsWith("#")) return tagsAus(x).includes(s);       // ein tag trifft genau
     return [x.name, x.beschreibung, x.notiz, x.ziffern, x.herkunft]
       .filter(Boolean).join(" ").toLowerCase().includes(s);
   });
 
+  // alle tags dieses schranks, die haeufigsten zuerst
+  const zaehlung = {};
+  liste.forEach((x) => tagsAus(x).forEach((g) => { zaehlung[g] = (zaehlung[g] || 0) + 1; }));
+  const alleTags = Object.keys(zaehlung).sort((a, b) => zaehlung[b] - zaehlung[a] || a.localeCompare(b, "de"));
+
+  // ist ein tag gewaehlt: wo liegt er noch?
+  const gewaehlterTag = suche.trim().toLowerCase().startsWith("#") ? suche.trim().toLowerCase() : "";
+  const woanders = gewaehlterTag
+    ? SCHRAENKE.filter((a) => a !== art)
+        .map((a) => ({ a, n: ((alle && alle[a]) || []).filter((x) => tagsAus(x).includes(gewaehlterTag)).length }))
+        .filter((e) => e.n > 0)
+    : [];
+
   return (
     <div className="mschrank">
       <div className="mzeile">
-        <input className="msuche" value={suche} placeholder="suchen …"
+        <input className="msuche" value={suche} placeholder="suchen … oder #tag"
           onChange={(e) => setSuche(e.target.value)} />
         <button className="mbtn" onClick={anlegen}>+ neu</button>
       </div>
 
+      {(alleTags.length > 0 || gewaehlterTag) && (
+        <div className="mtagleiste">
+          {gewaehlterTag && (
+            <button className="mtag weg" onClick={() => setSuche("")}>✕ alle zeigen</button>
+          )}
+          {alleTags.map((g) => (
+            <button key={g} className={"mtag" + (g === gewaehlterTag ? " an" : "")}
+              onClick={() => setSuche(g === gewaehlterTag ? "" : g)}>
+              {g} <i>{zaehlung[g]}</i>
+            </button>
+          ))}
+          {woanders.map((e) => (
+            <button key={e.a} className="mtag fern" onClick={() => wechseln(e.a, gewaehlterTag)}>
+              auch in {schrankName(e.a)} <i>{e.n}</i>
+            </button>
+          ))}
+        </div>
+      )}
+
       {gefiltert.map((x) => (
-        <div className="mstueck" key={x.id}>
+        <div className={"mstueck" + (offenIds[x.id] ? " ungesichert" : "")} key={x.id}>
+          {offenIds[x.id] && <div className="mungesichert">wird gespeichert …</div>}
           <div className="mstueckkopf">
             <input className="mbezfeld" value={x.name}
               onChange={(e) => aendern(x.id, { name: e.target.value })} />
@@ -1561,6 +1710,15 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
               </>
             )}
           </div>
+
+          {tagsAus(x).length > 0 && (
+            <div className="mtags">
+              {tagsAus(x).map((g) => (
+                <button key={g} className={"mtag klein" + (g === gewaehlterTag ? " an" : "")}
+                  onClick={() => setSuche(g)}>{g}</button>
+              ))}
+            </div>
+          )}
 
           {verweise[x.id] && verweise[x.id].length > 0 && (
             <div className="mverweis">
@@ -1666,19 +1824,24 @@ function MaschinenStil() {
 }
 .mklein:hover{color:var(--kupfer2); border-color:var(--kupfer)}
 
+/* die meldung liegt unten ueber der seite und schiebt nichts weg —
+   oben hat sie die knoepfe unter dem finger verrutschen lassen */
 .mmeldung{
-  margin:10px clamp(12px,2vw,26px); padding:9px 14px; border-radius:3px;
+  position:fixed; z-index:60; left:clamp(12px,2vw,26px); right:clamp(12px,2vw,26px);
+  bottom:calc(14px + env(safe-area-inset-bottom, 0px));
+  margin:0; padding:10px 14px; border-radius:4px;
   font-size:12px; color:var(--messing);
-  background:rgba(196,167,71,.08); border:1px solid rgba(196,167,71,.3);
+  background:#14170f; border:1px solid rgba(196,167,71,.45);
+  box-shadow:0 6px 24px rgba(0,0,0,.7);
 }
 /* eine schlechte nachricht verschwindet nicht von selbst */
 .mmeldung.laeuft{
-  color:var(--span2); background:rgba(74,124,111,.1);
-  border-color:rgba(111,174,156,.45);
+  color:var(--span2); background:#0f1815;
+  border-color:rgba(111,174,156,.5);
 }
 .mmeldung.schlimm{
-  color:#f0b0a4; background:rgba(217,128,112,.1);
-  border-color:rgba(217,128,112,.5); cursor:pointer;
+  color:#f0b0a4; background:#1c1210;
+  border-color:rgba(217,128,112,.6); cursor:pointer;
   display:flex; justify-content:space-between; gap:14px; align-items:baseline;
 }
 .mmeldung.schlimm small{font-size:10px; opacity:.6; white-space:nowrap}
@@ -1715,26 +1878,35 @@ function MaschinenStil() {
 .mled i{
   width:7px; height:7px; border-radius:50%; background:#2a322e; display:block;
 }
-/* an heisst: glimmt leise. im takt kommt ein kurzer schlag dazu —
-   schlagartig hell, dann langsam aus, wie eine roehre */
+/* an heisst: sie atmet — schwillt ruhig an und ab. Im takt kommt der
+   schlag obendrauf: schlagartig hell, dann langsam aus, wie eine roehre.
+   Das atmen liegt auf <i>, der schlag auf <b>, damit sich beide nicht
+   ins gehege kommen. */
+.mled{position:relative}
 .mled.an i{
-  background:var(--glut); opacity:.34;
-  box-shadow:0 0 4px 1px rgba(228,100,44,.2);
-  transition:opacity .85s ease-out, box-shadow .85s ease-out;
+  background:var(--glut);
+  animation:matmen 3.6s ease-in-out infinite;
 }
+@keyframes matmen{
+  0%,100%{opacity:.22; box-shadow:0 0 2px 0 rgba(228,100,44,.15)}
+  50%{opacity:.78; box-shadow:0 0 9px 3px rgba(228,100,44,.5)}
+}
+.mled b{
+  position:absolute; left:50%; top:50%; width:9px; height:9px; margin:-4.5px 0 0 -4.5px;
+  border-radius:50%; background:#ffc79a; opacity:0; pointer-events:none;
+  box-shadow:0 0 0 1px rgba(255,170,110,.9), 0 0 16px 6px rgba(228,100,44,.9);
+  transition:opacity 1.1s ease-out;
+}
+.mled.an.schlaegt b{opacity:1; transition:opacity .04s linear}
 .mled.an{box-shadow:inset 0 1px 2px rgba(0,0,0,.9), 0 0 0 1px rgba(228,100,44,.3)}
-.mled.an.schlaegt i{
-  opacity:1;
-  box-shadow:0 0 0 1px rgba(255,170,110,.9), 0 0 13px 4px rgba(228,100,44,.85);
-  transition:opacity .04s linear, box-shadow .04s linear;
-}
 .mled.krank i{
   background:#6b3520; opacity:.3;
   animation:mstockt 2.2s ease-in-out infinite; box-shadow:none;
 }
 @keyframes mstockt{0%,100%{opacity:.22}50%{opacity:.55}}
 @media(prefers-reduced-motion:reduce){
-  .mled.an i, .mled.an.schlaegt i{transition:none}
+  .mled.an i{animation:none; opacity:.6}
+  .mled b{transition:none}
   .mled.krank i{animation:none; opacity:.4}
 }
 
@@ -2052,6 +2224,9 @@ function MaschinenStil() {
   border:1px solid rgba(184,115,51,.22);
 }
 .mstueckkopf{display:flex; align-items:center; gap:9px; margin-bottom:11px}
+/* steht nur auf dem schirm, noch nicht in der datenbank */
+.mstueck.ungesichert{border-color:rgba(196,167,71,.6)}
+.mungesichert{font-size:10px; letter-spacing:.1em; color:var(--messing); margin-bottom:7px}
 .mstueckleib{display:flex; gap:14px; flex-wrap:wrap}
 .mbildfach{
   width:118px; height:118px; flex:0 0 auto; border-radius:3px; cursor:pointer;
@@ -2086,6 +2261,20 @@ function MaschinenStil() {
   color:var(--asche); background:rgba(0,0,0,.3);
   border:1px solid rgba(138,143,135,.2);
 }
+/* hashtags */
+.mtagleiste{display:flex; flex-wrap:wrap; gap:6px; margin:0 0 14px}
+.mtags{display:flex; flex-wrap:wrap; gap:5px; margin-top:10px}
+.mtag{
+  font-family:inherit; font-size:11px; letter-spacing:.04em; padding:4px 9px;
+  border-radius:12px; cursor:pointer; color:var(--span2);
+  background:rgba(74,124,111,.1); border:1px solid rgba(74,124,111,.35); transition:.15s;
+}
+.mtag:hover{background:rgba(111,174,156,.22); color:#cfe8df}
+.mtag.an{color:var(--grund); background:var(--span2); border-color:var(--span2)}
+.mtag i{font-style:normal; opacity:.6; margin-left:3px; font-size:10px}
+.mtag.klein{font-size:10px; padding:2px 8px}
+.mtag.weg{color:var(--asche); background:transparent; border-style:dashed}
+.mtag.fern{color:var(--kupfer2); background:rgba(184,115,51,.08); border-color:rgba(184,115,51,.4)}
 .mverweis{
   margin-top:10px; padding-top:9px; font-size:10.5px; color:var(--span2); opacity:.8;
   border-top:1px solid rgba(74,124,111,.18); line-height:1.6;
