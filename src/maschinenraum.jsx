@@ -76,14 +76,17 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   const [offen, setOffen] = useState(null);       // id der offenen operation
   const [schrank, setSchrank] = useState(null);   // "sigillen" | "raten" | "quellen"
   const [bilder, setBilder] = useState({});       // pfad -> signierte adresse
-  const [meldung, setMeldung] = useState("");
+  const [meldung, setMeldung] = useState(null);
+  const [bericht, setBericht] = useState(null);
   const [laedt, setLaedt] = useState(true);
 
   // MUSS stabil bleiben: der lade-effekt der operation haengt daran.
   // sonst holt jede tasteneingabe die ganze schaltung neu vom server.
-  const sag = useCallback((t) => {
-    setMeldung(t);
-    if (t) setTimeout(() => setMeldung(""), 5000);
+  // Eine gute nachricht darf verschwinden, eine schlechte nicht —
+  // sonst steht man da und weiss nicht, was passiert ist.
+  const sag = useCallback((t, schlimm) => {
+    setMeldung(t ? { text: t, schlimm: !!schlimm } : null);
+    if (t && !schlimm) setTimeout(() => setMeldung(null), 5000);
   }, []);
 
   // ---------- bilder ----------
@@ -121,7 +124,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
 
     if (Object.keys(neu).length) setBilder((b) => ({ ...b, ...neu }));
     if (schiefgegangen.length && laut)
-      sag("bild lässt sich nicht holen — " + schiefgegangen[0]);
+      sag("bild lässt sich nicht holen — " + schiefgegangen[0], true);
     return schiefgegangen;
   }, [api, URL_DB, sag]);
 
@@ -172,7 +175,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
         ...(zi || []).map((x) => x.bild),
       ]);
     } catch (e) {
-      sag("laden ging nicht: " + String(e.message));
+      sag("laden ging nicht: " + String(e.message), true);
     }
     setLaedt(false);
   }, [api, holBilder]);
@@ -211,7 +214,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
       await api("POST", "/rest/v1/operationen", neu);
       setOperationen((l) => [neu, ...l]);
       setOffen(neu.id);
-    } catch (e) { sag(String(e.message)); }
+    } catch (e) { sag(String(e.message), true); }
   };
 
   // Text wird gebremst weggeschrieben — sonst eine anfrage je buchstabe.
@@ -222,7 +225,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   const operationAendern = (id, was) => {
     setOperationen((l) => l.map((o) => (o.id === id ? { ...o, ...was } : o)));
     const schreiben = (stoff) => api("PATCH", `/rest/v1/operationen?id=eq.${id}`,
-      { ...stoff, zuletzt: new Date().toISOString() }).catch((e) => sag(String(e.message)));
+      { ...stoff, zuletzt: new Date().toISOString() }).catch((e) => sag(String(e.message), true));
 
     const nurText = Object.keys(was).every(
       (k) => k === "intention" || k === "target" || k === "titel");
@@ -259,7 +262,45 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
     setOperationen((l) => l.filter((x) => x.id !== id));
     if (offen === id) setOffen(null);
     try { await api("DELETE", `/rest/v1/operationen?id=eq.${id}`); }
-    catch (e) { sag(String(e.message)); }
+    catch (e) { sag(String(e.message), true); }
+  };
+
+  // Nachsehen, ob die datenbank alles hat, was dieser raum braucht.
+  // Fehlt ein stueck, sieht man es sonst erst daran, dass etwas still
+  // nicht funktioniert.
+  const nachsehen = async () => {
+    setBericht(["wird geprüft …"]);
+    const zeilen = [];
+    const pruefe = async (name, was) => {
+      try { await was(); zeilen.push("✓ " + name); }
+      catch (e) { zeilen.push("✗ " + name + " — " + String(e && e.message).slice(0, 80)); }
+    };
+
+    for (const tab of ["operationen", "bauteile", "logbuch", "operation_quellen",
+                       "sigillen", "raten", "quellen", "hintergruende", "targets"])
+      await pruefe("tabelle " + tab, () => api("GET", `/rest/v1/${tab}?select=*&limit=1`));
+
+    await pruefe("spalte operationen.titel",
+      () => api("GET", "/rest/v1/operationen?select=titel&limit=1"));
+    await pruefe("spalte bauteile.target_id",
+      () => api("GET", "/rest/v1/bauteile?select=target_id&limit=1"));
+
+    await pruefe("ablagefach " + EIMER, async () => {
+      const si = await zugang();
+      if (!si) throw new Error("nicht angemeldet");
+      const r = await fetch(`${URL_DB}/storage/v1/object/list/${EIMER}`, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + si.access_token, apikey: KEY_DB,
+                   "Content-Type": "application/json" },
+        body: JSON.stringify({ prefix: "", limit: 1 }),
+      });
+      if (!r.ok) throw new Error((await r.text()).slice(0, 110));
+    });
+
+    await pruefe("der puls in der datenbank",
+      () => api("POST", "/rest/v1/rpc/maschinenraum_puls", {}));
+
+    setBericht(zeilen);
   };
 
   const dieOffene = (!schrank && operationen.find((o) => o.id === offen)) || null;
@@ -298,7 +339,13 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
         )}
       </div>
 
-      {meldung && <div className="mmeldung">{meldung}</div>}
+      {meldung && (
+        <div className={"mmeldung" + (meldung.schlimm ? " schlimm" : "")}
+          onClick={() => setMeldung(null)}>
+          {meldung.text}
+          {meldung.schlimm && <small>antippen zum schliessen</small>}
+        </div>
+      )}
 
       {laedt && <p className="mleer">wird geholt …</p>}
 
@@ -315,10 +362,28 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
         />
       )}
 
+      {!laedt && !schrank && !dieOffene && bericht && (
+        <div className="mbericht">
+          <div className="mberichtkopf">
+            <span className="mwandtitel">was die datenbank hat</span>
+            <button className="mklein" onClick={() => setBericht(null)}>✕</button>
+          </div>
+          {bericht.map((z, i) => (
+            <div key={i} className={z.startsWith("✗") ? "mzeile schlecht" : "mzeile gut"}>{z}</div>
+          ))}
+          {bericht.some((z) => z.startsWith("✗")) && (
+            <p className="mhinweis">
+              was hier ein ✗ hat, fehlt in supabase — dann kann die app es auch nicht.
+            </p>
+          )}
+        </div>
+      )}
+
       {!laedt && !schrank && !dieOffene && (
         <Uebersicht
           operationen={operationen} bilder={bilder} tick={tick}
           oeffnen={setOffen} anlegen={operationAnlegen} weg={operationWeg}
+          nachsehen={nachsehen}
         />
       )}
 
@@ -341,7 +406,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
 // ============================================================
 // DIE ÜBERSICHT — kacheln wie bei projekten und filmen
 // ============================================================
-function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg }) {
+function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg, nachsehen }) {
   // leicht schraege kacheln, aber immer gleich schief — aus der id gerechnet
   const kippung = (id) => {
     let z = 0;
@@ -387,6 +452,10 @@ function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg }) {
       {operationen.length === 0 && (
         <p className="mleer">noch keine operation. das + legt eine an.</p>
       )}
+
+      <button className="mnachsehen" onClick={nachsehen}>
+        nachsehen, ob die datenbank alles hat
+      </button>
     </div>
   );
 }
@@ -461,7 +530,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         setMeine((q || []).map((x) => x.quelle_id));
         holBilder([...(b || []).map((x) => x.bild), op.hintergrund]);
         // auch die bilder, die ueber sigille oder target haengen
-      } catch (e) { sag(String(e.message)); }
+      } catch (e) { sag(String(e.message), true); }
     })();
     return () => { fort = true; };
   }, [op.id, api, sag, holBilder]);
@@ -477,13 +546,13 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     setBauteile((l) => [...l, neu]);
     setGewaehlt(neu.id);
     try { await api("POST", "/rest/v1/bauteile", neu); }
-    catch (e) { sag(String(e.message)); }
+    catch (e) { sag(String(e.message), true); }
   };
 
   const bauteilAendern = (id, was, sofort) => {
     setBauteile((l) => l.map((b) => (b.id === id ? { ...b, ...was } : b)));
     const schreiben = () => api("PATCH", `/rest/v1/bauteile?id=eq.${id}`, was)
-      .catch((e) => sag(String(e.message)));
+      .catch((e) => sag(String(e.message), true));
     if (sofort) { schreiben(); return; }
     clearTimeout(uhren.current[id]);
     uhren.current[id] = setTimeout(schreiben, 800);
@@ -509,7 +578,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
       if (weg) for (const b of rest) {
         if ((b.nummer || 0) > (weg.nummer || 0)) bauteilAendern(b.id, { nummer: b.nummer - 1 }, true);
       }
-    } catch (e) { sag(String(e.message)); }
+    } catch (e) { sag(String(e.message), true); }
   };
 
   // ---------- ziehen auf dem schaltplan ----------
@@ -580,7 +649,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     const e = { id: neueId(), operation_id: op.id, art, text, wann: new Date().toISOString() };
     setEintraege((l) => [e, ...l]);
     try { await api("POST", "/rest/v1/logbuch", e); }
-    catch (err) { sag(String(err.message)); }
+    catch (err) { sag(String(err.message), true); }
   };
 
   const eintragWeg = async (id) => {
@@ -597,7 +666,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         `/rest/v1/operation_quellen?operation_id=eq.${op.id}&quelle_id=eq.${qid}`);
       else await api("POST", "/rest/v1/operation_quellen",
         { operation_id: op.id, quelle_id: qid });
-    } catch (e) { sag(String(e.message)); }
+    } catch (e) { sag(String(e.message), true); }
   };
 
   // ---------- hintergrund ----------
@@ -619,7 +688,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
       setForm(null);
       aendern({ hintergrund: pfad });
       sag("liegt jetzt auch im hintergrund-schrank — dort kannst du ihn benennen und beschreiben");
-    } catch (e) { sag(String(e.message)); }
+    } catch (e) { sag(String(e.message), true); }
   };
 
   // Ein kaestchen zeigt sein eigenes bild — und wenn es keines hat, das
@@ -880,7 +949,7 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hoc
       const pfad = await hochladen(datei, "bauteile");
       aendern(b.id, { bild: pfad, sigille_id: null }, true);
       sag("");
-    } catch (e) { sag(String(e.message)); }
+    } catch (e) { sag(String(e.message), true); }
   };
 
   return (
@@ -1068,7 +1137,7 @@ function StickPlatte({ api, sag, rateDazu }) {
       rateDazu(neu);                      // sofort in die liste, nicht erst nach neuladen
       sag("rate gespeichert: " + neu.name + " — steht jetzt im raten-schrank");
       setName(""); setGehalten(null);
-    } catch (e) { sag(String(e.message)); }
+    } catch (e) { sag(String(e.message), true); }
   };
 
   const zeigt = gehalten || rate;
@@ -1196,13 +1265,13 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
             : { id: neueId(), name: "neue quelle", notiz: "" };
     setListe((l) => [neu, ...l]);
     try { await api("POST", `/rest/v1/${tabelle}`, neu); }
-    catch (e) { sag(String(e.message)); }
+    catch (e) { sag(String(e.message), true); }
   };
 
   const aendern = (id, was, sofort) => {
     setListe((l) => l.map((x) => (x.id === id ? { ...x, ...was } : x)));
     const schreiben = () => api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, was)
-      .catch((e) => sag(String(e.message)));
+      .catch((e) => sag(String(e.message), true));
     clearTimeout(uhren.current[id]);
     if (sofort) { schreiben(); return; }
     uhren.current[id] = setTimeout(schreiben, 700);
@@ -1213,7 +1282,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     if (!confirm(`„${(x && x.name) || ""}" löschen?`)) return;
     setListe((l) => l.filter((e) => e.id !== id));
     try { await api("DELETE", `/rest/v1/${tabelle}?id=eq.${id}`); }
-    catch (e) { sag(String(e.message)); }
+    catch (e) { sag(String(e.message), true); }
   };
 
   const bildWaehlen = async (id, datei) => {
@@ -1225,13 +1294,13 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
       setKaputt((k) => { const n = { ...k }; delete n[pfad]; return n; });
       aendern(id, { bild: pfad }, true);    // sofort schreiben, nicht erst in 700 ms
       sag("");
-    } catch (e) { sag(String(e.message)); }
+    } catch (e) { sag(String(e.message), true); }
   };
 
   // drucken: ein sauberes blatt zum auflegen
   const drucken = (x) => {
     const w = window.open("", "_blank", "width=700,height=900");
-    if (!w) { sag("der browser hat das fenster blockiert"); return; }
+    if (!w) { sag("der browser hat das fenster blockiert", true); return; }
     const bild = x.bild && bilder[x.bild] ? `<img src="${bilder[x.bild]}">` : "";
     const ziffern = x.ziffern ? `<div class="z">${x.ziffern}</div>` : "";
     w.document.write(`<!doctype html><html lang="de"><head><meta charset="utf-8">
@@ -1450,6 +1519,31 @@ function MaschinenStil() {
   font-size:12px; color:var(--messing);
   background:rgba(196,167,71,.08); border:1px solid rgba(196,167,71,.3);
 }
+/* eine schlechte nachricht verschwindet nicht von selbst */
+.mmeldung.schlimm{
+  color:#f0b0a4; background:rgba(217,128,112,.1);
+  border-color:rgba(217,128,112,.5); cursor:pointer;
+  display:flex; justify-content:space-between; gap:14px; align-items:baseline;
+}
+.mmeldung.schlimm small{font-size:10px; opacity:.6; white-space:nowrap}
+
+.mnachsehen{
+  margin-top:26px; font-family:inherit; font-size:10.5px; letter-spacing:.08em;
+  padding:7px 13px; border-radius:3px; cursor:pointer; align-self:flex-start;
+  color:var(--asche); background:transparent;
+  border:1px dashed rgba(138,143,135,.3); opacity:.6; transition:.15s;
+}
+.mnachsehen:hover{opacity:1; color:var(--span2); border-color:rgba(74,124,111,.5)}
+
+.mbericht{
+  margin:0 clamp(12px,2vw,26px); padding:14px 16px; border-radius:4px;
+  background:linear-gradient(rgba(18,25,22,.85), rgba(10,15,13,.95));
+  border:1px solid rgba(184,115,51,.3);
+}
+.mberichtkopf{display:flex; justify-content:space-between; align-items:center; margin-bottom:9px}
+.mbericht .mzeile{font-size:11.5px; line-height:1.8; margin:0; display:block}
+.mbericht .gut{color:var(--span2); opacity:.7}
+.mbericht .schlecht{color:#f0b0a4}
 .mleer{
   margin:40px auto; text-align:center; font-size:12.5px; color:var(--asche); opacity:.7;
 }
