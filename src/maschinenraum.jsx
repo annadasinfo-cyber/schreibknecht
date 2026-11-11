@@ -128,11 +128,18 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
     return schiefgegangen;
   }, [api, URL_DB, sag]);
 
+  // Jeder schritt wird gemeldet. Bleibt etwas stehen, sieht man genau,
+  // wie weit es kam — statt vor einem leeren feld ohne auskunft.
   const hochladen = useCallback(async (datei, unterordner) => {
+    if (!datei) throw new Error("gar keine datei angekommen");
+    sag(`1/4 datei da: ${datei.name} · ${Math.round(datei.size / 1024)} kB · ${datei.type || "ohne typ"}`);
+
     const s = await zugang();
     if (!s) throw new Error("nicht angemeldet");
     const endung = (datei.name.split(".").pop() || "png").toLowerCase();
     const pfad = `${s.user.id}/${unterordner}/${neueId()}.${endung}`;
+
+    sag("2/4 wird hochgeladen …");
     const r = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
       method: "POST",
       headers: {
@@ -143,13 +150,16 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
       },
       body: datei,
     });
-    if (!r.ok) throw new Error((await r.text()).slice(0, 160) || "hochladen ging nicht");
-    // das bild ist oben — jetzt muss auch die adresse kommen, sonst bliebe
-    // ein leeres feld stehen, ohne dass jemand weiss warum
+    if (!r.ok)
+      throw new Error(`hochladen abgelehnt (${r.status}): ` + (await r.text()).slice(0, 140));
+
+    sag("3/4 liegt in der ablage, hole die adresse …");
     const schief = await holBilder([pfad], true);
     if (schief && schief.length) throw new Error(schief[0]);
+
+    sag("4/4 fertig: " + pfad.split("/").slice(1).join("/"));
     return pfad;
-  }, [zugang, URL_DB, KEY_DB, holBilder]);
+  }, [zugang, URL_DB, KEY_DB, holBilder, sag]);
 
   // ---------- laden ----------
   const laden = useCallback(async () => {
@@ -676,7 +686,6 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
   const hintergrundWaehlen = async (datei) => {
     if (!datei) return;
     try {
-      sag("bild wird hochgeladen …");
       const pfad = await hochladen(datei, "schaltungen");
       const eintrag = {
         id: neueId(),
@@ -945,10 +954,8 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hoc
   const bildWaehlen = async (datei) => {
     if (!datei) return;
     try {
-      sag("bild wird hochgeladen …");
       const pfad = await hochladen(datei, "bauteile");
       aendern(b.id, { bild: pfad, sigille_id: null }, true);
-      sag("");
     } catch (e) { sag(String(e.message), true); }
   };
 
@@ -1288,12 +1295,10 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
   const bildWaehlen = async (id, datei) => {
     if (!datei) return;
     try {
-      sag("bild wird hochgeladen …");
       const pfad = await hochladen(datei,
         art === "sigillen" ? "sigillen" : art === "targets" ? "targets" : "schaltungen");
       setKaputt((k) => { const n = { ...k }; delete n[pfad]; return n; });
       aendern(id, { bild: pfad }, true);    // sofort schreiben, nicht erst in 700 ms
-      sag("");
     } catch (e) { sag(String(e.message), true); }
   };
 
@@ -1788,7 +1793,13 @@ function MaschinenStil() {
   border:1px dashed rgba(184,115,51,.45); transition:.15s;
 }
 .mdateiknopf:hover{background:rgba(184,115,51,.18); border-style:solid; color:#eab680}
-.mdateiknopf input{display:none}
+/* das feld liegt unsichtbar ueber dem knopf statt display:none —
+   damit oeffnet safari den waehler zuverlaessig */
+.mdateiknopf{position:relative; overflow:hidden}
+.mdateiknopf input{
+  position:absolute; inset:0; width:100%; height:100%;
+  opacity:0; cursor:pointer; font-size:0;
+}
 .mfeldchen select option{background:#0d1310}
 
 .mquellen{display:flex; flex-direction:column; gap:5px}
@@ -1902,7 +1913,11 @@ function MaschinenStil() {
 .mbildfach.breit{width:200px; height:130px}
 .mbildfach img{width:100%; height:100%; object-fit:contain}
 .mfehlt{color:#d98070; font-size:9.5px; line-height:1.5; padding:6px}
-.mbildfach input{display:none}
+.mbildfach{position:relative}
+.mbildfach input{
+  position:absolute; inset:0; width:100%; height:100%;
+  opacity:0; cursor:pointer; font-size:0;
+}
 .mbeschreibung{
   flex:1 1 280px; min-width:0; resize:vertical; font-family:inherit; font-size:12px;
   line-height:1.6; padding:9px 11px; border-radius:3px; color:#b9beb5;
