@@ -1313,7 +1313,29 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hoc
             </span>
           );
         })()}
-        <span className="mfuell" />
+        {/* was in den schraenken zu sigille, rate und target steht — zum
+            nachlesen, geaendert wird es im schrank */}
+        {(() => {
+          const g = b.sigille_id && sigillen.find((x) => x.id === b.sigille_id);
+          const r = b.rate_id && raten.find((x) => x.id === b.rate_id);
+          const z = b.target_id && ziele.find((x) => x.id === b.target_id);
+          const stuecke = [
+            g && { art: "sigille", name: g.name, text: g.beschreibung },
+            r && { art: "rate", name: r.name + (r.ziffern ? " · " + r.ziffern : ""), text: r.beschreibung },
+            z && { art: "target", name: z.name, text: z.beschreibung },
+          ].filter(Boolean);
+          if (!stuecke.length) return <span className="mfuell" />;
+          return (
+            <div className="merklaerung">
+              {stuecke.map((e) => (
+                <div key={e.art}>
+                  <span className="merklaerkopf"><i>{e.art}</i> {e.name}</span>
+                  <p>{e.text || "— noch keine beschreibung im schrank —"}</p>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
         <button className="mbtn weg" onClick={() => weg(b.id)}>bauteil entfernen</button>
       </div>
     </div>
@@ -2479,6 +2501,15 @@ function MaschinenStil() {
 .mbezfeld:focus{outline:none; border-color:var(--messing)}
 .mblattreihe{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end; margin-bottom:10px}
 .mprobefeld{display:flex; flex-direction:column; gap:3px; align-items:center}
+/* die erklaerung aus dem schrank, neben dem bild */
+.merklaerung{
+  flex:1 1 260px; min-width:0; align-self:stretch; display:flex; flex-direction:column; gap:8px;
+  padding:9px 12px; border-radius:3px;
+  background:rgba(0,0,0,.28); border:1px solid rgba(138,143,135,.18);
+}
+.merklaerkopf{font-size:11px; letter-spacing:.06em; color:var(--messing)}
+.merklaerkopf i{font-style:normal; font-size:9.5px; opacity:.6; margin-right:6px; letter-spacing:.12em; color:var(--asche)}
+.merklaerung p{margin:3px 0 0; font-size:11.5px; line-height:1.55; color:#b9beb5; white-space:pre-wrap}
 .mprobefeld small{font-size:9px; opacity:.6; letter-spacing:.05em}
 .mprobe{width:58px; height:58px; object-fit:contain; border-radius:3px; border:1px solid rgba(184,115,51,.3)}
 
