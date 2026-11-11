@@ -1122,6 +1122,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                    operationen, bilder, hochladen }) {
   const [suche, setSuche] = useState("");
   const [verweise, setVerweise] = useState({});   // id -> [operationsnamen]
+  const [kaputt, setKaputt] = useState({});       // bildpfad -> adresse da, bild laedt nicht
   const uhren = useRef({});
 
   // woran man merkt, dass sich an den operationen wirklich etwas geaendert hat
@@ -1198,12 +1199,13 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     catch (e) { sag(String(e.message)); }
   };
 
-  const aendern = (id, was) => {
+  const aendern = (id, was, sofort) => {
     setListe((l) => l.map((x) => (x.id === id ? { ...x, ...was } : x)));
+    const schreiben = () => api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, was)
+      .catch((e) => sag(String(e.message)));
     clearTimeout(uhren.current[id]);
-    uhren.current[id] = setTimeout(() => {
-      api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, was).catch((e) => sag(String(e.message)));
-    }, 700);
+    if (sofort) { schreiben(); return; }
+    uhren.current[id] = setTimeout(schreiben, 700);
   };
 
   const weg = async (id) => {
@@ -1220,8 +1222,8 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
       sag("bild wird hochgeladen …");
       const pfad = await hochladen(datei,
         art === "sigillen" ? "sigillen" : art === "targets" ? "targets" : "schaltungen");
-      aendern(id, { bild: pfad });
-      await api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, { bild: pfad });
+      setKaputt((k) => { const n = { ...k }; delete n[pfad]; return n; });
+      aendern(id, { bild: pfad }, true);    // sofort schreiben, nicht erst in 700 ms
       sag("");
     } catch (e) { sag(String(e.message)); }
   };
@@ -1277,9 +1279,14 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
             {mitBild && (
               <>
                 <label className={"mbildfach" + (art === "hintergruende" ? " breit" : "")}>
-                  {x.bild && bilder[x.bild]
-                    ? <img src={bilder[x.bild]} alt="" />
-                    : <span>bild wählen</span>}
+                  {!x.bild
+                    ? <span>bild wählen</span>
+                    : !bilder[x.bild]
+                      ? <span className="mfehlt">liegt in der ablage,<br />adresse fehlt</span>
+                      : kaputt[x.bild]
+                        ? <span className="mfehlt">adresse da,<br />bild lädt nicht</span>
+                        : <img src={bilder[x.bild]} alt=""
+                            onError={() => setKaputt((k) => ({ ...k, [x.bild]: true }))} />}
                   <input type="file" accept="image/*"
                     onChange={(e) => bildWaehlen(x.id, e.target.files && e.target.files[0])} />
                 </label>
@@ -1800,6 +1807,7 @@ function MaschinenStil() {
 /* ein schaltplan ist breit, keine quadratische sigille */
 .mbildfach.breit{width:200px; height:130px}
 .mbildfach img{width:100%; height:100%; object-fit:contain}
+.mfehlt{color:#d98070; font-size:9.5px; line-height:1.5; padding:6px}
 .mbildfach input{display:none}
 .mbeschreibung{
   flex:1 1 280px; min-width:0; resize:vertical; font-family:inherit; font-size:12px;
