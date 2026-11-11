@@ -25,38 +25,69 @@ const neueId = () =>
 const GUETE = 0.82;
 
 function bildKleinrechnen(datei, kante) {
-  return new Promise((fertig) => {
-    try {
-      if (!/^image\//.test(datei.type || "")) return fertig(null);
-      const leser = new FileReader();
-      leser.onload = () => {
-        const bild = new Image();
-        bild.onload = () => {
-          const lang = Math.max(bild.width, bild.height);
-          const mal = lang > kante ? kante / lang : 1;
-          const b = Math.round(bild.width * mal), h = Math.round(bild.height * mal);
-          const tafel = document.createElement("canvas");
-          tafel.width = b; tafel.height = h;
-          const stift = tafel.getContext("2d");
-          stift.imageSmoothingQuality = "high";
-          stift.drawImage(bild, 0, 0, b, h);
-          const nimm = (art, dann) => tafel.toBlob(
-            (roh) => dann(roh && roh.type === art ? roh : null), art, GUETE);
-          nimm("image/webp", (webp) => {
-            if (webp && webp.size < datei.size) return fertig({ blob: webp, endung: "webp" });
-            nimm("image/jpeg", (jpeg) => {
-              if (jpeg && jpeg.size < datei.size) return fertig({ blob: jpeg, endung: "jpg" });
-              fertig(null);                 // war schon klein genug
-            });
-          });
+  // Jeder schritt hier kann in irgendeinem browser den rueckruf schuldig
+  // bleiben — dann haengt alles. Darum: nichts ohne zeitlimit, und wenn
+  // etwas nicht antwortet, geht es mit dem original weiter.
+  const mitUhr = (versprechen, ms) => Promise.race([
+    versprechen,
+    new Promise((fertig) => setTimeout(() => fertig(null), ms)),
+  ]);
+
+  const malen = async () => {
+    if (!/^image\//.test(datei.type || "")) return null;
+    if (!datei.size || datei.size < 80 * 1024) return null;   // schon klein genug
+
+    // bild holen: erst der kurze weg, sonst der alte ueber FileReader
+    let quelle = null;
+    if (typeof createImageBitmap === "function") {
+      quelle = await mitUhr(createImageBitmap(datei).catch(() => null), 6000);
+    }
+    if (!quelle) {
+      quelle = await mitUhr(new Promise((fertig) => {
+        const leser = new FileReader();
+        leser.onerror = () => fertig(null);
+        leser.onload = () => {
+          const bild = new Image();
+          bild.onload = () => fertig(bild);
+          bild.onerror = () => fertig(null);
+          bild.src = leser.result;
         };
-        bild.onerror = () => fertig(null);
-        bild.src = leser.result;
-      };
-      leser.onerror = () => fertig(null);
-      leser.readAsDataURL(datei);
-    } catch { fertig(null); }
-  });
+        leser.readAsDataURL(datei);
+      }), 6000);
+    }
+    if (!quelle || !quelle.width) return null;
+
+    const lang = Math.max(quelle.width, quelle.height);
+    const mal = lang > kante ? kante / lang : 1;
+    if (mal === 1 && datei.size < 600 * 1024) return null;   // lohnt nicht
+
+    const br = Math.round(quelle.width * mal), ho = Math.round(quelle.height * mal);
+    const tafel = document.createElement("canvas");
+    tafel.width = br; tafel.height = ho;
+    const stift = tafel.getContext("2d");
+    stift.imageSmoothingQuality = "high";
+    stift.drawImage(quelle, 0, 0, br, ho);
+    if (quelle.close) try { quelle.close(); } catch {}
+
+    const nimm = (art) => mitUhr(new Promise((fertig) => {
+      try { tafel.toBlob((roh) => fertig(roh && roh.type === art ? roh : null), art, GUETE); }
+      catch { fertig(null); }
+    }), 6000);
+
+    // jpeg zuerst: das kann jeder browser. webp nur, wenn es wirklich kleiner wird
+    const jpeg = await nimm("image/jpeg");
+    const webp = await nimm("image/webp");
+    const beste = [
+      webp && { blob: webp, endung: "webp" },
+      jpeg && { blob: jpeg, endung: "jpg" },
+    ].filter(Boolean).sort((x, y) => x.blob.size - y.blob.size)[0];
+
+    if (beste && beste.blob.size < datei.size) return beste;
+    return null;
+  };
+
+  // und ueber allem nochmal eine uhr: nach zehn sekunden das original
+  return mitUhr(malen().catch(() => null), 10000);
 }
 
 // wie gross ein bild sein darf — ein schaltplan fuellt die ganze flaeche,
@@ -181,7 +212,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
     if (!datei) throw new Error("gar keine datei angekommen");
     const kB = (n) => Math.round(n / 1024).toLocaleString("de") + " kB";
 
-    sag(`1/4 ${datei.name} · ${kB(datei.size)} · wird verkleinert …`, "laeuft");
+    sag(`1/4 ${datei.name} · ${kB(datei.size)} · wird vorbereitet …`, "laeuft");
     const klein = await bildKleinrechnen(datei, KANTE[unterordner] || 1000);
     const inhalt = klein ? klein.blob : datei;
     const endung = klein ? klein.endung : (datei.name.split(".").pop() || "png").toLowerCase();
@@ -190,8 +221,8 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
     if (!s) throw new Error("nicht angemeldet");
     const pfad = `${s.user.id}/${unterordner}/${neueId()}.${endung}`;
 
-    sag(`2/4 ${kB(inhalt.size)}${klein ? " (aus " + kB(datei.size) + ")" : ""} wird hochgeladen …`,
-        "laeuft");
+    sag(`2/4 ${kB(inhalt.size)}${klein ? " (aus " + kB(datei.size) + ")" : " im original"}`
+        + " wird hochgeladen …", "laeuft");
 
     // Ohne zeitlimit haengt eine stockende leitung stumm, und man sitzt
     // vor einer meldung, die sich nicht mehr ruehrt.
