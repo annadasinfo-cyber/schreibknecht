@@ -210,6 +210,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [ziele, setZiele] = useState([]);         // targets: wer oder was, mit zeugen-bild
   const [offen, setOffen] = useState(null);       // id der offenen operation
   const [liest, setLiest] = useState(false);      // die auslese-seite ist offen
+  const blattMerk = useRef({});                   // welches kaestchen-blatt in welcher operation offen war
   const [tagMit, setTagMit] = useState("");       // hashtag, der in den naechsten schrank mitgeht
   const [schrank, setSchrank] = useState(null);   // "sigillen" | "raten" | "quellen"
   const [bilder, setBilder] = useState({});       // pfad -> signierte adresse
@@ -679,6 +680,8 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
             (a, b) => a.name.localeCompare(b.name, "de")))}
           planDazu={(x) => setPlaene((l) => [...l, x].sort(
             (a, b) => a.name.localeCompare(b.name, "de")))}
+          zumSchrank={(a, name) => { setTagMit(name); setSchrank(a); }}
+          blattMerk={blattMerk}
         />
       )}
     </div>
@@ -785,11 +788,13 @@ function Led({ an, takt, gestartet, gesund }) {
 // EINE OPERATION
 // ============================================================
 function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen, plaene, ziele,
-                           bilder, hochladen, holBilder, rateDazu, planDazu }) {
+                           bilder, hochladen, holBilder, rateDazu, planDazu, zumSchrank, blattMerk }) {
   const [bauteile, setBauteile] = useState([]);
   const [eintraege, setEintraege] = useState([]);
   const [meine, setMeine] = useState([]);        // quellen-ids an dieser operation
-  const [gewaehlt, setGewaehlt] = useState(null); // offenes bauteil
+  // das offene blatt ueberlebt einen abstecher in den schrank
+  const [gewaehlt, setGewaehlt] = useState(() => (blattMerk && blattMerk.current[op.id]) || null);
+  useEffect(() => { if (blattMerk) blattMerk.current[op.id] = gewaehlt; }, [gewaehlt, op.id, blattMerk]);
   const [platte, setPlatte] = useState(false);
 
   const feldRef = useRef(null);
@@ -1177,7 +1182,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         <BauteilBlatt
           b={dasBauteil} aendern={bauteilAendern} weg={bauteilWeg}
           zu={() => setGewaehlt(null)} sigillen={sigillen} raten={raten}
-          bilder={bilder} hochladen={hochladen} sag={sag} ziele={ziele}
+          bilder={bilder} hochladen={hochladen} sag={sag} ziele={ziele} zumSchrank={zumSchrank}
           anzahl={bauteile.length} nummerSetzen={nummerSetzen}
         />
       )}
@@ -1227,7 +1232,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
 // DAS BLATT FÜR EIN BAUTEIL
 // ============================================================
 function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hochladen, sag,
-                        anzahl, nummerSetzen }) {
+                        anzahl, nummerSetzen, zumSchrank }) {
   const bildWaehlen = async (datei) => {
     if (!datei) return;
     try {
@@ -1320,16 +1325,22 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hoc
           const r = b.rate_id && raten.find((x) => x.id === b.rate_id);
           const z = b.target_id && ziele.find((x) => x.id === b.target_id);
           const stuecke = [
-            g && { art: "sigille", name: g.name, text: g.beschreibung },
-            r && { art: "rate", name: r.name + (r.ziffern ? " · " + r.ziffern : ""), text: r.beschreibung },
-            z && { art: "target", name: z.name, text: z.beschreibung },
+            g && { art: "sigille", schrank: "sigillen", such: g.name, name: g.name, text: g.beschreibung },
+            r && { art: "rate", schrank: "raten", such: r.name,
+                   name: r.name + (r.ziffern ? " · " + r.ziffern : ""), text: r.beschreibung },
+            z && { art: "target", schrank: "targets", such: z.name, name: z.name, text: z.beschreibung },
           ].filter(Boolean);
           if (!stuecke.length) return <span className="mfuell" />;
           return (
             <div className="merklaerung">
               {stuecke.map((e) => (
                 <div key={e.art}>
-                  <span className="merklaerkopf"><i>{e.art}</i> {e.name}</span>
+                  {/* ein tipp fuehrt geradewegs zum eintrag im schrank;
+                      der zurueck-knopf bringt wieder hierher */}
+                  <button className="merklaerkopf" onClick={() => zumSchrank(e.schrank, e.such)}
+                    title="zum eintrag im schrank">
+                    <i>{e.art}</i> {e.name} <b>→ zum schrank</b>
+                  </button>
                   <p>{e.text || "— noch keine beschreibung im schrank —"}</p>
                 </div>
               ))}
@@ -2507,7 +2518,12 @@ function MaschinenStil() {
   padding:9px 12px; border-radius:3px;
   background:rgba(0,0,0,.28); border:1px solid rgba(138,143,135,.18);
 }
-.merklaerkopf{font-size:11px; letter-spacing:.06em; color:var(--messing)}
+.merklaerkopf{
+  font-family:inherit; font-size:11px; letter-spacing:.06em; color:var(--messing);
+  background:none; border:0; padding:0; cursor:pointer; text-align:left;
+}
+.merklaerkopf b{font-weight:400; font-size:10px; color:var(--span2); opacity:.7; margin-left:8px}
+.merklaerkopf:hover b{opacity:1; text-decoration:underline}
 .merklaerkopf i{font-style:normal; font-size:9.5px; opacity:.6; margin-right:6px; letter-spacing:.12em; color:var(--asche)}
 .merklaerung p{margin:3px 0 0; font-size:11.5px; line-height:1.55; color:#b9beb5; white-space:pre-wrap}
 .mprobefeld small{font-size:9px; opacity:.6; letter-spacing:.05em}
