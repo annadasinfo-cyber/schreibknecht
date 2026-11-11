@@ -71,6 +71,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   const [sigillen, setSigillen] = useState([]);
   const [raten, setRaten] = useState([]);
   const [quellen, setQuellen] = useState([]);
+  const [plaene, setPlaene] = useState([]);       // schaltplaene zum wiederverwenden
   const [offen, setOffen] = useState(null);       // id der offenen operation
   const [schrank, setSchrank] = useState(null);   // "sigillen" | "raten" | "quellen"
   const [bilder, setBilder] = useState({});       // pfad -> signierte adresse
@@ -130,19 +131,22 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   // ---------- laden ----------
   const laden = useCallback(async () => {
     try {
-      const [op, si, ra, qu] = await Promise.all([
+      const [op, si, ra, qu, pl] = await Promise.all([
         api("GET", "/rest/v1/operationen?select=*&order=zuletzt.desc"),
         api("GET", "/rest/v1/sigillen?select=*&order=name.asc"),
         api("GET", "/rest/v1/raten?select=*&order=name.asc"),
         api("GET", "/rest/v1/quellen?select=*&order=name.asc"),
+        api("GET", "/rest/v1/hintergruende?select=*&order=name.asc"),
       ]);
       setOperationen(op || []);
       setSigillen(si || []);
       setRaten(ra || []);
       setQuellen(qu || []);
+      setPlaene(pl || []);
       holBilder([
         ...(op || []).map((o) => o.hintergrund),
         ...(si || []).map((s) => s.bild),
+        ...(pl || []).map((x) => x.bild),
       ]);
     } catch (e) {
       sag("laden ging nicht: " + String(e.message));
@@ -254,7 +258,9 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
           ? <input className="mtitel mtitelfeld" value={dieOffene.titel || ""}
               placeholder="operation" spellCheck={false}
               onChange={(e) => operationAendern(dieOffene.id, { titel: e.target.value })} />
-          : <span className="mtitel">{schrank ? schrank : "maschinenraum"}</span>}
+          : <span className="mtitel">
+              {schrank === "hintergruende" ? "hintergründe" : schrank || "maschinenraum"}
+            </span>}
 
         <span className="mfuell" />
 
@@ -263,6 +269,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
             <button className="mbtn" onClick={() => setSchrank("sigillen")}>sigillen</button>
             <button className="mbtn" onClick={() => setSchrank("raten")}>raten</button>
             <button className="mbtn" onClick={() => setSchrank("quellen")}>quellen</button>
+            <button className="mbtn" onClick={() => setSchrank("hintergruende")}>hintergründe</button>
           </>
         )}
       </div>
@@ -277,6 +284,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
           sigillen={sigillen} setSigillen={setSigillen}
           raten={raten} setRaten={setRaten}
           quellen={quellen} setQuellen={setQuellen}
+          plaene={plaene} setPlaene={setPlaene}
           operationen={operationen}
           bilder={bilder} hochladen={hochladen}
         />
@@ -293,9 +301,11 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
         <OperationsSeite
           op={dieOffene} api={api} sag={sag} tick={tick}
           aendern={(was) => operationAendern(dieOffene.id, was)}
-          sigillen={sigillen} raten={raten} quellen={quellen}
+          sigillen={sigillen} raten={raten} quellen={quellen} plaene={plaene}
           bilder={bilder} hochladen={hochladen} holBilder={holBilder}
           rateDazu={(r) => setRaten((l) => [...l, r].sort(
+            (a, b) => a.name.localeCompare(b.name, "de")))}
+          planDazu={(x) => setPlaene((l) => [...l, x].sort(
             (a, b) => a.name.localeCompare(b.name, "de")))}
         />
       )}
@@ -397,8 +407,8 @@ function Led({ an, takt, gestartet, gesund }) {
 // ============================================================
 // EINE OPERATION
 // ============================================================
-function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen,
-                           bilder, hochladen, holBilder, rateDazu }) {
+function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen, plaene,
+                           bilder, hochladen, holBilder, rateDazu, planDazu }) {
   const [bauteile, setBauteile] = useState([]);
   const [eintraege, setEintraege] = useState([]);
   const [meine, setMeine] = useState([]);        // quellen-ids an dieser operation
@@ -424,7 +434,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         setBauteile(b || []);
         setEintraege(l || []);
         setMeine((q || []).map((x) => x.quelle_id));
-        holBilder((b || []).map((x) => x.bild));
+        holBilder([...(b || []).map((x) => x.bild), op.hintergrund]);
       } catch (e) { sag(String(e.message)); }
     })();
     return () => { fort = true; };
@@ -565,14 +575,24 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
   };
 
   // ---------- hintergrund ----------
+  // Ein eingelegter plan wandert gleich in den schrank — dort kannst du
+  // ihm einen namen und eine beschreibung geben. Nicht jeder schaltplan
+  // erklaert sich von selbst.
   const hintergrundWaehlen = async (datei) => {
     if (!datei) return;
     try {
       sag("bild wird hochgeladen …");
       const pfad = await hochladen(datei, "schaltungen");
+      const eintrag = {
+        id: neueId(),
+        name: (datei.name || "schaltplan").replace(/\.[^.]+$/, ""),
+        bild: pfad, beschreibung: "",
+      };
+      await api("POST", "/rest/v1/hintergruende", eintrag);
+      planDazu(eintrag);
       setForm(null);
       aendern({ hintergrund: pfad });
-      sag("");
+      sag("liegt jetzt auch im hintergrund-schrank — dort kannst du ihn benennen und beschreiben");
     } catch (e) { sag(String(e.message)); }
   };
 
@@ -702,8 +722,20 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
               onChange={(e) => aendern({ test_am: e.target.value || null })} />
           </label>
 
+          <label className="mfeldchen">
+            <span>schaltplan</span>
+            <select value={plaene.some((x) => x.bild === op.hintergrund) ? op.hintergrund : ""}
+              onChange={(e) => { setForm(null); aendern({ hintergrund: e.target.value || null }); }}>
+              <option value="">
+                {op.hintergrund && !plaene.some((x) => x.bild === op.hintergrund)
+                  ? "— eigener —" : "— keiner —"}
+              </option>
+              {plaene.map((x) => <option key={x.id} value={x.bild}>{x.name}</option>)}
+            </select>
+          </label>
+
           <label className="mdateiknopf">
-            {op.hintergrund ? "schaltplan wechseln" : "schaltplan einlegen"}
+            neuen plan einlegen
             <input type="file" accept="image/*"
               onChange={(e) => hintergrundWaehlen(e.target.files && e.target.files[0])} />
           </label>
@@ -1015,7 +1047,8 @@ function StickPlatte({ api, sag, rateDazu }) {
 // DIE DREI SCHRÄNKE — sigillen, raten, quellen
 // ============================================================
 function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
-                   quellen, setQuellen, operationen, bilder, hochladen }) {
+                   quellen, setQuellen, plaene, setPlaene,
+                   operationen, bilder, hochladen }) {
   const [suche, setSuche] = useState("");
   const [verweise, setVerweise] = useState({});   // id -> [operationsnamen]
   const uhren = useRef({});
@@ -1023,9 +1056,12 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
   // woran man merkt, dass sich an den operationen wirklich etwas geaendert hat
   const kennung = operationen.map((o) => o.id + "|" + o.intention).join("~");
 
-  const liste = art === "sigillen" ? sigillen : art === "raten" ? raten : quellen;
-  const setListe = art === "sigillen" ? setSigillen : art === "raten" ? setRaten : setQuellen;
+  const liste = art === "sigillen" ? sigillen : art === "raten" ? raten
+              : art === "hintergruende" ? plaene : quellen;
+  const setListe = art === "sigillen" ? setSigillen : art === "raten" ? setRaten
+              : art === "hintergruende" ? setPlaene : setQuellen;
   const tabelle = art;
+  const mitBild = art === "sigillen" || art === "hintergruende";
 
   // querverweise: wo ist das stueck schon im einsatz?
   useEffect(() => {
@@ -1034,7 +1070,15 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
       try {
         const spalte = art === "sigillen" ? "sigille_id" : art === "raten" ? "rate_id" : null;
         const gefunden = {};
-        if (spalte) {
+        if (art === "hintergruende") {
+          // hier haengt der verweis am bildpfad, nicht an einer id
+          plaene.forEach((x) => {
+            operationen.forEach((o) => {
+              if (o.hintergrund && o.hintergrund === x.bild)
+                (gefunden[x.id] = gefunden[x.id] || []).push(o.titel || o.intention || "ohne titel");
+            });
+          });
+        } else if (spalte) {
           const b = await api("GET",
             `/rest/v1/bauteile?select=operation_id,${spalte}&${spalte}=not.is.null`);
           (b || []).forEach((x) => {
@@ -1058,14 +1102,16 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     return () => { fort = true; };
     // nicht an [operationen] haengen — das array ist nach jedem puls neu,
     // obwohl sich an den namen nichts geaendert hat
-  }, [art, api, kennung]);
+  }, [art, api, kennung, plaene]);
 
   const anlegen = async () => {
     const neu = art === "raten"
       ? { id: neueId(), name: "neue rate", ziffern: "", beschreibung: "", herkunft: "" }
       : art === "sigillen"
         ? { id: neueId(), name: "neue sigille", beschreibung: "" }
-        : { id: neueId(), name: "neue quelle", notiz: "" };
+        : art === "hintergruende"
+          ? { id: neueId(), name: "neuer schaltplan", beschreibung: "" }
+          : { id: neueId(), name: "neue quelle", notiz: "" };
     setListe((l) => [neu, ...l]);
     try { await api("POST", `/rest/v1/${tabelle}`, neu); }
     catch (e) { sag(String(e.message)); }
@@ -1091,9 +1137,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     if (!datei) return;
     try {
       sag("bild wird hochgeladen …");
-      const pfad = await hochladen(datei, "sigillen");
+      const pfad = await hochladen(datei, art === "sigillen" ? "sigillen" : "schaltungen");
       aendern(id, { bild: pfad });
-      await api("PATCH", `/rest/v1/sigillen?id=eq.${id}`, { bild: pfad });
+      await api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, { bild: pfad });
       sag("");
     } catch (e) { sag(String(e.message)); }
   };
@@ -1146,9 +1192,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
           </div>
 
           <div className="mstueckleib">
-            {art === "sigillen" && (
+            {mitBild && (
               <>
-                <label className="mbildfach">
+                <label className={"mbildfach" + (art === "hintergruende" ? " breit" : "")}>
                   {x.bild && bilder[x.bild]
                     ? <img src={bilder[x.bild]} alt="" />
                     : <span>bild wählen</span>}
@@ -1156,7 +1202,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                     onChange={(e) => bildWaehlen(x.id, e.target.files && e.target.files[0])} />
                 </label>
                 <textarea className="mbeschreibung" value={x.beschreibung || ""} rows={4}
-                  placeholder="wofür ist sie gut?"
+                  placeholder={art === "hintergruende"
+                    ? "was ist das für eine schaltung, wofür taugt sie?"
+                    : "wofür ist sie gut?"}
                   onChange={(e) => aendern(x.id, { beschreibung: e.target.value })} />
               </>
             )}
@@ -1213,7 +1261,10 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
 
       {gefiltert.length === 0 && (
         <p className="mleer">
-          {suche ? "nichts gefunden" : "noch nichts drin — das + legt an"}
+          {suche ? "nichts gefunden"
+            : art === "hintergruende"
+              ? "noch kein schaltplan — das + legt einen an. was du in einer operation einlegst, landet auch hier."
+              : "noch nichts drin — das + legt an"}
         </p>
       )}
     </div>
@@ -1258,7 +1309,8 @@ function MaschinenStil() {
 
 /* ---- kopfzeile ---- */
 .mkopf{
-  position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:10px;
+  position:sticky; top:0; z-index:5; display:flex; align-items:center;
+  gap:8px; flex-wrap:wrap;
   padding:12px clamp(12px,2vw,26px);
   background:linear-gradient(rgba(7,10,9,.97), rgba(7,10,9,.86));
   border-bottom:1px solid rgba(184,115,51,.28);
@@ -1649,6 +1701,8 @@ function MaschinenStil() {
   font-size:10px; letter-spacing:.08em; color:var(--asche); text-align:center;
 }
 .mbildfach:hover{border-color:var(--kupfer); color:var(--kupfer2)}
+/* ein schaltplan ist breit, keine quadratische sigille */
+.mbildfach.breit{width:200px; height:130px}
 .mbildfach img{width:100%; height:100%; object-fit:contain}
 .mbildfach input{display:none}
 .mbeschreibung{
