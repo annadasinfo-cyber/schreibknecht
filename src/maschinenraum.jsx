@@ -87,27 +87,43 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   }, []);
 
   // ---------- bilder ----------
-  const holBilder = useCallback(async (pfade) => {
+  // Holt fuer jeden bildpfad eine zeitlich begrenzte adresse. Wenn das
+  // misslingt, bleibt sonst nur ein leeres feld stehen und man sucht den
+  // fehler bei sich — darum wird hier gesagt, woran es lag.
+  const holBilder = useCallback(async (pfade, laut) => {
     const fehlen = [...new Set(pfade.filter(Boolean))];
-    if (!fehlen.length) return;
+    if (!fehlen.length) return [];
+    const neu = {};
+    const schiefgegangen = [];
+
+    const einzeln = async (pfad) => {
+      try {
+        const e = await api("POST", `/storage/v1/object/sign/${EIMER}/${pfad}`,
+          { expiresIn: 60 * 60 * 8 });
+        if (e && e.signedURL) { neu[pfad] = URL_DB + "/storage/v1" + e.signedURL; return; }
+        schiefgegangen.push(pfad + ": keine adresse zurück");
+      } catch (err) {
+        schiefgegangen.push(pfad + ": " + String(err && err.message).slice(0, 90));
+      }
+    };
+
     try {
       const d = await api("POST", `/storage/v1/object/sign/${EIMER}`,
         { paths: fehlen, expiresIn: 60 * 60 * 8 });
-      const neu = {};
-      (d || []).forEach((e) => {
+      if (!Array.isArray(d)) throw new Error("unerwartete antwort");
+      for (const e of d) {
         if (e && e.signedURL && !e.error) neu[e.path] = URL_DB + "/storage/v1" + e.signedURL;
-      });
-      if (Object.keys(neu).length) setBilder((b) => ({ ...b, ...neu }));
-    } catch { /* einzeln versuchen */
-      for (const pfad of fehlen) {
-        try {
-          const e = await api("POST", `/storage/v1/object/sign/${EIMER}/${pfad}`,
-            { expiresIn: 60 * 60 * 8 });
-          if (e && e.signedURL) setBilder((b) => ({ ...b, [pfad]: URL_DB + "/storage/v1" + e.signedURL }));
-        } catch {}
+        else if (e && e.path) await einzeln(e.path);     // vielleicht klappt es allein
       }
+    } catch (err) {
+      for (const pfad of fehlen) await einzeln(pfad);
     }
-  }, [api, URL_DB]);
+
+    if (Object.keys(neu).length) setBilder((b) => ({ ...b, ...neu }));
+    if (schiefgegangen.length && laut)
+      sag("bild lässt sich nicht holen — " + schiefgegangen[0]);
+    return schiefgegangen;
+  }, [api, URL_DB, sag]);
 
   const hochladen = useCallback(async (datei, unterordner) => {
     const s = await zugang();
@@ -125,7 +141,10 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
       body: datei,
     });
     if (!r.ok) throw new Error((await r.text()).slice(0, 160) || "hochladen ging nicht");
-    await holBilder([pfad]);
+    // das bild ist oben — jetzt muss auch die adresse kommen, sonst bliebe
+    // ein leeres feld stehen, ohne dass jemand weiss warum
+    const schief = await holBilder([pfad], true);
+    if (schief && schief.length) throw new Error(schief[0]);
     return pfad;
   }, [zugang, URL_DB, KEY_DB, holBilder]);
 
