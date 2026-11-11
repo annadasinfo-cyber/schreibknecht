@@ -19,6 +19,50 @@ const EIMER = "maschinenraum";
 const neueId = () =>
   "m" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 
+// Ein handy-foto hat leicht zehn megabyte. Das dauert beim hochladen
+// ewig und bringt auf einem kaestchen von 74 pixeln nichts. Also erst
+// kleinrechnen — der schreibknecht macht das mit kartenbildern genauso.
+const GUETE = 0.82;
+
+function bildKleinrechnen(datei, kante) {
+  return new Promise((fertig) => {
+    try {
+      if (!/^image\//.test(datei.type || "")) return fertig(null);
+      const leser = new FileReader();
+      leser.onload = () => {
+        const bild = new Image();
+        bild.onload = () => {
+          const lang = Math.max(bild.width, bild.height);
+          const mal = lang > kante ? kante / lang : 1;
+          const b = Math.round(bild.width * mal), h = Math.round(bild.height * mal);
+          const tafel = document.createElement("canvas");
+          tafel.width = b; tafel.height = h;
+          const stift = tafel.getContext("2d");
+          stift.imageSmoothingQuality = "high";
+          stift.drawImage(bild, 0, 0, b, h);
+          const nimm = (art, dann) => tafel.toBlob(
+            (roh) => dann(roh && roh.type === art ? roh : null), art, GUETE);
+          nimm("image/webp", (webp) => {
+            if (webp && webp.size < datei.size) return fertig({ blob: webp, endung: "webp" });
+            nimm("image/jpeg", (jpeg) => {
+              if (jpeg && jpeg.size < datei.size) return fertig({ blob: jpeg, endung: "jpg" });
+              fertig(null);                 // war schon klein genug
+            });
+          });
+        };
+        bild.onerror = () => fertig(null);
+        bild.src = leser.result;
+      };
+      leser.onerror = () => fertig(null);
+      leser.readAsDataURL(datei);
+    } catch { fertig(null); }
+  });
+}
+
+// wie gross ein bild sein darf — ein schaltplan fuellt die ganze flaeche,
+// eine sigille sitzt auf einem kaestchen
+const KANTE = { schaltungen: 1800, sigillen: 1000, targets: 1000, bauteile: 1000 };
+
 const ARTEN = [
   { wert: "target",      name: "target",     zeichen: "◎" },
   { wert: "trend",       name: "trend",      zeichen: "➜" },
@@ -84,9 +128,12 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   // sonst holt jede tasteneingabe die ganze schaltung neu vom server.
   // Eine gute nachricht darf verschwinden, eine schlechte nicht —
   // sonst steht man da und weiss nicht, was passiert ist.
-  const sag = useCallback((t, schlimm) => {
-    setMeldung(t ? { text: t, schlimm: !!schlimm } : null);
-    if (t && !schlimm) setTimeout(() => setMeldung(null), 5000);
+  // "gut" verschwindet von selbst, "laeuft" bleibt bis zur naechsten
+  // meldung, "schlimm" bleibt, bis man es antippt.
+  const sag = useCallback((t, art) => {
+    if (!t) { setMeldung(null); return; }
+    setMeldung({ text: t, art: art || "gut" });
+    if (!art || art === "gut") setTimeout(() => setMeldung(null), 5000);
   }, []);
 
   // ---------- bilder ----------
@@ -124,7 +171,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
 
     if (Object.keys(neu).length) setBilder((b) => ({ ...b, ...neu }));
     if (schiefgegangen.length && laut)
-      sag("bild lässt sich nicht holen — " + schiefgegangen[0], true);
+      sag("bild lässt sich nicht holen — " + schiefgegangen[0], "schlimm");
     return schiefgegangen;
   }, [api, URL_DB, sag]);
 
@@ -132,28 +179,47 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   // wie weit es kam — statt vor einem leeren feld ohne auskunft.
   const hochladen = useCallback(async (datei, unterordner) => {
     if (!datei) throw new Error("gar keine datei angekommen");
-    sag(`1/4 datei da: ${datei.name} · ${Math.round(datei.size / 1024)} kB · ${datei.type || "ohne typ"}`);
+    const kB = (n) => Math.round(n / 1024).toLocaleString("de") + " kB";
+
+    sag(`1/4 ${datei.name} · ${kB(datei.size)} · wird verkleinert …`, "laeuft");
+    const klein = await bildKleinrechnen(datei, KANTE[unterordner] || 1000);
+    const inhalt = klein ? klein.blob : datei;
+    const endung = klein ? klein.endung : (datei.name.split(".").pop() || "png").toLowerCase();
 
     const s = await zugang();
     if (!s) throw new Error("nicht angemeldet");
-    const endung = (datei.name.split(".").pop() || "png").toLowerCase();
     const pfad = `${s.user.id}/${unterordner}/${neueId()}.${endung}`;
 
-    sag("2/4 wird hochgeladen …");
-    const r = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
-      method: "POST",
-      headers: {
-        Authorization: "Bearer " + s.access_token,
-        apikey: KEY_DB,
-        "Content-Type": datei.type || "application/octet-stream",
-        "x-upsert": "true",
-      },
-      body: datei,
-    });
+    sag(`2/4 ${kB(inhalt.size)}${klein ? " (aus " + kB(datei.size) + ")" : ""} wird hochgeladen …`,
+        "laeuft");
+
+    // Ohne zeitlimit haengt eine stockende leitung stumm, und man sitzt
+    // vor einer meldung, die sich nicht mehr ruehrt.
+    const abbruch = new AbortController();
+    const uhr = setTimeout(() => abbruch.abort(), 90000);
+    let r;
+    try {
+      r = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer " + s.access_token,
+          apikey: KEY_DB,
+          "Content-Type": inhalt.type || "application/octet-stream",
+          "x-upsert": "true",
+        },
+        body: inhalt,
+        signal: abbruch.signal,
+      });
+    } catch (e) {
+      throw new Error(abbruch.signal.aborted
+        ? "hochladen hat 90 sekunden nicht geantwortet — abgebrochen"
+        : "hochladen ging nicht: " + String(e && e.message));
+    } finally { clearTimeout(uhr); }
+
     if (!r.ok)
       throw new Error(`hochladen abgelehnt (${r.status}): ` + (await r.text()).slice(0, 140));
 
-    sag("3/4 liegt in der ablage, hole die adresse …");
+    sag("3/4 liegt in der ablage, hole die adresse …", "laeuft");
     const schief = await holBilder([pfad], true);
     if (schief && schief.length) throw new Error(schief[0]);
 
@@ -185,7 +251,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
         ...(zi || []).map((x) => x.bild),
       ]);
     } catch (e) {
-      sag("laden ging nicht: " + String(e.message), true);
+      sag("laden ging nicht: " + String(e.message), "schlimm");
     }
     setLaedt(false);
   }, [api, holBilder]);
@@ -224,7 +290,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
       await api("POST", "/rest/v1/operationen", neu);
       setOperationen((l) => [neu, ...l]);
       setOffen(neu.id);
-    } catch (e) { sag(String(e.message), true); }
+    } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   // Text wird gebremst weggeschrieben — sonst eine anfrage je buchstabe.
@@ -235,7 +301,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   const operationAendern = (id, was) => {
     setOperationen((l) => l.map((o) => (o.id === id ? { ...o, ...was } : o)));
     const schreiben = (stoff) => api("PATCH", `/rest/v1/operationen?id=eq.${id}`,
-      { ...stoff, zuletzt: new Date().toISOString() }).catch((e) => sag(String(e.message), true));
+      { ...stoff, zuletzt: new Date().toISOString() }).catch((e) => sag(String(e.message), "schlimm"));
 
     const nurText = Object.keys(was).every(
       (k) => k === "intention" || k === "target" || k === "titel");
@@ -272,7 +338,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
     setOperationen((l) => l.filter((x) => x.id !== id));
     if (offen === id) setOffen(null);
     try { await api("DELETE", `/rest/v1/operationen?id=eq.${id}`); }
-    catch (e) { sag(String(e.message), true); }
+    catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   // Nachsehen, ob die datenbank alles hat, was dieser raum braucht.
@@ -350,10 +416,9 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
       </div>
 
       {meldung && (
-        <div className={"mmeldung" + (meldung.schlimm ? " schlimm" : "")}
-          onClick={() => setMeldung(null)}>
+        <div className={"mmeldung " + meldung.art} onClick={() => setMeldung(null)}>
           {meldung.text}
-          {meldung.schlimm && <small>antippen zum schliessen</small>}
+          {meldung.art === "schlimm" && <small>antippen zum schliessen</small>}
         </div>
       )}
 
@@ -540,7 +605,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         setMeine((q || []).map((x) => x.quelle_id));
         holBilder([...(b || []).map((x) => x.bild), op.hintergrund]);
         // auch die bilder, die ueber sigille oder target haengen
-      } catch (e) { sag(String(e.message), true); }
+      } catch (e) { sag(String(e.message), "schlimm"); }
     })();
     return () => { fort = true; };
   }, [op.id, api, sag, holBilder]);
@@ -556,13 +621,13 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     setBauteile((l) => [...l, neu]);
     setGewaehlt(neu.id);
     try { await api("POST", "/rest/v1/bauteile", neu); }
-    catch (e) { sag(String(e.message), true); }
+    catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   const bauteilAendern = (id, was, sofort) => {
     setBauteile((l) => l.map((b) => (b.id === id ? { ...b, ...was } : b)));
     const schreiben = () => api("PATCH", `/rest/v1/bauteile?id=eq.${id}`, was)
-      .catch((e) => sag(String(e.message), true));
+      .catch((e) => sag(String(e.message), "schlimm"));
     if (sofort) { schreiben(); return; }
     clearTimeout(uhren.current[id]);
     uhren.current[id] = setTimeout(schreiben, 800);
@@ -588,7 +653,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
       if (weg) for (const b of rest) {
         if ((b.nummer || 0) > (weg.nummer || 0)) bauteilAendern(b.id, { nummer: b.nummer - 1 }, true);
       }
-    } catch (e) { sag(String(e.message), true); }
+    } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   // ---------- ziehen auf dem schaltplan ----------
@@ -659,7 +724,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     const e = { id: neueId(), operation_id: op.id, art, text, wann: new Date().toISOString() };
     setEintraege((l) => [e, ...l]);
     try { await api("POST", "/rest/v1/logbuch", e); }
-    catch (err) { sag(String(err.message), true); }
+    catch (err) { sag(String(err.message), "schlimm"); }
   };
 
   const eintragWeg = async (id) => {
@@ -676,7 +741,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         `/rest/v1/operation_quellen?operation_id=eq.${op.id}&quelle_id=eq.${qid}`);
       else await api("POST", "/rest/v1/operation_quellen",
         { operation_id: op.id, quelle_id: qid });
-    } catch (e) { sag(String(e.message), true); }
+    } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   // ---------- hintergrund ----------
@@ -697,7 +762,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
       setForm(null);
       aendern({ hintergrund: pfad });
       sag("liegt jetzt auch im hintergrund-schrank — dort kannst du ihn benennen und beschreiben");
-    } catch (e) { sag(String(e.message), true); }
+    } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   // Ein kaestchen zeigt sein eigenes bild — und wenn es keines hat, das
@@ -956,7 +1021,7 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hoc
     try {
       const pfad = await hochladen(datei, "bauteile");
       aendern(b.id, { bild: pfad, sigille_id: null }, true);
-    } catch (e) { sag(String(e.message), true); }
+    } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   return (
@@ -1144,7 +1209,7 @@ function StickPlatte({ api, sag, rateDazu }) {
       rateDazu(neu);                      // sofort in die liste, nicht erst nach neuladen
       sag("rate gespeichert: " + neu.name + " — steht jetzt im raten-schrank");
       setName(""); setGehalten(null);
-    } catch (e) { sag(String(e.message), true); }
+    } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   const zeigt = gehalten || rate;
@@ -1272,13 +1337,13 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
             : { id: neueId(), name: "neue quelle", notiz: "" };
     setListe((l) => [neu, ...l]);
     try { await api("POST", `/rest/v1/${tabelle}`, neu); }
-    catch (e) { sag(String(e.message), true); }
+    catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   const aendern = (id, was, sofort) => {
     setListe((l) => l.map((x) => (x.id === id ? { ...x, ...was } : x)));
     const schreiben = () => api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, was)
-      .catch((e) => sag(String(e.message), true));
+      .catch((e) => sag(String(e.message), "schlimm"));
     clearTimeout(uhren.current[id]);
     if (sofort) { schreiben(); return; }
     uhren.current[id] = setTimeout(schreiben, 700);
@@ -1289,7 +1354,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     if (!confirm(`„${(x && x.name) || ""}" löschen?`)) return;
     setListe((l) => l.filter((e) => e.id !== id));
     try { await api("DELETE", `/rest/v1/${tabelle}?id=eq.${id}`); }
-    catch (e) { sag(String(e.message), true); }
+    catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   const bildWaehlen = async (id, datei) => {
@@ -1299,13 +1364,13 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
         art === "sigillen" ? "sigillen" : art === "targets" ? "targets" : "schaltungen");
       setKaputt((k) => { const n = { ...k }; delete n[pfad]; return n; });
       aendern(id, { bild: pfad }, true);    // sofort schreiben, nicht erst in 700 ms
-    } catch (e) { sag(String(e.message), true); }
+    } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   // drucken: ein sauberes blatt zum auflegen
   const drucken = (x) => {
     const w = window.open("", "_blank", "width=700,height=900");
-    if (!w) { sag("der browser hat das fenster blockiert", true); return; }
+    if (!w) { sag("der browser hat das fenster blockiert", "schlimm"); return; }
     const bild = x.bild && bilder[x.bild] ? `<img src="${bilder[x.bild]}">` : "";
     const ziffern = x.ziffern ? `<div class="z">${x.ziffern}</div>` : "";
     w.document.write(`<!doctype html><html lang="de"><head><meta charset="utf-8">
@@ -1525,6 +1590,10 @@ function MaschinenStil() {
   background:rgba(196,167,71,.08); border:1px solid rgba(196,167,71,.3);
 }
 /* eine schlechte nachricht verschwindet nicht von selbst */
+.mmeldung.laeuft{
+  color:var(--span2); background:rgba(74,124,111,.1);
+  border-color:rgba(111,174,156,.45);
+}
 .mmeldung.schlimm{
   color:#f0b0a4; background:rgba(217,128,112,.1);
   border-color:rgba(217,128,112,.5); cursor:pointer;
