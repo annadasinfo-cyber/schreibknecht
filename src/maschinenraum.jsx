@@ -219,10 +219,18 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
     // — und das tut es bei jeder meldung — kann safari den verweis
     // fallenlassen, und der upload scheitert mit "Load failed".
     let roh;
+    sag(`${name} wird gelesen …`, "laeuft");
     try {
-      roh = new Blob([await datei.arrayBuffer()], { type: typ });
+      // auch das lesen bekommt eine uhr: gibt der browser die datei nicht
+      // her (z.b. weil sie nur in der iCloud liegt), haengt es sonst stumm
+      const puffer = await Promise.race([
+        datei.arrayBuffer(),
+        new Promise((_, nein) => setTimeout(() => nein(new Error("keine antwort nach 8 sekunden")), 8000)),
+      ]);
+      roh = new Blob([puffer], { type: typ });
     } catch (e) {
-      throw new Error("die datei liess sich nicht lesen: " + String(e && e.message));
+      throw new Error("safari gibt die datei „" + name + "\" nicht her (" + String(e && e.message)
+        + "). liegt sie vielleicht nur in der iCloud? leg sie einmal auf den schreibtisch und nimm sie von dort.");
     }
 
     sag(`1/4 ${name} · ${kB(roh.size)} · wird vorbereitet …`, "laeuft");
