@@ -72,6 +72,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   const [raten, setRaten] = useState([]);
   const [quellen, setQuellen] = useState([]);
   const [plaene, setPlaene] = useState([]);       // schaltplaene zum wiederverwenden
+  const [ziele, setZiele] = useState([]);         // targets: wer oder was, mit zeugen-bild
   const [offen, setOffen] = useState(null);       // id der offenen operation
   const [schrank, setSchrank] = useState(null);   // "sigillen" | "raten" | "quellen"
   const [bilder, setBilder] = useState({});       // pfad -> signierte adresse
@@ -131,22 +132,25 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
   // ---------- laden ----------
   const laden = useCallback(async () => {
     try {
-      const [op, si, ra, qu, pl] = await Promise.all([
+      const [op, si, ra, qu, pl, zi] = await Promise.all([
         api("GET", "/rest/v1/operationen?select=*&order=zuletzt.desc"),
         api("GET", "/rest/v1/sigillen?select=*&order=name.asc"),
         api("GET", "/rest/v1/raten?select=*&order=name.asc"),
         api("GET", "/rest/v1/quellen?select=*&order=name.asc"),
         api("GET", "/rest/v1/hintergruende?select=*&order=name.asc"),
+        api("GET", "/rest/v1/targets?select=*&order=name.asc"),
       ]);
       setOperationen(op || []);
       setSigillen(si || []);
       setRaten(ra || []);
       setQuellen(qu || []);
       setPlaene(pl || []);
+      setZiele(zi || []);
       holBilder([
         ...(op || []).map((o) => o.hintergrund),
         ...(si || []).map((s) => s.bild),
         ...(pl || []).map((x) => x.bild),
+        ...(zi || []).map((x) => x.bild),
       ]);
     } catch (e) {
       sag("laden ging nicht: " + String(e.message));
@@ -270,6 +274,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
             <button className="mbtn" onClick={() => setSchrank("raten")}>raten</button>
             <button className="mbtn" onClick={() => setSchrank("quellen")}>quellen</button>
             <button className="mbtn" onClick={() => setSchrank("hintergruende")}>hintergründe</button>
+            <button className="mbtn" onClick={() => setSchrank("targets")}>targets</button>
           </>
         )}
       </div>
@@ -285,6 +290,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
           raten={raten} setRaten={setRaten}
           quellen={quellen} setQuellen={setQuellen}
           plaene={plaene} setPlaene={setPlaene}
+          ziele={ziele} setZiele={setZiele}
           operationen={operationen}
           bilder={bilder} hochladen={hochladen}
         />
@@ -301,7 +307,7 @@ export default function Maschinenraum({ api, zugang, URL_DB, KEY_DB, zurueck }) 
         <OperationsSeite
           op={dieOffene} api={api} sag={sag} tick={tick}
           aendern={(was) => operationAendern(dieOffene.id, was)}
-          sigillen={sigillen} raten={raten} quellen={quellen} plaene={plaene}
+          sigillen={sigillen} raten={raten} quellen={quellen} plaene={plaene} ziele={ziele}
           bilder={bilder} hochladen={hochladen} holBilder={holBilder}
           rateDazu={(r) => setRaten((l) => [...l, r].sort(
             (a, b) => a.name.localeCompare(b.name, "de")))}
@@ -407,7 +413,7 @@ function Led({ an, takt, gestartet, gesund }) {
 // ============================================================
 // EINE OPERATION
 // ============================================================
-function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen, plaene,
+function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen, plaene, ziele,
                            bilder, hochladen, holBilder, rateDazu, planDazu }) {
   const [bauteile, setBauteile] = useState([]);
   const [eintraege, setEintraege] = useState([]);
@@ -435,6 +441,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         setEintraege(l || []);
         setMeine((q || []).map((x) => x.quelle_id));
         holBilder([...(b || []).map((x) => x.bild), op.hintergrund]);
+        // auch die bilder, die ueber sigille oder target haengen
       } catch (e) { sag(String(e.message)); }
     })();
     return () => { fort = true; };
@@ -596,6 +603,18 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     } catch (e) { sag(String(e.message)); }
   };
 
+  // Ein kaestchen zeigt sein eigenes bild — und wenn es keines hat, das
+  // der verknuepften sigille oder des targets. Sonst muesste man jedes
+  // bild zweimal einlegen.
+  const bauteilBild = (b) => {
+    if (b.bild) return b.bild;
+    const z = b.target_id && ziele.find((x) => x.id === b.target_id);
+    if (z && z.bild) return z.bild;
+    const g = b.sigille_id && sigillen.find((x) => x.id === b.sigille_id);
+    if (g && g.bild) return g.bild;
+    return null;
+  };
+
   const aktiv = amZug(op, bauteile);
   const puls = pulsJetzt(op);
   const gesund = lebt(op);
@@ -617,6 +636,13 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
           <textarea className="mfeldgross ziel" value={op.target} rows={2}
             placeholder="… wer oder was"
             onChange={(e) => aendern({ target: e.target.value })} />
+          {ziele.length > 0 && (
+            <select className="mausschrank" value=""
+              onChange={(e) => { if (e.target.value) aendern({ target: e.target.value }); }}>
+              <option value="">aus dem target-schrank …</option>
+              {ziele.map((x) => <option key={x.id} value={x.name}>{x.name}</option>)}
+            </select>
+          )}
         </label>
       </div>
 
@@ -669,11 +695,14 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
               <span className="martkreis">
                 {(ARTEN.find((a) => a.wert === b.art) || ARTEN[2]).zeichen}
               </span>
-              {b.bild && bilder[b.bild]
-                ? <img src={bilder[b.bild]} alt="" draggable={false} />
-                : <span className="mzeichen">
-                    {(ARTEN.find((a) => a.wert === b.art) || ARTEN[2]).zeichen}
-                  </span>}
+              {(() => {
+                const pfad = bauteilBild(b);
+                return pfad && bilder[pfad]
+                  ? <img src={bilder[pfad]} alt="" draggable={false} />
+                  : <span className="mzeichen">
+                      {(ARTEN.find((a) => a.wert === b.art) || ARTEN[2]).zeichen}
+                    </span>;
+              })()}
             </div>
           ))}
         </div>
@@ -774,7 +803,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         <BauteilBlatt
           b={dasBauteil} aendern={bauteilAendern} weg={bauteilWeg}
           zu={() => setGewaehlt(null)} sigillen={sigillen} raten={raten}
-          bilder={bilder} hochladen={hochladen} sag={sag}
+          bilder={bilder} hochladen={hochladen} sag={sag} ziele={ziele}
           anzahl={bauteile.length} nummerSetzen={nummerSetzen}
         />
       )}
@@ -823,7 +852,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
 // ============================================================
 // DAS BLATT FÜR EIN BAUTEIL
 // ============================================================
-function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, bilder, hochladen, sag,
+function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hochladen, sag,
                         anzahl, nummerSetzen }) {
   const bildWaehlen = async (datei) => {
     if (!datei) return;
@@ -878,6 +907,20 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, bilder, hochladen,
             {raten.map((r) => <option key={r.id} value={r.id}>{r.name} · {r.ziffern}</option>)}
           </select>
         </label>
+
+        <label className="mfeldchen">
+          <span>target</span>
+          <select value={b.target_id || ""}
+            onChange={(e) => {
+              const id = e.target.value || null;
+              const z = id && ziele.find((x) => x.id === id);
+              aendern(b.id, z && !b.bezeichnung
+                ? { target_id: id, bezeichnung: z.name } : { target_id: id }, true);
+            }}>
+            <option value="">—</option>
+            {ziele.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+          </select>
+        </label>
       </div>
 
       <div className="mblattreihe">
@@ -886,9 +929,18 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, bilder, hochladen,
           <input type="file" accept="image/*"
             onChange={(e) => bildWaehlen(e.target.files && e.target.files[0])} />
         </label>
-        {b.bild && bilder[b.bild] && (
-          <img className="mprobe" src={bilder[b.bild]} alt="" />
-        )}
+        {(() => {
+          const z = b.target_id && ziele.find((x) => x.id === b.target_id);
+          const g = b.sigille_id && sigillen.find((x) => x.id === b.sigille_id);
+          const pfad = b.bild || (z && z.bild) || (g && g.bild);
+          if (!pfad || !bilder[pfad]) return null;
+          return (
+            <span className="mprobefeld">
+              <img className="mprobe" src={bilder[pfad]} alt="" />
+              {!b.bild && <small>aus {z && z.bild ? "dem target" : "der sigille"}</small>}
+            </span>
+          );
+        })()}
         <span className="mfuell" />
         <button className="mbtn weg" onClick={() => weg(b.id)}>bauteil entfernen</button>
       </div>
@@ -1047,28 +1099,29 @@ function StickPlatte({ api, sag, rateDazu }) {
 // DIE DREI SCHRÄNKE — sigillen, raten, quellen
 // ============================================================
 function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
-                   quellen, setQuellen, plaene, setPlaene,
+                   quellen, setQuellen, plaene, setPlaene, ziele, setZiele,
                    operationen, bilder, hochladen }) {
   const [suche, setSuche] = useState("");
   const [verweise, setVerweise] = useState({});   // id -> [operationsnamen]
   const uhren = useRef({});
 
   // woran man merkt, dass sich an den operationen wirklich etwas geaendert hat
-  const kennung = operationen.map((o) => o.id + "|" + o.intention).join("~");
+  const kennung = operationen.map((o) => o.id + "|" + o.titel + "|" + o.target).join("~");
 
   const liste = art === "sigillen" ? sigillen : art === "raten" ? raten
-              : art === "hintergruende" ? plaene : quellen;
+              : art === "hintergruende" ? plaene : art === "targets" ? ziele : quellen;
   const setListe = art === "sigillen" ? setSigillen : art === "raten" ? setRaten
-              : art === "hintergruende" ? setPlaene : setQuellen;
+              : art === "hintergruende" ? setPlaene : art === "targets" ? setZiele : setQuellen;
   const tabelle = art;
-  const mitBild = art === "sigillen" || art === "hintergruende";
+  const mitBild = art === "sigillen" || art === "hintergruende" || art === "targets";
 
   // querverweise: wo ist das stueck schon im einsatz?
   useEffect(() => {
     let fort = false;
     (async () => {
       try {
-        const spalte = art === "sigillen" ? "sigille_id" : art === "raten" ? "rate_id" : null;
+        const spalte = art === "sigillen" ? "sigille_id" : art === "raten" ? "rate_id"
+                     : art === "targets" ? "target_id" : null;
         const gefunden = {};
         if (art === "hintergruende") {
           // hier haengt der verweis am bildpfad, nicht an einer id
@@ -1079,6 +1132,13 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
             });
           });
         } else if (spalte) {
+          if (art === "targets") {
+            // ein target kann auch schlicht im satz oben stehen
+            ziele.forEach((x) => operationen.forEach((o) => {
+              if (o.target && o.target.trim() === x.name.trim())
+                (gefunden[x.id] = gefunden[x.id] || []).push(o.titel || o.intention || "ohne titel");
+            }));
+          }
           const b = await api("GET",
             `/rest/v1/bauteile?select=operation_id,${spalte}&${spalte}=not.is.null`);
           (b || []).forEach((x) => {
@@ -1102,7 +1162,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     return () => { fort = true; };
     // nicht an [operationen] haengen — das array ist nach jedem puls neu,
     // obwohl sich an den namen nichts geaendert hat
-  }, [art, api, kennung, plaene]);
+  }, [art, api, kennung, plaene, ziele]);
 
   const anlegen = async () => {
     const neu = art === "raten"
@@ -1111,7 +1171,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
         ? { id: neueId(), name: "neue sigille", beschreibung: "" }
         : art === "hintergruende"
           ? { id: neueId(), name: "neuer schaltplan", beschreibung: "" }
-          : { id: neueId(), name: "neue quelle", notiz: "" };
+          : art === "targets"
+            ? { id: neueId(), name: "neues target", beschreibung: "" }
+            : { id: neueId(), name: "neue quelle", notiz: "" };
     setListe((l) => [neu, ...l]);
     try { await api("POST", `/rest/v1/${tabelle}`, neu); }
     catch (e) { sag(String(e.message)); }
@@ -1137,7 +1199,8 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     if (!datei) return;
     try {
       sag("bild wird hochgeladen …");
-      const pfad = await hochladen(datei, art === "sigillen" ? "sigillen" : "schaltungen");
+      const pfad = await hochladen(datei,
+        art === "sigillen" ? "sigillen" : art === "targets" ? "targets" : "schaltungen");
       aendern(id, { bild: pfad });
       await api("PATCH", `/rest/v1/${tabelle}?id=eq.${id}`, { bild: pfad });
       sag("");
@@ -1204,7 +1267,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                 <textarea className="mbeschreibung" value={x.beschreibung || ""} rows={4}
                   placeholder={art === "hintergruende"
                     ? "was ist das für eine schaltung, wofür taugt sie?"
-                    : "wofür ist sie gut?"}
+                    : art === "targets"
+                      ? "wer oder was ist das, was ist zu beachten?"
+                      : "wofür ist sie gut?"}
                   onChange={(e) => aendern(x.id, { beschreibung: e.target.value })} />
               </>
             )}
@@ -1264,7 +1329,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
           {suche ? "nichts gefunden"
             : art === "hintergruende"
               ? "noch kein schaltplan — das + legt einen an. was du in einer operation einlegst, landet auch hier."
-              : "noch nichts drin — das + legt an"}
+              : art === "targets"
+                ? "noch kein target — das + legt eines an: name, zeugen-bild, beschreibung."
+                : "noch nichts drin — das + legt an"}
         </p>
       )}
     </div>
@@ -1467,6 +1534,14 @@ function MaschinenStil() {
   background:rgba(0,0,0,.3); border:1px solid rgba(196,167,71,.25);
 }
 .mfeldgross.ziel{color:#cfe8df; border-color:rgba(74,124,111,.3)}
+/* die kleine wahl unter dem ziel-feld */
+.mausschrank{
+  font-family:inherit; font-size:10.5px; letter-spacing:.06em; padding:4px 7px;
+  border-radius:3px; color:var(--asche); background:rgba(0,0,0,.25);
+  border:1px solid rgba(138,143,135,.2); align-self:flex-start; max-width:100%;
+}
+.mausschrank:hover{border-color:rgba(74,124,111,.5); color:var(--span2)}
+.mausschrank option{background:#0d1310; color:var(--span2)}
 .mfeldgross:focus{outline:none; border-color:var(--messing)}
 
 /* ---- maschinenteil ---- */
@@ -1623,6 +1698,8 @@ function MaschinenStil() {
 }
 .mbezfeld:focus{outline:none; border-color:var(--messing)}
 .mblattreihe{display:flex; flex-wrap:wrap; gap:14px; align-items:flex-end; margin-bottom:10px}
+.mprobefeld{display:flex; flex-direction:column; gap:3px; align-items:center}
+.mprobefeld small{font-size:9px; opacity:.6; letter-spacing:.05em}
 .mprobe{width:58px; height:58px; object-fit:contain; border-radius:3px; border:1px solid rgba(184,115,51,.3)}
 
 /* ---- stick-platte ---- */
