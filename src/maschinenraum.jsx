@@ -523,6 +523,60 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
     setBericht(zeilen);
   };
 
+  // Aus den angehakten treffern einer auslesung wird eine fertige schaltung:
+  // das ziel als erstes kaestchen, jede rate und sigille als verstaerker im
+  // kreis, quellen angehaengt, ein hintergrund als schaltplan. Die absicht
+  // bleibt leer — die formuliert sie selbst, und erst dann laesst sich
+  // anschalten.
+  const operationAusLesung = async (a, gewaehlt) => {
+    const opId = neueId();
+    const jetzt = new Date().toISOString();
+    const finde = (liste, e) => liste.find((x) => x.id === e.id) || liste.find((x) => x.name === e.name);
+    const plan = gewaehlt.filter((e) => e.art === "hintergruende").map((e) => finde(plaene, e)).find((x) => x && x.bild);
+    const op = {
+      id: opId, titel: (a.frage || a.target || "aus einer auslesung").slice(0, 60),
+      intention: "", target: a.target || "", takt: 60, aktiv: false, zuletzt: jetzt,
+      ...(plan ? { hintergrund: plan.bild } : {}),
+    };
+    try {
+      await api("POST", "/rest/v1/operationen", op);
+
+      const ziel = ziele.find((x) => x.name.trim().toLowerCase() === (a.target || "").trim().toLowerCase());
+      const teile = [{ bezeichnung: a.target || "ziel", art: "target", target_id: ziel ? ziel.id : null }];
+      gewaehlt.forEach((e) => {
+        if (e.art === "raten") {
+          const r = finde(raten, e);
+          teile.push({ bezeichnung: e.name, art: "verstaerker", rate_id: r ? r.id : null });
+        } else if (e.art === "sigillen") {
+          const g = finde(sigillen, e);
+          teile.push({ bezeichnung: e.name, art: "verstaerker", sigille_id: g ? g.id : null });
+        }
+      });
+      for (let i = 0; i < teile.length; i++) {
+        const w = Math.PI + (i / teile.length) * 2 * Math.PI;      // im kreis, das ziel links
+        await api("POST", "/rest/v1/bauteile", {
+          id: neueId(), operation_id: opId, nummer: i + 1,
+          x: 50 + 34 * Math.cos(w), y: 50 + 32 * Math.sin(w), ...teile[i],
+        });
+      }
+      for (const e of gewaehlt.filter((x) => x.art === "quellen")) {
+        const q = finde(quellen, e);
+        if (q) await api("POST", "/rest/v1/operation_quellen", { operation_id: opId, quelle_id: q.id });
+      }
+      await api("POST", "/rest/v1/logbuch", {
+        id: neueId(), operation_id: opId, art: "notiz", wann: jetzt,
+        text: "aus der auslesung vom " + new Date(a.wann).toLocaleString("de") + ": "
+          + (a.frage ? "frage „" + a.frage + "\" — " : "")
+          + gewaehlt.map((e) => e.name + " (" + (e.wert > 0 ? "+" : "") + e.wert + ")").join(", "),
+      });
+
+      setOperationen((l) => [op, ...l]);
+      setLiest(false);
+      setOffen(opId);
+      sag("operation angelegt — formuliere oben deine absicht, dann anschalten");
+    } catch (e) { sag(String(e.message), "schlimm"); }
+  };
+
   const dieOffene = (!schrank && !liest && operationen.find((o) => o.id === offen)) || null;
 
   // ---------- anzeige ----------
@@ -571,7 +625,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       {laedt && <p className="mleer">wird geholt …</p>}
 
       {!laedt && liest && (
-        <Auslesen api={api} sag={sag}
+        <Auslesen api={api} sag={sag} zurOperation={operationAusLesung}
           alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele }} />
       )}
 
@@ -1433,7 +1487,9 @@ const mische = (a, b, i) => {
 };
 const LESBAR = ["raten", "sigillen", "quellen", "hintergruende"];
 
-function Auslesen({ api, sag, alle }) {
+function Auslesen({ api, sag, alle, zurOperation }) {
+  const [haken, setHaken] = useState({});         // welche treffer in die operation sollen
+  const [baut, setBaut] = useState(false);
   const [target, setTarget] = useState("");
   const [frage, setFrage] = useState("");
   const [woraus, setWoraus] = useState({ raten: true, sigillen: true, quellen: false, hintergruende: false });
@@ -1516,7 +1572,7 @@ function Auslesen({ api, sag, alle }) {
     const neu = {
       id: neueId(), target: target.trim(), frage: frage.trim(),
       woraus: LESBAR.filter((a) => woraus[a]).map(schrankName).join(", ") + (tag.trim() ? " · " + wunschTag : ""),
-      treffer: oben.map((e) => ({ art: e.art, name: e.name, ziffern: e.ziffern, text: e.text,
+      treffer: oben.map((e) => ({ id: e.id, art: e.art, name: e.name, ziffern: e.ziffern, text: e.text,
                                   wert: Math.round(e.wert * 100) / 100 })),
       dauer_ms: Math.round(t1 - z.t0), wann: new Date().toISOString(),
     };
@@ -1552,6 +1608,19 @@ function Auslesen({ api, sag, alle }) {
   const weg = async (id) => {
     setFrueher((l) => l.filter((x) => x.id !== id));
     try { await api("DELETE", `/rest/v1/auslesungen?id=eq.${id}`); } catch (e) { sag(String(e.message), "schlimm"); }
+  };
+
+  // bei jeder neuen auslesung: die drei staerksten sind vorgewaehlt
+  useEffect(() => {
+    if (ergebnis) setHaken({ 0: true, 1: true, 2: true });
+  }, [ergebnis && ergebnis.id]);
+
+  const umwandeln = async () => {
+    const gewaehlt = ergebnis.treffer.filter((_, i) => haken[i]);
+    if (!gewaehlt.length) { sag("hake mindestens einen treffer an", "schlimm"); return; }
+    setBaut(true);
+    await zurOperation(ergebnis, gewaehlt);
+    setBaut(false);
   };
 
   const zeig = ergebnis;
@@ -1608,6 +1677,10 @@ function Auslesen({ api, sag, alle }) {
         <div className="mlog">
           <div className="mberichtkopf">
             <span className="mwandtitel">was sich gezeigt hat</span>
+            <span className="mfuell" />
+            <button className="mbtn lesen" disabled={baut} onClick={umwandeln}>
+              {baut ? "wird gebaut …" : "angehakte in eine operation"}
+            </button>
             <button className="mbtn" onClick={() => drucken(zeig)}>protokoll drucken</button>
           </div>
           <p className="mhinweis">
@@ -1615,7 +1688,10 @@ function Auslesen({ api, sag, alle }) {
             {zeig.woraus ? " · " + zeig.woraus : ""}
           </p>
           {zeig.treffer.map((e, i) => (
-            <div key={i} className="mtreffer">
+            <div key={i} className={"mtreffer" + (haken[i] ? " gewaehlt" : "")}>
+              <input type="checkbox" className="mtrefferhaken" checked={!!haken[i]}
+                onChange={() => setHaken((h) => ({ ...h, [i]: !h[i] }))}
+                title="in die operation übernehmen" />
               <span className="mnummer gross">{i + 1}</span>
               <div className="mtrefferleib">
                 <div className="mtrefferkopf">
@@ -2539,6 +2615,9 @@ function MaschinenStil() {
   border-bottom:1px solid rgba(138,143,135,.1);
 }
 .mtreffer:last-child{border-bottom:0}
+.mtreffer.gewaehlt{background:rgba(184,115,51,.06)}
+.mtrefferhaken{accent-color:var(--kupfer); width:16px; height:16px; margin-top:6px; flex:0 0 auto}
+.mberichtkopf{gap:8px; flex-wrap:wrap}
 .mtrefferleib{flex:1; min-width:0}
 .mtrefferkopf{display:flex; flex-wrap:wrap; gap:4px 12px; align-items:baseline}
 .mtrefferkopf b{font-family:'IM Fell English SC', Georgia, serif; font-size:16px; font-weight:400; color:var(--messing)}
