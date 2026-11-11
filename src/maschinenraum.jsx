@@ -209,6 +209,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [plaene, setPlaene] = useState([]);       // schaltplaene zum wiederverwenden
   const [ziele, setZiele] = useState([]);         // targets: wer oder was, mit zeugen-bild
   const [offen, setOffen] = useState(null);       // id der offenen operation
+  const [liest, setLiest] = useState(false);      // die auslese-seite ist offen
   const [tagMit, setTagMit] = useState("");       // hashtag, der in den naechsten schrank mitgeht
   const [schrank, setSchrank] = useState(null);   // "sigillen" | "raten" | "quellen"
   const [bilder, setBilder] = useState({});       // pfad -> signierte adresse
@@ -478,7 +479,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
     };
 
     for (const tab of ["operationen", "bauteile", "logbuch", "operation_quellen",
-                       "sigillen", "raten", "quellen", "hintergruende", "targets"])
+                       "sigillen", "raten", "quellen", "hintergruende", "targets", "auslesungen"])
       await pruefe("tabelle " + tab, () => api("GET", `/rest/v1/${tab}?select=*&limit=1`));
 
     await pruefe("spalte operationen.titel",
@@ -522,7 +523,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
     setBericht(zeilen);
   };
 
-  const dieOffene = (!schrank && operationen.find((o) => o.id === offen)) || null;
+  const dieOffene = (!schrank && !liest && operationen.find((o) => o.id === offen)) || null;
 
   // ---------- anzeige ----------
   return (
@@ -531,10 +532,11 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
 
       <div className="mkopf">
         <button className="mbtn" onClick={() => {
-          if (schrank) setSchrank(null);     // zurueck in die offene operation
+          if (liest) setLiest(false);
+          else if (schrank) setSchrank(null);     // zurueck in die offene operation
           else if (offen) setOffen(null);
           else zurueck();
-        }}>‹ {schrank ? (offen ? "operation" : "maschinenraum")
+        }}>‹ {liest ? "maschinenraum" : schrank ? (offen ? "operation" : "maschinenraum")
               : offen ? "operationen" : "zurück"}</button>
 
         {dieOffene
@@ -542,13 +544,14 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
               placeholder="operation" spellCheck={false}
               onChange={(e) => operationAendern(dieOffene.id, { titel: e.target.value })} />
           : <span className="mtitel">
-              {schrank === "hintergruende" ? "hintergründe" : schrank || "maschinenraum"}
+              {liest ? "auslesen" : schrank === "hintergruende" ? "hintergründe" : schrank || "maschinenraum"}
             </span>}
 
         <span className="mfuell" />
 
-        {!schrank && (
+        {!schrank && !liest && (
           <>
+            {!offen && <button className="mbtn lesen" onClick={() => setLiest(true)}>auslesen</button>}
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("sigillen"); }}>sigillen</button>
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("raten"); }}>raten</button>
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("quellen"); }}>quellen</button>
@@ -567,7 +570,12 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
 
       {laedt && <p className="mleer">wird geholt …</p>}
 
-      {!laedt && schrank && (
+      {!laedt && liest && (
+        <Auslesen api={api} sag={sag}
+          alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele }} />
+      )}
+
+      {!laedt && !liest && schrank && (
         <Schrank key={schrank + "|" + tagMit}
           art={schrank} api={api} sag={sag} vorgabe={tagMit}
           wechseln={(a, tag) => { setTagMit(tag); setSchrank(a); }}
@@ -582,7 +590,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
         />
       )}
 
-      {!laedt && !schrank && !dieOffene && bericht && (
+      {!laedt && !schrank && !liest && !dieOffene && bericht && (
         <div className="mbericht">
           <div className="mberichtkopf">
             <span className="mwandtitel">was die datenbank hat</span>
@@ -599,7 +607,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
         </div>
       )}
 
-      {!laedt && !schrank && !dieOffene && (
+      {!laedt && !schrank && !liest && !dieOffene && (
         <Uebersicht
           operationen={operationen} bilder={bilder} tick={tick}
           oeffnen={setOffen} anlegen={operationAnlegen} weg={operationWeg}
@@ -1401,6 +1409,248 @@ function StickPlatte({ api, sag, rateDazu }) {
         schnell streichen l\u00e4sst die ziffern rasen, langsamer werden l\u00e4sst sie
         kriechen. wo du anh\u00e4ltst, bleibt die rate stehen.
       </p>
+    </div>
+  );
+}
+
+// ============================================================
+// AUSLESEN
+// Drei ebenen zufall, jede aus einer anderen quelle:
+//   1. weisses rauschen — aus dem programm (ein rechenverfahren)
+//   2. entropie         — aus dem zufallsspeicher des geraets, den das
+//                         betriebssystem aus hardware-ereignissen fuellt
+//   3. dein moment      — start und stopp, auf die mikrosekunde
+// Solange es laeuft, bekommt jeder eintrag bei jedem schritt einen wert
+// zwischen -1 und 1 aus ebene 1 und 2 gemischt. Beim stopp kommt ebene 3
+// mit gleichem gewicht dazu. Gezeigt werden die eintraege, deren summe
+// am weitesten vom erwartbaren (null) abweicht.
+// ============================================================
+const mische = (a, b, i) => {
+  let h = (a ^ ((b << 16) | (b >>> 16)) ^ Math.imul(i + 1, 0x9E3779B1)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x85EBCA6B);
+  h = Math.imul(h ^ (h >>> 13), 0xC2B2AE35);
+  return (h ^ (h >>> 16)) >>> 0;
+};
+const LESBAR = ["raten", "sigillen", "quellen", "hintergruende"];
+
+function Auslesen({ api, sag, alle }) {
+  const [target, setTarget] = useState("");
+  const [frage, setFrage] = useState("");
+  const [woraus, setWoraus] = useState({ raten: true, sigillen: true, quellen: false, hintergruende: false });
+  const [tag, setTag] = useState("");
+  const [laeuft, setLaeuft] = useState(false);
+  const [ergebnis, setErgebnis] = useState(null);
+  const [frueher, setFrueher] = useState([]);
+  const lauf = useRef(null);
+  const leinwand = useRef(null);
+
+  useEffect(() => {
+    api("GET", "/rest/v1/auslesungen?select=*&order=wann.desc&limit=12")
+      .then((l) => setFrueher(l || [])).catch(() => {});
+    return () => { if (lauf.current) clearInterval(lauf.current.uhr); };
+  }, [api]);
+
+  // woraus gelesen wird
+  const wunschTag = tag.trim().toLowerCase().replace(/^#?/, "#");
+  const kandidaten = LESBAR.filter((a) => woraus[a]).flatMap((a) =>
+    ((alle && alle[a]) || [])
+      .filter((x) => !tag.trim() || tagsAus(x).includes(wunschTag))
+      .map((x) => ({ art: a, id: x.id, name: x.name, ziffern: x.ziffern || "",
+                     text: x.beschreibung || x.notiz || "" })));
+  const alleTags = [...new Set(LESBAR.filter((a) => woraus[a])
+    .flatMap((a) => ((alle && alle[a]) || []).flatMap(tagsAus)))].sort();
+
+  const start = () => {
+    if (kandidaten.length < 2) { sag("zum auslesen braucht es mindestens zwei einträge in der auswahl", "schlimm"); return; }
+    const k = kandidaten;
+    const z = { k, summe: new Float64Array(k.length), n: 0, t0: performance.now(),
+                rausch: ((Math.random() * 4294967296) >>> 0) || 1, uhr: null };
+    lauf.current = z;
+    setErgebnis(null); setLaeuft(true);
+
+    z.uhr = setInterval(() => {
+      const geraet = new Uint32Array(k.length);
+      crypto.getRandomValues(geraet);                       // ebene 2
+      for (let i = 0; i < k.length; i++) {
+        let r = z.rausch;                                   // ebene 1: xorshift
+        r ^= r << 13; r ^= r >>> 17; r ^= r << 5;
+        z.rausch = r >>> 0;
+        z.summe[i] += mische(z.rausch, geraet[i], i) / 2147483648 - 1;
+      }
+      z.n++;
+
+      // das rauschen sichtbar machen
+      const lw = leinwand.current, stift = lw && lw.getContext && lw.getContext("2d");
+      if (stift) {
+        const bild = stift.createImageData(lw.width, lw.height);
+        let r = z.rausch;
+        for (let p = 0; p < bild.data.length; p += 4) {
+          r ^= r << 13; r ^= r >>> 17; r ^= r << 5; r >>>= 0;
+          const g = r & 255;
+          bild.data[p] = g * 0.45; bild.data[p + 1] = g * 0.68; bild.data[p + 2] = g * 0.61; bild.data[p + 3] = 255;
+        }
+        stift.putImageData(bild, 0, 0);
+      }
+    }, 40);
+  };
+
+  const stopp = async () => {
+    const z = lauf.current;
+    if (!z) return;
+    clearInterval(z.uhr);
+    const t1 = performance.now();
+    lauf.current = null;
+    setLaeuft(false);
+    if (z.n < 8) { sag("das war zu kurz — lass es einen moment laufen"); return; }
+
+    // ebene 3: dein moment, mit demselben gewicht wie alles davor zusammen
+    const moment = mische(Math.floor(z.t0 * 1000) >>> 0, Math.floor(t1 * 1000) >>> 0, z.n);
+    const wurzel = Math.sqrt(z.n);
+    const streuung = Math.sqrt((2 * z.n) / 3);
+    const liste = z.k.map((e, i) => {
+      const summe = z.summe[i] + (mische(moment, z.rausch, i) / 2147483648 - 1) * wurzel;
+      return { ...e, wert: summe / streuung };
+    }).sort((a, b) => Math.abs(b.wert) - Math.abs(a.wert));
+
+    const oben = liste.slice(0, 7);
+    const neu = {
+      id: neueId(), target: target.trim(), frage: frage.trim(),
+      woraus: LESBAR.filter((a) => woraus[a]).map(schrankName).join(", ") + (tag.trim() ? " · " + wunschTag : ""),
+      treffer: oben.map((e) => ({ art: e.art, name: e.name, ziffern: e.ziffern, text: e.text,
+                                  wert: Math.round(e.wert * 100) / 100 })),
+      dauer_ms: Math.round(t1 - z.t0), wann: new Date().toISOString(),
+    };
+    setErgebnis({ ...neu, gesamt: z.k.length, schritte: z.n });
+    try {
+      await api("POST", "/rest/v1/auslesungen", neu);
+      setFrueher((l) => [neu, ...l].slice(0, 12));
+    } catch (e) { sag("die auslesung steht hier, ist aber nicht gespeichert: " + String(e.message), "schlimm"); }
+  };
+
+  // das protokoll: nur text, keine bilder, nichts vom maschinenraum
+  const drucken = (a) => {
+    const w = window.open("", "_blank", "width=720,height=900");
+    if (!w) { sag("der browser hat das fenster blockiert", "schlimm"); return; }
+    const sauber = (x) => String(x || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    w.document.write(`<!doctype html><html lang="de"><head><meta charset="utf-8"><title>Protokoll</title><style>
+      @page { margin: 22mm; } body { font-family: Georgia, serif; color: #111; line-height: 1.5; }
+      h1 { font-size: 18pt; font-weight: normal; letter-spacing: .06em; margin: 0 0 2mm; }
+      .kopf { font-size: 10.5pt; color: #444; margin-bottom: 8mm; border-bottom: 1px solid #999; padding-bottom: 4mm; }
+      .t { margin: 0 0 5mm; page-break-inside: avoid; } .t b { font-size: 12.5pt; }
+      .t i { font-style: normal; color: #555; font-size: 10pt; margin-left: 3mm; } .t p { margin: 1mm 0 0; font-size: 10.5pt; color: #333; }
+    </style></head><body>
+      <h1>Protokoll der Auslesung</h1>
+      <div class="kopf">${new Date(a.wann).toLocaleString("de")}<br>
+        Ziel: ${sauber(a.target) || "—"}<br>Frage: ${sauber(a.frage) || "—"}</div>
+      ${(a.treffer || []).map((e, i) => `<div class="t"><b>${i + 1}. ${sauber(e.name)}</b>
+        <i>${sauber(e.ziffern)}</i><p>${sauber(e.text)}</p></div>`).join("")}
+    </body></html>`);
+    w.document.close();
+    setTimeout(() => { try { w.print(); } catch {} }, 400);
+  };
+
+  const weg = async (id) => {
+    setFrueher((l) => l.filter((x) => x.id !== id));
+    try { await api("DELETE", `/rest/v1/auslesungen?id=eq.${id}`); } catch (e) { sag(String(e.message), "schlimm"); }
+  };
+
+  const zeig = ergebnis;
+  const hoechst = zeig ? Math.max(...zeig.treffer.map((e) => Math.abs(e.wert)), 0.01) : 1;
+
+  return (
+    <div className="mlesen">
+      <div className="msatz">
+        <label className="mhaelfte">
+          <span className="msatzwort">ziel</span>
+          <input className="mfeldgross ziel einzeilig" value={target} placeholder="… wer oder was"
+            list="mziele" onChange={(e) => setTarget(e.target.value)} />
+          <datalist id="mziele">
+            {((alle && alle.targets) || []).map((x) => <option key={x.id} value={x.name} />)}
+          </datalist>
+        </label>
+        <label className="mhaelfte">
+          <span className="msatzwort">frage</span>
+          <input className="mfeldgross einzeilig" value={frage} placeholder="… was soll sich zeigen?"
+            onChange={(e) => setFrage(e.target.value)} />
+        </label>
+      </div>
+
+      <div className="mlesewahl">
+        <span className="mwandtitel">gelesen wird aus</span>
+        {LESBAR.map((a) => (
+          <label key={a} className="mquelle">
+            <input type="checkbox" checked={!!woraus[a]} disabled={laeuft}
+              onChange={() => setWoraus((w) => ({ ...w, [a]: !w[a] }))} />
+            <span>{schrankName(a)} <i>{((alle && alle[a]) || []).length}</i></span>
+          </label>
+        ))}
+        <select className="mausschrank" value={tag} disabled={laeuft} onChange={(e) => setTag(e.target.value)}>
+          <option value="">alle tags</option>
+          {alleTags.map((g) => <option key={g} value={g}>{g}</option>)}
+        </select>
+        <span className="mfuell" />
+        <span className="mlesezahl">{kandidaten.length} einträge in der auswahl</span>
+      </div>
+
+      <div className="mlesewerk">
+        <canvas ref={leinwand} width={220} height={64} className={"mrauschen" + (laeuft ? " an" : "")} />
+        <button className={"mhebel gross" + (laeuft ? " an" : "")} onClick={laeuft ? stopp : start}>
+          {laeuft ? "stopp" : "start"}
+        </button>
+        <div className="mebenen">
+          <span className={laeuft ? "an" : ""}>① rauschen</span>
+          <span className={laeuft ? "an" : ""}>② entropie des geräts</span>
+          <span className={zeig ? "an" : ""}>③ dein moment</span>
+        </div>
+      </div>
+
+      {zeig && (
+        <div className="mlog">
+          <div className="mberichtkopf">
+            <span className="mwandtitel">was sich gezeigt hat</span>
+            <button className="mbtn" onClick={() => drucken(zeig)}>protokoll drucken</button>
+          </div>
+          <p className="mhinweis">
+            {zeig.gesamt} einträge · {zeig.schritte} schritte · {(zeig.dauer_ms / 1000).toFixed(1)} sekunden
+            {zeig.woraus ? " · " + zeig.woraus : ""}
+          </p>
+          {zeig.treffer.map((e, i) => (
+            <div key={i} className="mtreffer">
+              <span className="mnummer gross">{i + 1}</span>
+              <div className="mtrefferleib">
+                <div className="mtrefferkopf">
+                  <b>{e.name}</b>
+                  {e.ziffern && <span className="mtrefferrate">{e.ziffern}</span>}
+                  <i>{schrankName(e.art)}</i>
+                </div>
+                {e.text && <p>{e.text}</p>}
+                <div className="mbalken"><span style={{ width: (Math.abs(e.wert) / hoechst * 100) + "%" }} /></div>
+              </div>
+              <span className="mtrefferwert">{e.wert > 0 ? "+" : ""}{e.wert.toFixed(2)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {frueher.length > 0 && (
+        <div className="mlog">
+          <span className="mwandtitel">frühere auslesungen</span>
+          {frueher.map((a) => (
+            <div key={a.id} className="meintrag">
+              <span className="mwann">{new Date(a.wann).toLocaleString("de",
+                { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+              <span className="mtext">
+                {(a.target || "ohne ziel")}{a.frage ? " — " + a.frage : ""}
+                <small> · {(a.treffer || []).slice(0, 3).map((e) => e.name).join(", ")}</small>
+              </span>
+              <button className="mklein" onClick={() => setErgebnis({ ...a, gesamt: "?", schritte: "?" })}
+                title="nochmal ansehen">◉</button>
+              <button className="mklein" onClick={() => drucken(a)} title="protokoll drucken">⎙</button>
+              <button className="mklein" onClick={() => weg(a.id)} title="löschen">✕</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2261,6 +2511,45 @@ function MaschinenStil() {
   color:var(--asche); background:rgba(0,0,0,.3);
   border:1px solid rgba(138,143,135,.2);
 }
+/* auslesen */
+.mbtn.lesen{color:var(--kupfer2); border-color:rgba(184,115,51,.5); background:rgba(184,115,51,.1)}
+.mbtn.lesen:hover{background:rgba(184,115,51,.22); border-color:var(--kupfer2); color:#f0c79a}
+.mlesen{padding:20px clamp(12px,2vw,26px); max-width:1100px; margin:0 auto}
+.mfeldgross.einzeilig{min-height:0; resize:none}
+.mlesewahl{
+  display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; padding:12px 16px;
+  border-radius:4px; margin-bottom:16px;
+  background:linear-gradient(rgba(18,25,22,.8), rgba(10,15,13,.92));
+  border:1px solid rgba(184,115,51,.22);
+}
+.mlesewahl .mquelle i{font-style:normal; opacity:.5; font-size:10px}
+.mlesezahl{font-size:11px; color:var(--messing)}
+.mlesewerk{display:flex; flex-wrap:wrap; align-items:center; gap:16px; margin-bottom:6px}
+.mrauschen{
+  width:220px; height:64px; border-radius:3px; image-rendering:pixelated;
+  border:1px solid rgba(74,124,111,.35); background:#070a09; opacity:.35; transition:opacity .4s;
+}
+.mrauschen.an{opacity:1; border-color:var(--span2)}
+.mhebel.gross{flex:0 0 190px; font-size:15px; padding:16px 12px; letter-spacing:.2em}
+.mebenen{display:flex; flex-direction:column; gap:4px; font-size:10.5px; letter-spacing:.06em}
+.mebenen span{opacity:.35; transition:.3s}
+.mebenen span.an{opacity:1; color:var(--glut)}
+.mtreffer{
+  display:flex; gap:12px; align-items:flex-start; padding:11px 2px;
+  border-bottom:1px solid rgba(138,143,135,.1);
+}
+.mtreffer:last-child{border-bottom:0}
+.mtrefferleib{flex:1; min-width:0}
+.mtrefferkopf{display:flex; flex-wrap:wrap; gap:4px 12px; align-items:baseline}
+.mtrefferkopf b{font-family:'IM Fell English SC', Georgia, serif; font-size:16px; font-weight:400; color:var(--messing)}
+.mtrefferkopf i{font-style:normal; font-size:10px; opacity:.55; letter-spacing:.08em}
+.mtrefferrate{font-size:13px; color:var(--kupfer2); letter-spacing:.08em}
+.mtrefferleib p{margin:4px 0 0; font-size:11.5px; line-height:1.55; color:#b9beb5}
+.mbalken{height:3px; margin-top:7px; border-radius:2px; background:rgba(138,143,135,.12)}
+.mbalken span{display:block; height:100%; border-radius:2px; background:var(--glut)}
+.mtrefferwert{font-size:12px; color:var(--glut); flex:0 0 auto; padding-top:3px}
+.meintrag .mtext small{opacity:.6}
+
 /* hashtags */
 .mtagleiste{display:flex; flex-wrap:wrap; gap:6px; margin:0 0 14px}
 .mtags{display:flex; flex-wrap:wrap; gap:5px; margin-top:10px}
