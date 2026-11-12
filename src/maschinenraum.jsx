@@ -105,7 +105,7 @@ const tagsAus = (x) => {
 const SCHRAENKE = ["sigillen", "raten", "quellen", "hintergruende", "targets", "trends"];
 
 const altbestandFertig = () => {
-  try { return localStorage.getItem("mr:import") === "fertig"; } catch { return false; }
+  try { return localStorage.getItem("mr:import2") === "fertig"; } catch { return false; }
 };
 
 // wo man zuletzt war (operation, schrank, auslesen) — ueberlebt ein neuladen
@@ -681,6 +681,21 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
           sag(`altbestand: ${drin} von ${gesamt} geschrieben …`, "laeuft");
         }
       }
+      // was der erste durchlauf zu viel angelegt hat (die kartenserien, die
+      // jetzt bei den sigillen liegen), wird wieder entfernt — nur eintraege
+      // mit "imp-" im namen, also nur, was dieser import selbst angelegt hat
+      const weg = ((idx.entfernen && idx.entfernen.trends) || []).filter((i) => String(i).startsWith("imp-"));
+      for (let i = 0; i < weg.length; i += 40) {
+        const si = await zugang();
+        if (!si) throw new Error("nicht angemeldet");
+        const liste = weg.slice(i, i + 40).join(",");
+        const r = await fetch(`${URL_DB}/rest/v1/trends?id=in.(${liste})`, {
+          method: "DELETE",
+          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token, Prefer: "return=minimal" },
+        });
+        if (!r.ok) throw new Error(`aufräumen abgelehnt (${r.status}) ` + (await r.text()).slice(0, 120));
+      }
+
       // die bilder: erst in die ablage, dann den pfad an den eintrag schreiben
       const bilder0 = idx.bilder || [];
       let erledigt = {};
@@ -726,7 +741,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       const alles = nt === idx.trends && nr === idx.raten && ns === (idx.sigillen || 0)
                     && mitBildern.length === bilder0.length && schief.length === 0;
       if (alles) {
-        try { localStorage.setItem("mr:import", "fertig"); } catch {}
+        try { localStorage.setItem("mr:import2", "fertig"); } catch {}
         sag(`altbestand fertig: ${nt} trends, ${nr} raten, ${ns} sigillen und ${mitBildern.length} bilder stehen in der datenbank (nachgezählt).`);
       } else {
         sag(`altbestand unvollständig: trends ${nt}/${idx.trends}, raten ${nr}/${idx.raten}, sigillen ${ns}/${idx.sigillen || 0}, `
