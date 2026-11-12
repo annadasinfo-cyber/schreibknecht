@@ -232,6 +232,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [trends, setTrends] = useState([]);       // trends: wohin es sich entwickeln soll (tausende)
   const [trendsLaedt, setTrendsLaedt] = useState(false);
   const [lesenStand] = useState(0);
+  const [anzAus, setAnzAus] = useState(null);       // wie viele auslesungen es gibt (fuer das zaehlwerk)
   const [offen, setOffen] = useState(() => mrOrtLesen().offen || null);   // id der offenen operation
   const [liest, setLiest] = useState(() => !!mrOrtLesen().liest);          // die auslese-seite ist offen
   const blattMerk = useRef({});                   // welches kaestchen-blatt in welcher operation offen war
@@ -244,6 +245,11 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   useEffect(() => {
     try { localStorage.setItem("mr:ort", JSON.stringify({ offen, liest, schrank })); } catch {}
   }, [offen, liest, schrank]);
+  // das zaehlwerk: wie viele auslesungen es gibt (neu gezaehlt, wenn man vom auslesen zurueckkommt)
+  useEffect(() => {
+    api("GET", "/rest/v1/auslesungen?select=id&limit=1000")
+      .then((l) => setAnzAus((l || []).length)).catch(() => {});
+  }, [api, liest]);
   const [bilder, setBilder] = useState({});       // pfad -> signierte adresse
   const [meldung, setMeldung] = useState(null);
   const [bericht, setBericht] = useState(null);
@@ -738,6 +744,22 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
           operationen={operationen} bilder={bilder} tick={tick}
           oeffnen={setOffen} anlegen={operationAnlegen} weg={operationWeg}
           nachsehen={nachsehen}
+          zahlen={[
+            ["operationen", operationen.length, null],
+            ["trends", trends.length, "trends"],
+            ["raten", raten.length, "raten"],
+            ["sigillen", sigillen.length, "sigillen"],
+            ["quellen", quellen.length, "quellen"],
+            ["hintergründe", plaene.length, "hintergruende"],
+            ["targets", ziele.length, "targets"],
+            ["auslesungen", anzAus, "auslesen"],
+          ]}
+          impulse={operationen.reduce((s, o) => s + (pulsJetzt(o) || 0), 0)}
+          trendsLaedt={trendsLaedt}
+          hin={(a) => {
+            if (a === "auslesen") { setLiest(true); return; }
+            setTagMit(""); setSchrank(a);
+          }}
         />
       )}
 
@@ -762,7 +784,8 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
 // ============================================================
 // DIE ÜBERSICHT — kacheln wie bei projekten und filmen
 // ============================================================
-function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg, nachsehen }) {
+function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg, nachsehen,
+                     zahlen, impulse, trendsLaedt, hin }) {
   // leicht schraege kacheln, aber immer gleich schief — aus der id gerechnet
   const kippung = (id) => {
     let z = 0;
@@ -807,6 +830,25 @@ function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg, nachsehe
 
       {operationen.length === 0 && (
         <p className="mleer">noch keine operation. das + legt eine an.</p>
+      )}
+
+      {zahlen && (
+        <div className="mzaehlwerk">
+          <span className="mwandtitel">das zählwerk</span>
+          <div className="mzaehlfeld">
+            {zahlen.map(([name, n, ziel]) => (
+              <button key={name} className="mzahl" disabled={!ziel} onClick={() => ziel && hin(ziel)}
+                title={ziel ? name + " öffnen" : ""}>
+                <b>{n == null ? "…" : n.toLocaleString("de")}{name === "trends" && trendsLaedt ? " …" : ""}</b>
+                <span>{name}</span>
+              </button>
+            ))}
+          </div>
+          <p className="mzaehlsumme">
+            zusammen {zahlen.reduce((s, z) => s + (z[1] || 0), 0).toLocaleString("de")} einträge
+            {impulse > 0 ? " · " + Math.round(impulse).toLocaleString("de") + " impulse gesendet" : ""}
+          </p>
+        </div>
       )}
 
       <button className="mnachsehen" onClick={nachsehen}>
@@ -2453,6 +2495,16 @@ function MaschinenStil() {
 }
 .mmeldung.schlimm small{font-size:10px; opacity:.6; white-space:nowrap}
 
+.mzaehlwerk{margin-top:30px; width:100%; flex:0 0 100%; grid-column:1/-1}
+.mzaehlfeld{display:flex; flex-wrap:wrap; gap:8px; margin-top:8px}
+.mzahl{display:flex; flex-direction:column; align-items:flex-start; gap:2px; min-width:92px; padding:8px 12px;
+  border-radius:3px; font-family:inherit; cursor:pointer; color:var(--asche);
+  background:linear-gradient(rgba(18,25,22,.85), rgba(10,15,13,.95)); border:1px solid rgba(138,143,135,.22); transition:.15s}
+.mzahl:hover:not(:disabled){border-color:rgba(184,115,51,.55)}
+.mzahl:disabled{cursor:default}
+.mzahl b{font-family:'IM Fell English SC', Georgia, serif; font-weight:400; font-size:22px; color:var(--messing); letter-spacing:.04em}
+.mzahl span{font-size:10px; letter-spacing:.12em; opacity:.6}
+.mzaehlsumme{margin:9px 0 0; font-size:11px; opacity:.55; letter-spacing:.06em}
 .mnachsehen{
   margin-top:26px; font-family:inherit; font-size:10.5px; letter-spacing:.08em;
   padding:7px 13px; border-radius:3px; cursor:pointer; align-self:flex-start;
