@@ -108,6 +108,10 @@ const altbestandFertig = () => {
   try { return localStorage.getItem("mr:import3") === "fertig"; } catch { return false; }
 };
 
+const zweiFertig = () => {
+  try { return localStorage.getItem("mr:import4") === "fertig"; } catch { return false; }
+};
+
 // wo man zuletzt war (operation, schrank, auslesen) — ueberlebt ein neuladen
 function mrOrtLesen() {
   try { return JSON.parse(localStorage.getItem("mr:ort") || "{}") || {}; } catch { return {}; }
@@ -236,6 +240,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [trends, setTrends] = useState([]);       // trends: wohin es sich entwickeln soll (tausende)
   const [trendsLaedt, setTrendsLaedt] = useState(false);
   const importLaeuft = useRef(false);
+  const [lesenStand, setLesenStand] = useState(0);   // zaehlt hoch, wenn neue auslesungen dazukamen
   const [offen, setOffen] = useState(() => mrOrtLesen().offen || null);   // id der offenen operation
   const [liest, setLiest] = useState(() => !!mrOrtLesen().liest);          // die auslese-seite ist offen
   const blattMerk = useRef({});                   // welches kaestchen-blatt in welcher operation offen war
@@ -619,6 +624,8 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
         } else if (e.art === "trends") {
           const t = finde(trends, e);
           teile.push({ bezeichnung: e.name, art: "trend", trend_id: t ? t.id : null });
+        } else if (e.art === "analyse") {
+          teile.push({ bezeichnung: e.name, art: "verstaerker" });
         }
       });
       for (let i = 0; i < teile.length; i++) {
@@ -644,6 +651,83 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       setOffen(opId);
       sag("operation angelegt — formuliere oben deine absicht, dann anschalten");
     } catch (e) { sag(String(e.message), "schlimm"); }
+  };
+
+  // Die zweite lieferung aus dem alten programm (public/import/zwei): die
+  // ELiP-analysen als auslesungen — mit ziel-foto — und ein paar
+  // hintergruende. Feste ids: ein zweiter lauf legt nichts doppelt an.
+  const zweiHolen = async () => {
+    if (importLaeuft.current) return;
+    importLaeuft.current = true;
+    try {
+      sag("analysen: werden geholt …", "laeuft");
+      const holen = async (name) => {
+        const r = await fetch("/import/zwei/" + name, { cache: "no-store" });
+        if (!r.ok) throw new Error(`import/zwei/${name} nicht gefunden (${r.status}) — ist der letzte push durch?`);
+        try { return await r.json(); }
+        catch { throw new Error(`import/zwei/${name} ist keine datenbank-datei — ist der letzte push durch?`); }
+      };
+      const schreiben = async (tabelle, zeilen) => {
+        const si = await zugang();
+        if (!si) throw new Error("nicht angemeldet");
+        const r = await fetch(`${URL_DB}/rest/v1/${tabelle}?on_conflict=id`, {
+          method: "POST",
+          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
+                     "Content-Type": "application/json",
+                     Prefer: "resolution=ignore-duplicates,return=minimal" },
+          body: JSON.stringify(zeilen),
+        });
+        if (!r.ok) throw new Error(`${tabelle}: abgelehnt (${r.status}) ` + (await r.text()).slice(0, 160));
+      };
+      const idx = await holen("index.json");
+      await schreiben("hintergruende", await holen("hintergruende.json"));
+      let n = 0;
+      for (const t of idx.teile) {
+        n++;
+        sag(`analysen: ${n} von ${idx.teile.length} geschrieben …`, "laeuft");
+        await schreiben("auslesungen", [await holen(t.datei)]);
+      }
+
+      // die ziel-fotos: der pfad ergibt sich aus der id der auslesung
+      const si0 = await zugang();
+      if (!si0) throw new Error("nicht angemeldet");
+      const fotoPfad = (id) => `${si0.user.id}/auslesungen/${id}.jpg`;
+      let f = 0;
+      for (const id of idx.fotos || []) {
+        f++;
+        sag(`analysen: foto ${f} von ${idx.fotos.length} …`, "laeuft");
+        const si = await zugang();
+        if (!si) throw new Error("nicht angemeldet");
+        const rb = await fetch(`/import/zwei/${id}.jpg`, { cache: "no-store" });
+        if (!rb.ok) throw new Error(`import/zwei/${id}.jpg nicht gefunden (${rb.status})`);
+        const ru = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${fotoPfad(id)}`, {
+          method: "POST",
+          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
+                     "Content-Type": "image/jpeg", "x-upsert": "true" },
+          body: await rb.blob(),
+        });
+        if (!ru.ok) throw new Error(`foto ${id}: hochladen abgelehnt (${ru.status}) ` + (await ru.text()).slice(0, 120));
+      }
+
+      // nachsehen, was in der datenbank wirklich steht
+      sag("analysen: zähle in der datenbank nach …", "laeuft");
+      const da = await api("GET", "/rest/v1/auslesungen?id=like.imp-*&select=id&limit=1000");
+      const hg = await api("GET", "/rest/v1/hintergruende?select=*&order=name.asc");
+      setPlaene(hg || []);
+      const nHg = (hg || []).filter((x) => String(x.id).startsWith("imp-")).length;
+      const schief = await holBilder((idx.fotos || []).map(fotoPfad), false);
+      setLesenStand((x) => x + 1);
+      if ((da || []).length === idx.auslesungen && nHg === idx.hintergruende && schief.length === 0) {
+        try { localStorage.setItem("mr:import4", "fertig"); } catch {}
+        sag(`analysen fertig: ${(da || []).length} auslesungen, ${(idx.fotos || []).length} fotos und ${nHg} hintergründe stehen in der datenbank (nachgezählt).`);
+      } else {
+        sag(`analysen unvollständig: auslesungen ${(da || []).length}/${idx.auslesungen}, hintergründe ${nHg}/${idx.hintergruende}, `
+          + `fotos ${(idx.fotos || []).length - schief.length}/${(idx.fotos || []).length}`
+          + (schief.length ? " — " + String(schief[0]).slice(0, 120) : "") + ". Noch einmal drücken versucht den Rest.", "schlimm");
+      }
+    } catch (e) {
+      sag("analysen: " + String(e && e.message), "schlimm");
+    } finally { importLaeuft.current = false; }
   };
 
   // Der alte bestand aus dem windows-programm liegt als JSON in der app
@@ -832,6 +916,8 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
 
       {!laedt && liest && (
         <Auslesen api={api} sag={sag} zurOperation={operationAusLesung}
+          zugang={zugang} bilder={bilder} holBilder={holBilder}
+          stand={lesenStand} holeZwei={zweiHolen}
           alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele, trends }} />
       )}
 
@@ -846,7 +932,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
           plaene={plaene} setPlaene={setPlaene}
           ziele={ziele} setZiele={setZiele}
           trends={trends} setTrends={setTrends} trendsLaedt={trendsLaedt}
-          holeAltbestand={altbestandHolen}
+          holeAltbestand={altbestandHolen} holeZwei={zweiHolen}
           operationen={operationen}
           bilder={bilder} hochladen={hochladen}
         />
@@ -1777,7 +1863,7 @@ const mische = (a, b, i) => {
 };
 const LESBAR = ["raten", "sigillen", "quellen", "hintergruende", "trends"];
 
-function Auslesen({ api, sag, alle, zurOperation }) {
+function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, stand, holeZwei }) {
   const [haken, setHaken] = useState({});         // welche treffer in die operation sollen
   const [baut, setBaut] = useState(false);
   const [target, setTarget] = useState("");
@@ -1787,14 +1873,27 @@ function Auslesen({ api, sag, alle, zurOperation }) {
   const [laeuft, setLaeuft] = useState(false);
   const [ergebnis, setErgebnis] = useState(null);
   const [frueher, setFrueher] = useState([]);
+  const [alleFrueher, setAlleFrueher] = useState(false);   // false: nur die neuesten 12
+  const [trefferSuche, setTrefferSuche] = useState("");    // filtert die treffer einer geoeffneten auslesung
+  const [trefferZeige, setTrefferZeige] = useState(60);    // so viele treffer stehen auf dem schirm
   const lauf = useRef(null);
   const leinwand = useRef(null);
 
+  // Die liste holt nur den kopf jeder auslesung. Die treffer einer alten
+  // analyse koennen tausend zeilen haben — die kommen erst beim oeffnen.
   useEffect(() => {
-    api("GET", "/rest/v1/auslesungen?select=*&order=wann.desc&limit=12")
+    api("GET", "/rest/v1/auslesungen?select=id,target,frage,woraus,wann,dauer_ms&order=wann.desc&limit=300")
       .then((l) => setFrueher(l || [])).catch(() => {});
     return () => { if (lauf.current) clearInterval(lauf.current.uhr); };
-  }, [api]);
+  }, [api, stand]);
+
+  const voll = async (a) => {
+    if (a.treffer) return a;
+    try {
+      const r = await api("GET", `/rest/v1/auslesungen?id=eq.${a.id}&select=*`);
+      return (r && r[0]) || null;
+    } catch (e) { sag(String(e.message), "schlimm"); return null; }
+  };
 
   // woraus gelesen wird
   const wunschTag = tag.trim().toLowerCase().replace(/^#?/, "#");
@@ -1869,7 +1968,7 @@ function Auslesen({ api, sag, alle, zurOperation }) {
     setErgebnis({ ...neu, gesamt: z.k.length, schritte: z.n });
     try {
       await api("POST", "/rest/v1/auslesungen", neu);
-      setFrueher((l) => [neu, ...l].slice(0, 12));
+      setFrueher((l) => [neu, ...l]);
     } catch (e) { sag("die auslesung steht hier, ist aber nicht gespeichert: " + String(e.message), "schlimm"); }
   };
 
@@ -1888,8 +1987,11 @@ function Auslesen({ api, sag, alle, zurOperation }) {
       <h1>Protokoll der Auslesung</h1>
       <div class="kopf">${new Date(a.wann).toLocaleString("de")}<br>
         Ziel: ${sauber(a.target) || "—"}<br>Frage: ${sauber(a.frage) || "—"}</div>
-      ${(a.treffer || []).map((e, i) => `<div class="t"><b>${i + 1}. ${sauber(e.name)}</b>
-        <i>${sauber(e.ziffern)}</i><p>${sauber(e.text)}</p></div>`).join("")}
+      ${[...(a.treffer || [])].sort((x, y) => Math.abs(y.wert) - Math.abs(x.wert)).slice(0, 200)
+        .map((e, i) => `<div class="t"><b>${i + 1}. ${sauber(e.name)}</b>
+        <i>${sauber(e.ziffern || e.db || "")}${e.intens != null ? " · intensität " + e.intens : ""}</i>
+        <p>${sauber(e.text)}</p></div>`).join("")}
+      ${(a.treffer || []).length > 200 ? `<p>… und ${(a.treffer || []).length - 200} weitere treffer</p>` : ""}
     </body></html>`);
     w.document.close();
     setTimeout(() => { try { w.print(); } catch {} }, 400);
@@ -1913,8 +2015,40 @@ function Auslesen({ api, sag, alle, zurOperation }) {
     setBaut(false);
   };
 
+  // eine alte auslesung oeffnen: erst die ganze zeile holen, die treffer
+  // nach staerke ordnen (so passen die haken zur anzeige)
+  const ansehen = async (a) => {
+    const v = await voll(a);
+    if (!v) return;
+    const treffer = [...(v.treffer || [])].sort((x, y) => Math.abs(y.wert) - Math.abs(x.wert));
+    setErgebnis({ ...v, treffer, gesamt: "?", schritte: "?" });
+  };
+  const drucke = async (a) => { const v = await voll(a); if (v) drucken(v); };
+
+  // das ziel-foto einer alten analyse: der pfad ergibt sich aus der id
+  const [foto, setFoto] = useState("");
+  useEffect(() => {
+    setFoto(""); setTrefferSuche(""); setTrefferZeige(60);
+    if (!ergebnis || !String(ergebnis.id).startsWith("imp-an-") || !zugang || !holBilder) return undefined;
+    let weiter = true;
+    (async () => {
+      const si = await zugang();
+      if (!si || !weiter) return;
+      const pfad = `${si.user.id}/auslesungen/${ergebnis.id}.jpg`;
+      await holBilder([pfad], false);
+      if (weiter) setFoto(pfad);
+    })();
+    return () => { weiter = false; };
+  }, [ergebnis && ergebnis.id]);
+
   const zeig = ergebnis;
   const hoechst = zeig ? Math.max(...zeig.treffer.map((e) => Math.abs(e.wert)), 0.01) : 1;
+  const q = trefferSuche.trim().toLowerCase();
+  const gefiltert = zeig
+    ? zeig.treffer.map((e, i) => ({ e, i }))
+        .filter(({ e }) => !q || [e.name, e.text, e.db].join(" ").toLowerCase().includes(q))
+    : [];
+  const frueherZeige = alleFrueher ? frueher : frueher.slice(0, 12);
 
   return (
     <div className="mlesen">
@@ -1933,6 +2067,14 @@ function Auslesen({ api, sag, alle, zurOperation }) {
             onChange={(e) => setFrage(e.target.value)} />
         </label>
       </div>
+
+      {holeZwei && !zweiFertig() && (
+        <div className="mlesewahl">
+          <span className="mwandtitel">alte analysen aus dem windows-programm</span>
+          <span className="mfuell" />
+          <button className="mbtn" onClick={holeZwei}>analysen + hintergründe holen</button>
+        </div>
+      )}
 
       <div className="mlesewahl">
         <span className="mwandtitel">gelesen wird aus</span>
@@ -1974,10 +2116,22 @@ function Auslesen({ api, sag, alle, zurOperation }) {
             <button className="mbtn" onClick={() => drucken(zeig)}>protokoll drucken</button>
           </div>
           <p className="mhinweis">
-            {zeig.gesamt} einträge · {zeig.schritte} schritte · {(zeig.dauer_ms / 1000).toFixed(1)} sekunden
+            {zeig.schritte === "?"
+              ? `${zeig.treffer.length} treffer · ${new Date(zeig.wann).toLocaleString("de")}`
+              : `${zeig.gesamt} einträge · ${zeig.schritte} schritte · ${(zeig.dauer_ms / 1000).toFixed(1)} sekunden`}
+            {zeig.target ? " · ziel: " + zeig.target : ""}
+            {zeig.frage ? " · " + zeig.frage : ""}
             {zeig.woraus ? " · " + zeig.woraus : ""}
           </p>
-          {zeig.treffer.map((e, i) => (
+          {foto && bilder && bilder[foto] && (
+            <img className="mzielfoto" src={bilder[foto]} alt="ziel-foto" />
+          )}
+          {zeig.treffer.length > 12 && (
+            <input className="msuche" value={trefferSuche} placeholder="in den treffern suchen …"
+              onChange={(e) => { setTrefferSuche(e.target.value); setTrefferZeige(60); }} />
+          )}
+          {gefiltert.length === 0 && <p className="mleer">nichts gefunden</p>}
+          {gefiltert.slice(0, trefferZeige).map(({ e, i }) => (
             <div key={i} className={"mtreffer" + (haken[i] ? " gewaehlt" : "")}>
               <input type="checkbox" className="mtrefferhaken" checked={!!haken[i]}
                 onChange={() => setHaken((h) => ({ ...h, [i]: !h[i] }))}
@@ -1987,34 +2141,56 @@ function Auslesen({ api, sag, alle, zurOperation }) {
                 <div className="mtrefferkopf">
                   <b>{e.name}</b>
                   {e.ziffern && <span className="mtrefferrate">{e.ziffern}</span>}
-                  <i>{schrankName(e.art)}</i>
+                  <i>{e.art === "analyse" ? (e.db || "") : schrankName(e.art)}</i>
                 </div>
                 {e.text && <p>{e.text}</p>}
+                {e.besch && <p className="mbesch">{e.besch}</p>}
+                {e.eb && e.eb.length > 0 && (
+                  <div className="meben" title="die fünf ebenen in prozent">
+                    {e.eb.map((p, k) => (
+                      <span key={k} title={`ebene ${k + 1}: ${p} %`}>
+                        <b style={{ height: Math.max(3, Math.min(100, p * 2)) + "%" }} /><u>{p}</u>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="mbalken"><span style={{ width: (Math.abs(e.wert) / hoechst * 100) + "%" }} /></div>
               </div>
-              <span className="mtrefferwert">{e.wert > 0 ? "+" : ""}{e.wert.toFixed(2)}</span>
+              <span className="mtrefferwert">
+                {e.intens != null ? (e.intens > 0 ? "+" : "") + e.intens
+                  : (e.wert > 0 ? "+" : "") + e.wert.toFixed(2)}
+              </span>
             </div>
           ))}
+          {gefiltert.length > trefferZeige && (
+            <button className="mbtn mmehr" onClick={() => setTrefferZeige((n) => n + 100)}>
+              noch 100 zeigen ({gefiltert.length - trefferZeige} weitere)
+            </button>
+          )}
         </div>
       )}
 
       {frueher.length > 0 && (
         <div className="mlog">
-          <span className="mwandtitel">frühere auslesungen</span>
-          {frueher.map((a) => (
+          <span className="mwandtitel">frühere auslesungen <i>{frueher.length}</i></span>
+          {frueherZeige.map((a) => (
             <div key={a.id} className="meintrag">
               <span className="mwann">{new Date(a.wann).toLocaleString("de",
-                { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
               <span className="mtext">
                 {(a.target || "ohne ziel")}{a.frage ? " — " + a.frage : ""}
-                <small> · {(a.treffer || []).slice(0, 3).map((e) => e.name).join(", ")}</small>
+                <small> · {a.treffer ? a.treffer.slice(0, 3).map((e) => e.name).join(", ") : (a.woraus || "")}</small>
               </span>
-              <button className="mklein" onClick={() => setErgebnis({ ...a, gesamt: "?", schritte: "?" })}
-                title="nochmal ansehen">◉</button>
-              <button className="mklein" onClick={() => drucken(a)} title="protokoll drucken">⎙</button>
+              <button className="mklein" onClick={() => ansehen(a)} title="nochmal ansehen">◉</button>
+              <button className="mklein" onClick={() => drucke(a)} title="protokoll drucken">⎙</button>
               <button className="mklein" onClick={() => weg(a.id)} title="löschen">✕</button>
             </div>
           ))}
+          {frueher.length > 12 && (
+            <button className="mbtn mmehr" onClick={() => setAlleFrueher((x) => !x)}>
+              {alleFrueher ? "nur die neuesten zeigen" : `alle ${frueher.length} zeigen`}
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -2026,7 +2202,7 @@ function Auslesen({ api, sag, alle, zurOperation }) {
 // ============================================================
 function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                    quellen, setQuellen, plaene, setPlaene, ziele, setZiele,
-                   trends, setTrends, trendsLaedt, holeAltbestand,
+                   trends, setTrends, trendsLaedt, holeAltbestand, holeZwei,
                    operationen, bilder, hochladen, vorgabe, wechseln, alle }) {
   const [suche, setSuche] = useState(vorgabe || "");
   const [zeige, setZeige] = useState(60);         // so viele stuecke stehen auf dem schirm
@@ -2254,6 +2430,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
         <button className="mbtn" onClick={anlegen}>+ neu</button>
         {(art === "trends" || art === "raten" || art === "sigillen") && holeAltbestand && !altbestandFertig() && (
           <button className="mbtn" onClick={holeAltbestand}>altbestand holen</button>
+        )}
+        {art === "hintergruende" && holeZwei && !zweiFertig() && (
+          <button className="mbtn" onClick={holeZwei}>analysen + hintergründe holen</button>
         )}
       </div>
       {art === "trends" && trendsLaedt && <p className="mleer">trends werden geholt … ({liste.length})</p>}
@@ -2979,6 +3158,12 @@ function MaschinenStil() {
 .mbalken{height:3px; margin-top:7px; border-radius:2px; background:rgba(138,143,135,.12)}
 .mbalken span{display:block; height:100%; border-radius:2px; background:var(--glut)}
 .mtrefferwert{font-size:12px; color:var(--glut); flex:0 0 auto; padding-top:3px}
+.mbesch{opacity:.5; font-size:10.5px !important; font-style:italic}
+.meben{display:flex; gap:7px; margin-top:7px; align-items:flex-end}
+.meben span{display:flex; flex-direction:column; align-items:center; justify-content:flex-end; width:24px; height:38px}
+.meben b{display:block; width:100%; border-radius:1px; background:var(--messing); opacity:.65; min-height:3px}
+.meben u{text-decoration:none; font-size:9px; opacity:.55; margin-top:2px; line-height:1}
+.mzielfoto{display:block; max-width:min(100%, 320px); border-radius:4px; margin:6px 0 10px; border:1px solid rgba(138,143,135,.25)}
 .mtrendwahl{display:flex; flex-direction:column; gap:4px; min-width:0}
 .mtrendwahl input{
   width:100%; background:#0a100e; color:var(--messing); border:1px solid rgba(184,115,51,.35);
