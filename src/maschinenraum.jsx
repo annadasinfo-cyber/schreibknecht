@@ -1733,13 +1733,18 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
   const alleTags = [...new Set(LESBAR.filter((a) => woraus[a])
     .flatMap((a) => ((alle && alle[a]) || []).flatMap(tagsAus)))].sort();
 
-  const start = () => {
-    if (kandidaten.length < 2) { sag("zum auslesen braucht es mindestens zwei einträge in der auswahl", "schlimm"); return; }
-    const k = kandidaten;
-    const z = { k, summe: new Float64Array(k.length), n: 0, t0: performance.now(),
+  // start() ohne argument liest aus der auswahl. Mit { nach, k } wird ein
+  // schon gemessenes protokoll erneut gemessen: k sind seine treffer, nach
+  // merkt sich, woher sie kommen — das alte protokoll bleibt dabei stehen.
+  const start = (wie) => {
+    const nach = wie && wie.nach ? wie.nach : null;
+    const k = nach ? wie.k : kandidaten;
+    if (k.length < 2) { sag("zum auslesen braucht es mindestens zwei einträge in der auswahl", "schlimm"); return; }
+    const z = { k, nach, summe: new Float64Array(k.length), n: 0, t0: performance.now(),
                 rausch: ((Math.random() * 4294967296) >>> 0) || 1, uhr: null };
     lauf.current = z;
-    setErgebnis(null); setLaeuft(true);
+    if (!nach) setErgebnis(null);
+    setLaeuft(true);
 
     z.uhr = setInterval(() => {
       const geraet = new Uint32Array(k.length);
@@ -1785,12 +1790,22 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
       return { ...e, wert: summe / streuung };
     }).sort((a, b) => Math.abs(b.wert) - Math.abs(a.wert));
 
-    const oben = liste.slice(0, anzahl);
+    // eine nachmessung zeigt alle treffer des protokolls, in dessen reihenfolge
+    const oben = z.nach
+      ? [...liste].sort((a, b) => Math.abs(b.vorher) - Math.abs(a.vorher))
+      : liste.slice(0, anzahl);
     const neu = {
-      id: neueId(), target: target.trim(), frage: frage.trim(),
-      woraus: LESBAR.filter((a) => woraus[a]).map(schrankName).join(", ") + (tag.trim() ? " · " + wunschTag : ""),
+      id: neueId(),
+      target: z.nach ? z.nach.target : target.trim(),
+      frage: z.nach ? z.nach.frage : frage.trim(),
+      woraus: z.nach
+        ? "nachmessung des protokolls vom " + new Date(z.nach.wann).toLocaleString("de",
+            { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })
+        : LESBAR.filter((a) => woraus[a]).map(schrankName).join(", ") + (tag.trim() ? " · " + wunschTag : ""),
       treffer: oben.map((e) => ({ id: e.id, art: e.art, name: e.name, ziffern: e.ziffern, text: e.text,
-                                  wert: Math.round(e.wert * 100) / 100 })),
+                                  wert: Math.round(e.wert * 100) / 100,
+                                  ...(z.nach ? { vorher: e.vorher } : {}),
+                                  ...(z.nach && e.db ? { db: e.db } : {}) })),
       dauer_ms: Math.round(t1 - z.t0), wann: new Date().toISOString(),
     };
     setErgebnis({ ...neu, gesamt: z.k.length, schritte: z.n });
@@ -1848,7 +1863,9 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
   const ansehen = async (a) => {
     const v = await voll(a);
     if (!v) return;
-    const treffer = [...(v.treffer || [])].sort((x, y) => Math.abs(y.wert) - Math.abs(x.wert));
+    // eine nachmessung bleibt in der reihenfolge des urspruenglichen protokolls
+    const treffer = [...(v.treffer || [])].sort((x, y) =>
+      Math.abs(y.vorher != null ? y.vorher : y.wert) - Math.abs(x.vorher != null ? x.vorher : x.wert));
     setErgebnis({ ...v, treffer, gesamt: "?", schritte: "?" });
   };
   // Die treffer einer gespeicherten auslesung merken sich nur eine kopie
@@ -1906,7 +1923,23 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
   }, [ergebnis && ergebnis.id]);
 
   const zeig = ergebnis;
-  const hoechst = zeig ? Math.max(...zeig.treffer.map((e) => Math.abs(e.wert)), 0.01) : 1;
+  const hoechst = zeig
+    ? Math.max(...zeig.treffer.map((e) => Math.max(Math.abs(e.wert), Math.abs(e.vorher || 0))), 0.01) : 1;
+  const istNach = !!(zeig && zeig.treffer.some((e) => e.vorher != null));
+  const vergleich = istNach ? (() => {
+    const t = zeig.treffer.filter((e) => e.vorher != null);
+    const m = (f) => t.reduce((s, e) => s + Math.abs(f(e)), 0) / t.length;
+    return { vor: m((e) => e.vorher), jetzt: m((e) => e.wert),
+             schwaecher: t.filter((e) => Math.abs(e.wert) < Math.abs(e.vorher)).length, n: t.length };
+  })() : null;
+  // dasselbe protokoll noch einmal messen: die treffer sind die kandidaten
+  const erneut = () => {
+    if (!zeig || laeuft) return;
+    const k = zeigLive.map((e) => ({ art: e.art, id: e.id, name: e.name, ziffern: e.ziffern || "",
+                                     text: e.text || "", db: e.db, vorher: e.wert }));
+    start({ nach: { target: zeig.target, frage: zeig.frage, wann: zeig.wann }, k });
+    try { document.querySelector(".mlesewerk").scrollIntoView({ behavior: "smooth", block: "center" }); } catch {}
+  };
   const q = trefferSuche.trim().toLowerCase();
   const zeigLive = useMemo(() => (zeig ? zeig.treffer.map(lebend) : []),
     [zeig, nachId, nachName]);
@@ -1979,8 +2012,18 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
             <button className="mbtn lesen" disabled={baut} onClick={umwandeln}>
               {baut ? "wird gebaut …" : "angehakte in eine operation"}
             </button>
+            <button className="mbtn" disabled={laeuft} onClick={erneut}
+              title="dieselben einträge noch einmal messen — der neue ausschlag erscheint grün darunter">
+              erneut messen
+            </button>
             <button className="mbtn" onClick={() => drucken({ ...zeig, treffer: zeigLive })}>protokoll drucken</button>
           </div>
+          {vergleich && (
+            <p className="mvergleich">
+              ausschlag im mittel: vorher {vergleich.vor.toFixed(2)} → jetzt {vergleich.jetzt.toFixed(2)}
+              {" · "}{vergleich.schwaecher} von {vergleich.n} schwächer
+            </p>
+          )}
           <p className="mhinweis">
             {zeig.schritte === "?"
               ? `${zeig.treffer.length} treffer · ${new Date(zeig.wann).toLocaleString("de")}`
@@ -2023,12 +2066,26 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
                     ))}
                   </div>
                 )}
-                <div className="mbalken"><span style={{ width: (Math.abs(e.wert) / hoechst * 100) + "%" }} /></div>
+                {e.vorher != null ? (
+                  <>
+                    <div className="mbalken vorher"><span style={{ width: (Math.abs(e.vorher) / hoechst * 100) + "%" }} /></div>
+                    <div className="mbalken jetzt"><span style={{ width: (Math.abs(e.wert) / hoechst * 100) + "%" }} /></div>
+                  </>
+                ) : (
+                  <div className="mbalken"><span style={{ width: (Math.abs(e.wert) / hoechst * 100) + "%" }} /></div>
+                )}
               </div>
-              <span className="mtrefferwert">
-                {e.intens != null ? (e.intens > 0 ? "+" : "") + e.intens
-                  : (e.wert > 0 ? "+" : "") + e.wert.toFixed(2)}
-              </span>
+              {e.vorher != null ? (
+                <span className="mtrefferwert nach">
+                  <s>{(e.vorher > 0 ? "+" : "") + e.vorher.toFixed(2)}</s>
+                  <em>{(e.wert > 0 ? "+" : "") + e.wert.toFixed(2)}</em>
+                </span>
+              ) : (
+                <span className="mtrefferwert">
+                  {e.intens != null ? (e.intens > 0 ? "+" : "") + e.intens
+                    : (e.wert > 0 ? "+" : "") + e.wert.toFixed(2)}
+                </span>
+              )}
             </div>
           ))}
           {gefiltert.length > trefferZeige && (
@@ -3030,6 +3087,13 @@ function MaschinenStil() {
 .mtrefferleib p{margin:4px 0 0; font-size:11.5px; line-height:1.55; color:#b9beb5}
 .mbalken{height:3px; margin-top:7px; border-radius:2px; background:rgba(138,143,135,.12)}
 .mbalken span{display:block; height:100%; border-radius:2px; background:var(--glut)}
+.mbalken.vorher{margin-top:7px}
+.mbalken.jetzt{margin-top:3px}
+.mbalken.jetzt span{background:#7fb069}
+.mvergleich{margin:2px 0 8px; font-size:12px; color:#7fb069}
+.mtrefferwert.nach{display:flex; flex-direction:column; align-items:flex-end; line-height:1.25}
+.mtrefferwert.nach s{opacity:.55}
+.mtrefferwert.nach em{font-style:normal; color:#7fb069}
 .mtrefferwert{font-size:12px; color:var(--glut); flex:0 0 auto; padding-top:3px}
 .mtrefferlink{background:none; border:0; padding:0; margin:0; cursor:pointer; font-family:'IM Fell English SC', Georgia, serif; font-size:16px; color:var(--messing); text-align:left; border-bottom:1px dotted rgba(184,115,51,.45)}
 .mtrefferlink:hover{color:var(--glut)}
