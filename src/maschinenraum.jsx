@@ -1690,6 +1690,9 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
   const [frage, setFrage] = useState("");
   const [woraus, setWoraus] = useState({ raten: true, sigillen: true, quellen: false, hintergruende: false, trends: false });
   const [tag, setTag] = useState("");
+  const [anzahl, setAnzahl] = useState(() => {      // wie viele treffer die auslesung zeigt
+    try { const n = parseInt(localStorage.getItem("mr:lesezahl"), 10); return n > 0 ? n : 25; } catch { return 25; }
+  });
   const [laeuft, setLaeuft] = useState(false);
   const [ergebnis, setErgebnis] = useState(null);
   const [frueher, setFrueher] = useState([]);
@@ -1777,7 +1780,7 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
       return { ...e, wert: summe / streuung };
     }).sort((a, b) => Math.abs(b.wert) - Math.abs(a.wert));
 
-    const oben = liste.slice(0, 7);
+    const oben = liste.slice(0, anzahl);
     const neu = {
       id: neueId(), target: target.trim(), frage: frage.trim(),
       woraus: LESBAR.filter((a) => woraus[a]).map(schrankName).join(", ") + (tag.trim() ? " · " + wunschTag : ""),
@@ -1900,6 +1903,14 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
         <select className="mausschrank" value={tag} disabled={laeuft} onChange={(e) => setTag(e.target.value)}>
           <option value="">alle tags</option>
           {alleTags.map((g) => <option key={g} value={g}>{g}</option>)}
+        </select>
+        <select className="mausschrank" value={anzahl} disabled={laeuft} title="so viele treffer zeigt die auslesung"
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            setAnzahl(n);
+            try { localStorage.setItem("mr:lesezahl", String(n)); } catch {}
+          }}>
+          {[7, 15, 25, 50, 100, 200].map((n) => <option key={n} value={n}>{n} treffer</option>)}
         </select>
         <span className="mfuell" />
         <span className="mlesezahl">{kandidaten.length} einträge in der auswahl</span>
