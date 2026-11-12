@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 // ============================================================
 // DER MASCHINENRAUM — hinter der zweiten tuer auf dem deckblatt.
@@ -100,7 +100,11 @@ const tagsAus = (x) => {
   const gefunden = text.match(/#[\p{L}\p{N}_-]+/gu) || [];
   return [...new Set(gefunden.map((g) => g.toLowerCase()))];
 };
-const SCHRAENKE = ["sigillen", "raten", "quellen", "hintergruende", "targets"];
+const SCHRAENKE = ["sigillen", "raten", "quellen", "hintergruende", "targets", "trends"];
+
+const altbestandFertig = () => {
+  try { return localStorage.getItem("mr:import") === "fertig"; } catch { return false; }
+};
 
 // wo man zuletzt war (operation, schrank, auslesen) — ueberlebt ein neuladen
 function mrOrtLesen() {
@@ -227,6 +231,9 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [quellen, setQuellen] = useState([]);
   const [plaene, setPlaene] = useState([]);       // schaltplaene zum wiederverwenden
   const [ziele, setZiele] = useState([]);         // targets: wer oder was, mit zeugen-bild
+  const [trends, setTrends] = useState([]);       // trends: wohin es sich entwickeln soll (tausende)
+  const [trendsLaedt, setTrendsLaedt] = useState(false);
+  const importLaeuft = useRef(false);
   const [offen, setOffen] = useState(() => mrOrtLesen().offen || null);   // id der offenen operation
   const [liest, setLiest] = useState(() => !!mrOrtLesen().liest);          // die auslese-seite ist offen
   const blattMerk = useRef({});                   // welches kaestchen-blatt in welcher operation offen war
@@ -381,12 +388,34 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   }, [zugang, URL_DB, KEY_DB, holBilder, sag]);
 
   // ---------- laden ----------
+  // Der server liefert hoechstens 1000 zeilen je anfrage. Wer mehr hat,
+  // bekommt sonst still nur die ersten 1000 — deshalb seitenweise holen.
+  const alleHolen = useCallback(async (pfad) => {
+    const aus = [];
+    for (let off = 0; ; off += 1000) {
+      const r = await api("GET", `${pfad}${pfad.includes("?") ? "&" : "?"}limit=1000&offset=${off}`);
+      if (!r || r.length === 0) break;
+      aus.push(...r);
+    }
+    return aus;
+  }, [api]);
+  const TRENDS_PFAD = "/rest/v1/trends?select=*&order=name.asc,id.asc";
+  const RATEN_PFAD = "/rest/v1/raten?select=*&order=name.asc,id.asc";
+
+  // die trends laden im hintergrund — der raum geht schon auf, waehrend sie kommen
+  const trendsHolen = useCallback(async () => {
+    setTrendsLaedt(true);
+    try { setTrends(await alleHolen(TRENDS_PFAD)); }
+    catch (e) { /* tabelle gibt es noch nicht: bleibt leer, der selbsttest meldet es */ }
+    setTrendsLaedt(false);
+  }, [alleHolen]);
+
   const laden = useCallback(async () => {
     try {
       const [op, si, ra, qu, pl, zi] = await Promise.all([
         api("GET", "/rest/v1/operationen?select=*&order=zuletzt.desc"),
         api("GET", "/rest/v1/sigillen?select=*&order=name.asc"),
-        api("GET", "/rest/v1/raten?select=*&order=name.asc"),
+        alleHolen(RATEN_PFAD),
         api("GET", "/rest/v1/quellen?select=*&order=name.asc"),
         api("GET", "/rest/v1/hintergruende?select=*&order=name.asc"),
         api("GET", "/rest/v1/targets?select=*&order=name.asc"),
@@ -399,6 +428,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       setQuellen(qu || []);
       setPlaene(pl || []);
       setZiele(zi || []);
+      trendsHolen();
       holBilder([
         ...(op || []).map((o) => o.hintergrund),
         ...(si || []).map((s) => s.bild),
@@ -409,7 +439,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       sag("laden ging nicht: " + String(e.message), "schlimm");
     }
     setLaedt(false);
-  }, [api, holBilder]);
+  }, [api, holBilder, alleHolen, trendsHolen]);
 
   useEffect(() => { laden(); }, [laden]);
 
@@ -508,13 +538,15 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
     };
 
     for (const tab of ["operationen", "bauteile", "logbuch", "operation_quellen",
-                       "sigillen", "raten", "quellen", "hintergruende", "targets", "auslesungen"])
+                       "sigillen", "raten", "quellen", "hintergruende", "targets", "trends", "auslesungen"])
       await pruefe("tabelle " + tab, () => api("GET", `/rest/v1/${tab}?select=*&limit=1`));
 
     await pruefe("spalte operationen.titel",
       () => api("GET", "/rest/v1/operationen?select=titel&limit=1"));
     await pruefe("spalte bauteile.target_id",
       () => api("GET", "/rest/v1/bauteile?select=target_id&limit=1"));
+    await pruefe("spalte bauteile.trend_id",
+      () => api("GET", "/rest/v1/bauteile?select=trend_id&limit=1"));
 
     // den eimer selbst fragen, nicht seinen inhalt: eine leere liste
     // kommt auch dann freundlich zurueck, wenn es ihn gar nicht gibt
@@ -579,6 +611,9 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
         } else if (e.art === "sigillen") {
           const g = finde(sigillen, e);
           teile.push({ bezeichnung: e.name, art: "verstaerker", sigille_id: g ? g.id : null });
+        } else if (e.art === "trends") {
+          const t = finde(trends, e);
+          teile.push({ bezeichnung: e.name, art: "trend", trend_id: t ? t.id : null });
         }
       });
       for (let i = 0; i < teile.length; i++) {
@@ -604,6 +639,58 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       setOffen(opId);
       sag("operation angelegt — formuliere oben deine absicht, dann anschalten");
     } catch (e) { sag(String(e.message), "schlimm"); }
+  };
+
+  // Der alte bestand aus dem windows-programm liegt als JSON in der app
+  // (public/import). Hier wird er in die datenbank geschrieben — in
+  // stuecken, mit festen ids: ein zweiter lauf legt nichts doppelt an.
+  const altbestandHolen = async () => {
+    if (importLaeuft.current) return;
+    importLaeuft.current = true;
+    try {
+      sag("altbestand: wird geholt …", "laeuft");
+      const holen = async (name) => {
+        const r = await fetch("/import/" + name, { cache: "no-store" });
+        if (!r.ok) throw new Error(`import/${name} nicht gefunden (${r.status}) — ist der letzte push durch?`);
+        try { return await r.json(); }
+        catch { throw new Error(`import/${name} ist keine datenbank-datei — ist der letzte push durch?`); }
+      };
+      const idx = await holen("index.json");
+      const gesamt = idx.trends + idx.raten;
+      let drin = 0;
+      for (const t of idx.teile) {
+        const zeilen = await holen(t.datei);
+        for (let i = 0; i < zeilen.length; i += 400) {
+          const stueck = zeilen.slice(i, i + 400);
+          const si = await zugang();
+          if (!si) throw new Error("nicht angemeldet");
+          const r = await fetch(`${URL_DB}/rest/v1/${t.art}?on_conflict=id`, {
+            method: "POST",
+            headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
+                       "Content-Type": "application/json",
+                       Prefer: "resolution=ignore-duplicates,return=minimal" },
+            body: JSON.stringify(stueck),
+          });
+          if (!r.ok) throw new Error(`${t.datei}: abgelehnt (${r.status}) ` + (await r.text()).slice(0, 160));
+          drin += stueck.length;
+          sag(`altbestand: ${drin} von ${gesamt} geschrieben …`, "laeuft");
+        }
+      }
+      sag("altbestand: zähle in der datenbank nach …", "laeuft");
+      const tr = await alleHolen(TRENDS_PFAD);
+      const ra = await alleHolen(RATEN_PFAD);
+      setTrends(tr); setRaten(ra);
+      const nt = tr.filter((x) => String(x.id).startsWith("imp-")).length;
+      const nr = ra.filter((x) => String(x.id).startsWith("imp-")).length;
+      if (nt === idx.trends && nr === idx.raten) {
+        try { localStorage.setItem("mr:import", "fertig"); } catch {}
+        sag(`altbestand fertig: ${nt} trends und ${nr} raten stehen in der datenbank (nachgezählt).`);
+      } else {
+        sag(`altbestand unvollständig: trends ${nt} von ${idx.trends}, raten ${nr} von ${idx.raten}. nochmal tippen holt den rest.`, "schlimm");
+      }
+    } catch (e) {
+      sag("altbestand: " + String(e && e.message), "schlimm");
+    } finally { importLaeuft.current = false; }
   };
 
   const dieOffene = (!schrank && !liest && operationen.find((o) => o.id === offen)) || null;
@@ -640,6 +727,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("quellen"); }}>quellen</button>
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("hintergruende"); }}>hintergründe</button>
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("targets"); }}>targets</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("trends"); }}>trends</button>
           </>
         )}
       </div>
@@ -655,19 +743,21 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
 
       {!laedt && liest && (
         <Auslesen api={api} sag={sag} zurOperation={operationAusLesung}
-          alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele }} />
+          alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele, trends }} />
       )}
 
       {!laedt && !liest && schrank && (
         <Schrank key={schrank + "|" + tagMit}
           art={schrank} api={api} sag={sag} vorgabe={tagMit}
           wechseln={(a, tag) => { setTagMit(tag); setSchrank(a); }}
-          alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele }}
+          alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele, trends }}
           sigillen={sigillen} setSigillen={setSigillen}
           raten={raten} setRaten={setRaten}
           quellen={quellen} setQuellen={setQuellen}
           plaene={plaene} setPlaene={setPlaene}
           ziele={ziele} setZiele={setZiele}
+          trends={trends} setTrends={setTrends} trendsLaedt={trendsLaedt}
+          holeAltbestand={altbestandHolen}
           operationen={operationen}
           bilder={bilder} hochladen={hochladen}
         />
@@ -702,7 +792,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
         <OperationsSeite
           op={dieOffene} api={api} sag={sag} tick={tick}
           aendern={(was) => operationAendern(dieOffene.id, was)}
-          sigillen={sigillen} raten={raten} quellen={quellen} plaene={plaene} ziele={ziele}
+          sigillen={sigillen} raten={raten} quellen={quellen} plaene={plaene} ziele={ziele} trends={trends}
           bilder={bilder} hochladen={hochladen} holBilder={holBilder}
           rateDazu={(r) => setRaten((l) => [...l, r].sort(
             (a, b) => a.name.localeCompare(b.name, "de")))}
@@ -815,7 +905,7 @@ function Led({ an, takt, gestartet, gesund }) {
 // ============================================================
 // EINE OPERATION
 // ============================================================
-function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen, plaene, ziele,
+function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen, plaene, ziele, trends,
                            bilder, hochladen, holBilder, rateDazu, planDazu, zumSchrank, blattMerk }) {
   const [bauteile, setBauteile] = useState([]);
   const [eintraege, setEintraege] = useState([]);
@@ -1210,7 +1300,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         <BauteilBlatt
           b={dasBauteil} aendern={bauteilAendern} weg={bauteilWeg}
           zu={() => setGewaehlt(null)} sigillen={sigillen} raten={raten}
-          bilder={bilder} hochladen={hochladen} sag={sag} ziele={ziele} zumSchrank={zumSchrank}
+          bilder={bilder} hochladen={hochladen} sag={sag} ziele={ziele} trends={trends} zumSchrank={zumSchrank}
           anzahl={bauteile.length} nummerSetzen={nummerSetzen}
         />
       )}
@@ -1259,7 +1349,47 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
 // ============================================================
 // DAS BLATT FÜR EIN BAUTEIL
 // ============================================================
-function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hochladen, sag,
+// Bei tausenden trends taugt keine aufklappliste: suchen, antippen.
+function TrendWahl({ trends, wert, waehlen }) {
+  const [text, setText] = useState("");
+  const gewaehlt = wert ? trends.find((x) => x.id === wert) : null;
+  const q = text.trim().toLowerCase();
+  const treffer = useMemo(() => {
+    if (q.length < 2) return [];
+    const aus = [];
+    for (const x of trends) {
+      if ((x.name || "").toLowerCase().includes(q) || (x.herkunft || "").toLowerCase().includes(q)) {
+        aus.push(x);
+        if (aus.length >= 12) break;
+      }
+    }
+    return aus;
+  }, [q, trends]);
+  return (
+    <div className="mtrendwahl">
+      {gewaehlt && (
+        <div className="mtrendgewaehlt">
+          <span>{gewaehlt.name}</span>
+          <button className="mklein" onClick={() => waehlen(null)} title="trend lösen">✕</button>
+        </div>
+      )}
+      <input type="text" value={text} spellCheck={false}
+        placeholder={trends.length ? `trend suchen … (${trends.length})` : "noch keine trends im schrank"}
+        onChange={(e) => setText(e.target.value)} />
+      {treffer.length > 0 && (
+        <div className="mtrendliste">
+          {treffer.map((x) => (
+            <button key={x.id} onClick={() => { waehlen(x); setText(""); }}>
+              {x.name}<i>{x.herkunft}</i>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, trends, bilder, hochladen, sag,
                         anzahl, nummerSetzen, zumSchrank }) {
   const bildWaehlen = async (datei) => {
     if (!datei) return;
@@ -1326,6 +1456,13 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hoc
             {ziele.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
           </select>
         </label>
+
+        <div className="mfeldchen">
+          <span>trend</span>
+          <TrendWahl trends={trends || []} wert={b.trend_id}
+            waehlen={(t) => aendern(b.id, t && !b.bezeichnung
+              ? { trend_id: t.id, bezeichnung: t.name } : { trend_id: t ? t.id : null }, true)} />
+        </div>
       </div>
 
       <div className="mblattreihe">
@@ -1352,11 +1489,13 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, bilder, hoc
           const g = b.sigille_id && sigillen.find((x) => x.id === b.sigille_id);
           const r = b.rate_id && raten.find((x) => x.id === b.rate_id);
           const z = b.target_id && ziele.find((x) => x.id === b.target_id);
+          const tr = b.trend_id && (trends || []).find((x) => x.id === b.trend_id);
           const stuecke = [
             g && { art: "sigille", schrank: "sigillen", such: g.name, name: g.name, text: g.beschreibung },
             r && { art: "rate", schrank: "raten", such: r.name,
                    name: r.name + (r.ziffern ? " · " + r.ziffern : ""), text: r.beschreibung },
             z && { art: "target", schrank: "targets", such: z.name, name: z.name, text: z.beschreibung },
+            tr && { art: "trend", schrank: "trends", such: tr.name, name: tr.name, text: tr.beschreibung },
           ].filter(Boolean);
           if (!stuecke.length) return <span className="mfuell" />;
           return (
@@ -1546,14 +1685,14 @@ const mische = (a, b, i) => {
   h = Math.imul(h ^ (h >>> 13), 0xC2B2AE35);
   return (h ^ (h >>> 16)) >>> 0;
 };
-const LESBAR = ["raten", "sigillen", "quellen", "hintergruende"];
+const LESBAR = ["raten", "sigillen", "quellen", "hintergruende", "trends"];
 
 function Auslesen({ api, sag, alle, zurOperation }) {
   const [haken, setHaken] = useState({});         // welche treffer in die operation sollen
   const [baut, setBaut] = useState(false);
   const [target, setTarget] = useState("");
   const [frage, setFrage] = useState("");
-  const [woraus, setWoraus] = useState({ raten: true, sigillen: true, quellen: false, hintergruende: false });
+  const [woraus, setWoraus] = useState({ raten: true, sigillen: true, quellen: false, hintergruende: false, trends: false });
   const [tag, setTag] = useState("");
   const [laeuft, setLaeuft] = useState(false);
   const [ergebnis, setErgebnis] = useState(null);
@@ -1797,8 +1936,11 @@ function Auslesen({ api, sag, alle, zurOperation }) {
 // ============================================================
 function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                    quellen, setQuellen, plaene, setPlaene, ziele, setZiele,
+                   trends, setTrends, trendsLaedt, holeAltbestand,
                    operationen, bilder, hochladen, vorgabe, wechseln, alle }) {
   const [suche, setSuche] = useState(vorgabe || "");
+  const [zeige, setZeige] = useState(60);         // so viele stuecke stehen auf dem schirm
+  useEffect(() => { setZeige(60); }, [suche, art]);
   const [verweise, setVerweise] = useState({});   // id -> [operationsnamen]
   const [kaputt, setKaputt] = useState({});       // bildpfad -> adresse da, bild laedt nicht
   const [offenIds, setOffenIds] = useState({});   // id -> steht nur auf dem schirm, nicht in der datenbank
@@ -1841,9 +1983,11 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
   const kennung = operationen.map((o) => o.id + "|" + o.titel + "|" + o.target).join("~");
 
   const liste = art === "sigillen" ? sigillen : art === "raten" ? raten
-              : art === "hintergruende" ? plaene : art === "targets" ? ziele : quellen;
+              : art === "hintergruende" ? plaene : art === "targets" ? ziele
+              : art === "trends" ? trends : quellen;
   const setListe = art === "sigillen" ? setSigillen : art === "raten" ? setRaten
-              : art === "hintergruende" ? setPlaene : art === "targets" ? setZiele : setQuellen;
+              : art === "hintergruende" ? setPlaene : art === "targets" ? setZiele
+              : art === "trends" ? setTrends : setQuellen;
   const tabelle = art;
   const mitBild = art === "sigillen" || art === "hintergruende" || art === "targets";
 
@@ -1853,7 +1997,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     (async () => {
       try {
         const spalte = art === "sigillen" ? "sigille_id" : art === "raten" ? "rate_id"
-                     : art === "targets" ? "target_id" : null;
+                     : art === "targets" ? "target_id" : art === "trends" ? "trend_id" : null;
         const gefunden = {};
         if (art === "hintergruende") {
           // hier haengt der verweis am bildpfad, nicht an einer id
@@ -1905,7 +2049,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
           ? { id: neueId(), name: "neuer schaltplan", beschreibung: "" }
           : art === "targets"
             ? { id: neueId(), name: "neues target", beschreibung: "" }
-            : { id: neueId(), name: "neue quelle", notiz: "" };
+            : art === "trends"
+              ? { id: neueId(), name: "neuer trend", beschreibung: "", herkunft: "" }
+              : { id: neueId(), name: "neue quelle", notiz: "" };
     setListe((l) => [neu, ...l]);
     try { await api("POST", `/rest/v1/${tabelle}`, neu); sichern(neu.id, {}); }
     catch (e) {
@@ -1986,18 +2132,21 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     setTimeout(() => { try { w.print(); } catch {} }, 400);
   };
 
-  const gefiltert = liste.filter((x) => {
+  // bei tausenden eintraegen nicht bei jedem tastendruck alles neu rechnen
+  const gefiltert = useMemo(() => liste.filter((x) => {
     const s = suche.trim().toLowerCase();
     if (!s) return true;
     if (s.startsWith("#")) return tagsAus(x).includes(s);       // ein tag trifft genau
     return [x.name, x.beschreibung, x.notiz, x.ziffern, x.herkunft]
       .filter(Boolean).join(" ").toLowerCase().includes(s);
-  });
+  }), [liste, suche]);
 
   // alle tags dieses schranks, die haeufigsten zuerst
-  const zaehlung = {};
-  liste.forEach((x) => tagsAus(x).forEach((g) => { zaehlung[g] = (zaehlung[g] || 0) + 1; }));
-  const alleTags = Object.keys(zaehlung).sort((a, b) => zaehlung[b] - zaehlung[a] || a.localeCompare(b, "de"));
+  const [zaehlung, alleTags] = useMemo(() => {
+    const z = {};
+    liste.forEach((x) => tagsAus(x).forEach((g) => { z[g] = (z[g] || 0) + 1; }));
+    return [z, Object.keys(z).sort((a, b) => z[b] - z[a] || a.localeCompare(b, "de"))];
+  }, [liste]);
 
   // ist ein tag gewaehlt: wo liegt er noch?
   const gewaehlterTag = suche.trim().toLowerCase().startsWith("#") ? suche.trim().toLowerCase() : "";
@@ -2013,7 +2162,11 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
         <input className="msuche" value={suche} placeholder="suchen … oder #tag"
           onChange={(e) => setSuche(e.target.value)} />
         <button className="mbtn" onClick={anlegen}>+ neu</button>
+        {(art === "trends" || art === "raten") && holeAltbestand && !altbestandFertig() && (
+          <button className="mbtn" onClick={holeAltbestand}>altbestand holen</button>
+        )}
       </div>
+      {art === "trends" && trendsLaedt && <p className="mleer">trends werden geholt … ({liste.length})</p>}
 
       {(alleTags.length > 0 || gewaehlterTag) && (
         <div className="mtagleiste">
@@ -2034,7 +2187,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
         </div>
       )}
 
-      {gefiltert.map((x) => (
+      {gefiltert.slice(0, zeige).map((x) => (
         <div className={"mstueck" + (offenIds[x.id] ? " ungesichert" : "")} key={x.id}>
           {offenIds[x.id] && <div className="mungesichert">wird gespeichert …</div>}
           <div className="mstueckkopf">
@@ -2065,6 +2218,16 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                     : art === "targets"
                       ? "wer oder was ist das, was ist zu beachten?"
                       : "wofür ist sie gut?"}
+                  onChange={(e) => aendern(x.id, { beschreibung: e.target.value })} />
+              </>
+            )}
+
+            {art === "trends" && (
+              <>
+                <input className="mherkunft" value={x.herkunft || ""} placeholder="woher? #datenbank #tag"
+                  onChange={(e) => aendern(x.id, { herkunft: e.target.value })} />
+                <textarea className="mbeschreibung" value={x.beschreibung || ""} rows={3}
+                  placeholder="was ist damit gemeint?"
                   onChange={(e) => aendern(x.id, { beschreibung: e.target.value })} />
               </>
             )}
@@ -2134,6 +2297,12 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
           )}
         </div>
       ))}
+
+      {gefiltert.length > zeige && (
+        <button className="mbtn mmehr" onClick={() => setZeige((z) => z + 100)}>
+          noch {Math.min(100, gefiltert.length - zeige)} zeigen · {gefiltert.length - zeige} weitere
+        </button>
+      )}
 
       {gefiltert.length === 0 && (
         <p className="mleer">
@@ -2721,6 +2890,21 @@ function MaschinenStil() {
 .mbalken{height:3px; margin-top:7px; border-radius:2px; background:rgba(138,143,135,.12)}
 .mbalken span{display:block; height:100%; border-radius:2px; background:var(--glut)}
 .mtrefferwert{font-size:12px; color:var(--glut); flex:0 0 auto; padding-top:3px}
+.mtrendwahl{display:flex; flex-direction:column; gap:4px; min-width:0}
+.mtrendwahl input{
+  width:100%; background:#0a100e; color:var(--messing); border:1px solid rgba(184,115,51,.35);
+  border-radius:3px; padding:6px 8px; font:inherit; font-size:12px; letter-spacing:.04em;
+}
+.mtrendgewaehlt{display:flex; align-items:center; gap:6px; color:var(--span2); font-size:12px}
+.mtrendgewaehlt span{flex:1; min-width:0; overflow-wrap:anywhere}
+.mtrendliste{display:flex; flex-direction:column; border:1px solid rgba(74,124,111,.5); border-radius:3px; background:#0d1310; max-height:260px; overflow-y:auto}
+.mtrendliste button{
+  text-align:left; background:none; border:0; border-bottom:1px solid rgba(74,124,111,.2);
+  color:var(--asche); font:inherit; font-size:12px; padding:7px 9px; cursor:pointer;
+}
+.mtrendliste button:hover{background:rgba(74,124,111,.18); color:var(--messing)}
+.mtrendliste i{display:block; font-style:normal; font-size:10px; opacity:.55; margin-top:2px}
+.mmehr{display:block; margin:14px auto}
 .meintrag .mtext small{opacity:.6}
 
 /* hashtags */
