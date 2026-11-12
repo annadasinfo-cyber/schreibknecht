@@ -3037,7 +3037,10 @@ export default function Schreibknecht() {
   const [fehler, setFehler] = useState("");
   const [laeuft, setLaeuft] = useState(false);
   const [projekte, setProjekte] = useState([]);
-  const [offen, setOffen] = useState(null);
+  // Wo man zuletzt war, ueberlebt ein neuladen der seite: welches projekt
+  // offen ist und ob studio oder maschinenraum aufgeschlagen sind.
+  const ortVonVorhin = (() => { try { return JSON.parse(localStorage.getItem("sk:ort") || "{}") || {}; } catch { return {}; } })();
+  const [offen, setOffen] = useState(ortVonVorhin.offen || null);
   const [bilder, setBilder] = useState({});
   const [msg, setMsg] = useState("");
   const [geladen, setGeladen] = useState(false);
@@ -3051,9 +3054,12 @@ export default function Schreibknecht() {
   const [tage, setTage] = useState([]);            // das tagewerk aller projekte
   const [warten, setWarten] = useState(() => warteLesen().length);   // noch nicht abgeschickt
   const [laeutet, setLaeutet] = useState(false);   // die glocke schwingt gerade
-  const [studio, setStudio] = useState(false);     // hinter der tuer: das studio
+  const [studio, setStudio] = useState(!!ortVonVorhin.studio);     // hinter der tuer: das studio
   const [studioStart, setStudioStart] = useState("liste");   // womit das studio aufgeht
-  const [mraum, setMraum] = useState(false);                 // hinter der zweiten tuer: der maschinenraum
+  const [mraum, setMraum] = useState(!!ortVonVorhin.mraum);  // hinter der zweiten tuer: der maschinenraum
+  useEffect(() => {
+    try { localStorage.setItem("sk:ort", JSON.stringify({ offen, studio, mraum })); } catch {}
+  }, [offen, studio, mraum]);
   const zuletztUhr = useRef(null);
 
   // die kartenbilder gleich beim start vorbereiten, nicht erst
@@ -3063,6 +3069,7 @@ export default function Schreibknecht() {
   const abmelden = useCallback(() => {
     sitzungSchreiben(null); setSitzung(null); setGeladen(false); setGeprueft(false);
     setProjekte([]); setOffen(null); setBilder({});
+    setStudio(false); setMraum(false);
   }, []);
 
   // die sitzung liegt zusaetzlich in einer schublade, damit api immer den

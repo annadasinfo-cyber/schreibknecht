@@ -101,6 +101,25 @@ const tagsAus = (x) => {
   return [...new Set(gefunden.map((g) => g.toLowerCase()))];
 };
 const SCHRAENKE = ["sigillen", "raten", "quellen", "hintergruende", "targets"];
+
+// wo man zuletzt war (operation, schrank, auslesen) — ueberlebt ein neuladen
+function mrOrtLesen() {
+  try { return JSON.parse(localStorage.getItem("mr:ort") || "{}") || {}; } catch { return {}; }
+}
+
+// Ziffernreihen: je zwei mit Bindestrich, bei ungerader Anzahl stehen
+// links drei. 12345 -> 123-45, 123456 -> 12-34-56. Steht etwas anderes
+// als Ziffern und Trenner drin, bleibt der Text unberuehrt.
+function ziffernFormat(text) {
+  const t = String(text || "");
+  if (/[^\d\s\-\u2013.,/]/.test(t)) return t;
+  const d = t.replace(/\D/g, "");
+  if (d.length <= 3) return d;
+  const kopf = d.length % 2 ? 3 : 2;
+  const teile = [d.slice(0, kopf)];
+  for (let i = kopf; i < d.length; i += 2) teile.push(d.slice(i, i + 2));
+  return teile.join("-");
+}
 const schrankName = (a) => (a === "hintergruende" ? "hintergründe" : a);
 
 const ARTEN = [
@@ -208,11 +227,18 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [quellen, setQuellen] = useState([]);
   const [plaene, setPlaene] = useState([]);       // schaltplaene zum wiederverwenden
   const [ziele, setZiele] = useState([]);         // targets: wer oder was, mit zeugen-bild
-  const [offen, setOffen] = useState(null);       // id der offenen operation
-  const [liest, setLiest] = useState(false);      // die auslese-seite ist offen
+  const [offen, setOffen] = useState(() => mrOrtLesen().offen || null);   // id der offenen operation
+  const [liest, setLiest] = useState(() => !!mrOrtLesen().liest);          // die auslese-seite ist offen
   const blattMerk = useRef({});                   // welches kaestchen-blatt in welcher operation offen war
   const [tagMit, setTagMit] = useState("");       // hashtag, der in den naechsten schrank mitgeht
-  const [schrank, setSchrank] = useState(null);   // "sigillen" | "raten" | "quellen"
+  const [schrank, setSchrank] = useState(() => {   // "sigillen" | "raten" | "quellen" ...
+    const s = mrOrtLesen().schrank;
+    return SCHRAENKE.includes(s) ? s : null;
+  });
+  // beim neuladen steht man wieder dort, wo man war
+  useEffect(() => {
+    try { localStorage.setItem("mr:ort", JSON.stringify({ offen, liest, schrank })); } catch {}
+  }, [offen, liest, schrank]);
   const [bilder, setBilder] = useState({});       // pfad -> signierte adresse
   const [meldung, setMeldung] = useState(null);
   const [bericht, setBericht] = useState(null);
@@ -366,6 +392,8 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
         api("GET", "/rest/v1/targets?select=*&order=name.asc"),
       ]);
       setOperationen(op || []);
+      // gab es die zuletzt offene operation inzwischen nicht mehr: zurueck zur liste
+      setOffen((o) => ((op || []).some((x) => x.id === o) ? o : null));
       setSigillen(si || []);
       setRaten(ra || []);
       setQuellen(qu || []);
@@ -2045,7 +2073,14 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
               <>
                 <div className="mratenblock">
                   <input className="mziffernfeld" value={x.ziffern || ""} placeholder="42-17-9"
-                    onChange={(e) => aendern(x.id, { ziffern: e.target.value })} />
+                    inputMode="numeric"
+                    onChange={(e) => aendern(x.id, { ziffern: e.target.value })}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter") return;
+                      e.preventDefault();
+                      const neu = ziffernFormat(e.currentTarget.value);
+                      if (neu !== (x.ziffern || "")) aendern(x.id, { ziffern: neu }, true);
+                    }} />
                   <input className="mherkunft" value={x.herkunft || ""} placeholder="woher?"
                     onChange={(e) => aendern(x.id, { herkunft: e.target.value })} />
                 </div>
