@@ -700,52 +700,82 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       const bilder0 = idx.bilder || [];
       let erledigt = {};
       try { erledigt = JSON.parse(localStorage.getItem("mr:importbilder") || "{}") || {}; } catch {}
-      let nBild = 0;
-      for (const b of bilder0) {
-        nBild++;
-        if (erledigt[b.id]) continue;
-        sag(`altbestand: bild ${nBild} von ${bilder0.length} …`, "laeuft");
-        const si = await zugang();
-        if (!si) throw new Error("nicht angemeldet");
-        const pfad = `${si.user.id}/${b.art}/${b.id}.jpg`;
-        const rb = await fetch("/import/" + b.datei, { cache: "no-store" });
-        if (!rb.ok) throw new Error(`import/${b.datei} nicht gefunden (${rb.status})`);
-        const blob = await rb.blob();
-        const ru = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
-          method: "POST",
-          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
-                     "Content-Type": "image/jpeg", "x-upsert": "true" },
-          body: blob,
-        });
-        if (!ru.ok) throw new Error(`bild ${b.id}: hochladen abgelehnt (${ru.status}) ` + (await ru.text()).slice(0, 120));
-        const rp = await fetch(`${URL_DB}/rest/v1/${b.art}?id=eq.${b.id}`, {
-          method: "PATCH",
-          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
-                     "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify({ bild: pfad }),
-        });
-        if (!rp.ok) throw new Error(`bild ${b.id}: eintragen abgelehnt (${rp.status}) ` + (await rp.text()).slice(0, 120));
-        erledigt[b.id] = pfad;
-        try { localStorage.setItem("mr:importbilder", JSON.stringify(erledigt)); } catch {}
-      }
+      const merke = () => { try { localStorage.setItem("mr:importbilder", JSON.stringify(erledigt)); } catch {} };
 
+      // jedes bild: in die ablage, dann den pfad an den eintrag schreiben.
+      // Schreibt der PATCH in keine zeile (den eintrag gibt es nicht), meldet
+      // die datenbank trotzdem "ok" — darum wird die antwort gelesen.
+      const bilderSchicken = async () => {
+        let n = 0;
+        for (const b of bilder0) {
+          n++;
+          if (erledigt[b.id]) continue;
+          sag(`altbestand: bild ${n} von ${bilder0.length} …`, "laeuft");
+          const si = await zugang();
+          if (!si) throw new Error("nicht angemeldet");
+          const pfad = `${si.user.id}/${b.art}/${b.id}.jpg`;
+          const rb = await fetch("/import/" + b.datei, { cache: "no-store" });
+          if (!rb.ok) throw new Error(`import/${b.datei} nicht gefunden (${rb.status})`);
+          const blob = await rb.blob();
+          const ru = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
+            method: "POST",
+            headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
+                       "Content-Type": "image/jpeg", "x-upsert": "true" },
+            body: blob,
+          });
+          if (!ru.ok) throw new Error(`bild ${b.id}: hochladen abgelehnt (${ru.status}) ` + (await ru.text()).slice(0, 120));
+          const rp = await fetch(`${URL_DB}/rest/v1/${b.art}?id=eq.${b.id}&select=id`, {
+            method: "PATCH",
+            headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
+                       "Content-Type": "application/json", Prefer: "return=representation" },
+            body: JSON.stringify({ bild: pfad }),
+          });
+          if (!rp.ok) throw new Error(`bild ${b.id}: eintragen abgelehnt (${rp.status}) ` + (await rp.text()).slice(0, 120));
+          let zeilen = [];
+          try { zeilen = await rp.json(); } catch {}
+          if (!Array.isArray(zeilen) || zeilen.length === 0) continue;   // eintrag fehlt: nicht als erledigt merken
+          erledigt[b.id] = pfad;
+          merke();
+        }
+      };
+
+      // nachsehen, was in der datenbank wirklich steht
+      const pruefen = async () => {
+        const tr = await alleHolen(TRENDS_PFAD);
+        const ra = await alleHolen(RATEN_PFAD);
+        const sg = await alleHolen("/rest/v1/sigillen?select=*&order=name.asc,id.asc");
+        setTrends(tr); setRaten(ra); setSigillen(sg);
+        const ist = (l) => l.filter((x) => String(x.id).startsWith("imp-"));
+        const mitB = [...ist(tr), ...ist(sg)].filter((x) => x.bild);
+        const haben = new Set(mitB.map((x) => x.id));
+        const schief = await holBilder(mitB.map((x) => x.bild), false);
+        const schiefPfade = new Set(schief.map((z) => String(z).split(":")[0]));
+        const fehlt = bilder0.filter((b) => !haben.has(b.id)
+          || schiefPfade.has((mitB.find((x) => x.id === b.id) || {}).bild));
+        return { nt: ist(tr).length, nr: ist(ra).length, ns: ist(sg).length,
+                 fehlt, namen: new Map([...tr, ...sg].map((x) => [x.id, x.name])) };
+      };
+
+      await bilderSchicken();
       sag("altbestand: zähle in der datenbank nach …", "laeuft");
-      const tr = await alleHolen(TRENDS_PFAD);
-      const ra = await alleHolen(RATEN_PFAD);
-      const sg = await alleHolen("/rest/v1/sigillen?select=*&order=name.asc,id.asc");
-      setTrends(tr); setRaten(ra); setSigillen(sg);
-      const ist = (l) => l.filter((x) => String(x.id).startsWith("imp-"));
-      const nt = ist(tr).length, nr = ist(ra).length, ns = ist(sg).length;
-      const mitBildern = [...ist(tr), ...ist(sg)].filter((x) => x.bild);
-      const schief = await holBilder(mitBildern.map((x) => x.bild), false);
-      const alles = nt === idx.trends && nr === idx.raten && ns === (idx.sigillen || 0)
-                    && mitBildern.length === bilder0.length && schief.length === 0;
+      let st = await pruefen();
+      if (st.fehlt.length) {
+        // was fehlt, noch einmal von vorn schicken
+        st.fehlt.forEach((b) => { delete erledigt[b.id]; });
+        merke();
+        await bilderSchicken();
+        st = await pruefen();
+      }
+      const alles = st.nt === idx.trends && st.nr === idx.raten && st.ns === (idx.sigillen || 0)
+                    && st.fehlt.length === 0;
       if (alles) {
         try { localStorage.setItem("mr:import2", "fertig"); } catch {}
-        sag(`altbestand fertig: ${nt} trends, ${nr} raten, ${ns} sigillen und ${mitBildern.length} bilder stehen in der datenbank (nachgezählt).`);
+        sag(`altbestand fertig: ${st.nt} trends, ${st.nr} raten, ${st.ns} sigillen und ${bilder0.length} bilder stehen in der datenbank (nachgezählt).`);
       } else {
-        sag(`altbestand unvollständig: trends ${nt}/${idx.trends}, raten ${nr}/${idx.raten}, sigillen ${ns}/${idx.sigillen || 0}, `
-          + `bilder ${mitBildern.length - schief.length}/${bilder0.length}. nochmal tippen holt den rest.`, "schlimm");
+        const wer = st.fehlt.slice(0, 3).map((b) => st.namen.get(b.id) || b.id).join(", ");
+        sag(`altbestand unvollständig: trends ${st.nt}/${idx.trends}, raten ${st.nr}/${idx.raten}, sigillen ${st.ns}/${idx.sigillen || 0}, `
+          + `bilder ${bilder0.length - st.fehlt.length}/${bilder0.length}`
+          + (st.fehlt.length ? ` — es fehlt: ${wer}` : "") + ".", "schlimm");
       }
     } catch (e) {
       sag("altbestand: " + String(e && e.message), "schlimm");
