@@ -1779,17 +1779,29 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
   // Ein eintrag gilt erst als gespeichert, wenn die datenbank ihn auf
   // nachfrage zurueckgibt. Vorher traegt er ein sichtbares zeichen —
   // sonst merkt man erst beim naechsten oeffnen, dass etwas fehlt.
+  // Verglichen wird immer mit dem NEUESTEN geschriebenen stand, und nur die
+  // juengste nachfrage zaehlt. Vorher verglich eine alte nachfrage mit dem,
+  // was drei tastendruecke frueher galt — und schlug falschen alarm, sobald
+  // man weitertippte.
+  const geschrieben = useRef({});     // id -> alles, was zuletzt weggeschrieben wurde
+  const runde = useRef({});           // id -> nummer der juengsten nachfrage
   const sichern = (id, was) => {
+    geschrieben.current[id] = { ...geschrieben.current[id], ...was };
+    const meine = (runde.current[id] = (runde.current[id] || 0) + 1);
     setOffenIds((o) => ({ ...o, [id]: true }));
     clearTimeout(nachfragen.current[id]);
     const fragen = async (versuch) => {
+      if (runde.current[id] !== meine) return;              // es gibt eine juengere
+      let stimmt = false;
       try {
         const r = await api("GET", `/rest/v1/${tabelle}?id=eq.${id}&select=*`);
+        if (runde.current[id] !== meine) return;            // waehrenddessen ueberholt
         const da = r && r[0];
-        const stimmt = da && Object.keys(was || {}).every((k) => (da[k] ?? null) === (was[k] ?? null));
-        if (stimmt) { setOffenIds((o) => { const n = { ...o }; delete n[id]; return n; }); return; }
+        const soll = geschrieben.current[id] || {};
+        stimmt = !!da && Object.keys(soll).every((k) => (da[k] ?? null) === (soll[k] ?? null));
       } catch {}
-      if (versuch < 4) nachfragen.current[id] = setTimeout(() => fragen(versuch + 1), 2500);
+      if (stimmt) { setOffenIds((o) => { const n = { ...o }; delete n[id]; return n; }); return; }
+      if (versuch < 5) nachfragen.current[id] = setTimeout(() => fragen(versuch + 1), 2500);
       else sag("ein eintrag ist nicht in der datenbank angekommen — er steht nur hier auf dem schirm. "
              + "netz prüfen und die seite offen lassen.", "schlimm");
     };
