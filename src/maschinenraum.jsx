@@ -105,7 +105,7 @@ const tagsAus = (x) => {
 const SCHRAENKE = ["sigillen", "raten", "quellen", "hintergruende", "targets", "trends"];
 
 const altbestandFertig = () => {
-  try { return localStorage.getItem("mr:import2") === "fertig"; } catch { return false; }
+  try { return localStorage.getItem("mr:import3") === "fertig"; } catch { return false; }
 };
 
 // wo man zuletzt war (operation, schrank, auslesen) — ueberlebt ein neuladen
@@ -769,7 +769,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       const alles = st.nt === idx.trends && st.nr === idx.raten && st.ns === (idx.sigillen || 0)
                     && st.fehlt.length === 0;
       if (alles) {
-        try { localStorage.setItem("mr:import2", "fertig"); } catch {}
+        try { localStorage.setItem("mr:import3", "fertig"); } catch {}
         sag(`altbestand fertig: ${st.nt} trends, ${st.nr} raten, ${st.ns} sigillen und ${bilder0.length} bilder stehen in der datenbank (nachgezählt).`);
       } else {
         const wer = st.fehlt.slice(0, 3).map((b) => st.namen.get(b.id) || b.id).join(", ");
