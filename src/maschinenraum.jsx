@@ -813,10 +813,10 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
             {!offen && <button className="mbtn lesen" onClick={() => setLiest(true)}>auslesen</button>}
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("sigillen"); }}>sigillen</button>
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("raten"); }}>raten</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("trends"); }}>trends</button>
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("quellen"); }}>quellen</button>
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("hintergruende"); }}>hintergründe</button>
             <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("targets"); }}>targets</button>
-            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("trends"); }}>trends</button>
           </>
         )}
       </div>
@@ -2314,7 +2314,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
               </>
             )}
 
-            {art === "trends" && (
+            {(art === "trends" || art === "sigillen") && (
               <>
                 <input className="mherkunft" value={x.herkunft || ""} placeholder="woher? #datenbank #tag"
                   onChange={(e) => aendern(x.id, { herkunft: e.target.value })} />
