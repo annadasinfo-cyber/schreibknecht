@@ -92,11 +92,13 @@ function bildKleinrechnen(datei, kante) {
 
 // wie gross ein bild sein darf — ein schaltplan fuellt die ganze flaeche,
 // eine sigille sitzt auf einem kaestchen
-const KANTE = { schaltungen: 1800, sigillen: 1000, targets: 1000, bauteile: 1000 };
+const KANTE = { schaltungen: 1800, sigillen: 1000, targets: 1000, trends: 1000, bauteile: 1000 };
 
 // Hashtags: jedes #wort in name, beschreibung, notiz oder herkunft.
 const tagsAus = (x) => {
-  const text = [x.name, x.beschreibung, x.notiz, x.herkunft].filter(Boolean).join(" ");
+  // ein # mitten in einer internetadresse ist kein hashtag
+  const text = [x.name, x.beschreibung, x.notiz, x.herkunft].filter(Boolean).join(" ")
+    .replace(/https?:\/\/\S+/g, " ");
   const gefunden = text.match(/#[\p{L}\p{N}_-]+/gu) || [];
   return [...new Set(gefunden.map((g) => g.toLowerCase()))];
 };
@@ -405,10 +407,13 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   // die trends laden im hintergrund — der raum geht schon auf, waehrend sie kommen
   const trendsHolen = useCallback(async () => {
     setTrendsLaedt(true);
-    try { setTrends(await alleHolen(TRENDS_PFAD)); }
-    catch (e) { /* tabelle gibt es noch nicht: bleibt leer, der selbsttest meldet es */ }
+    try {
+      const t = await alleHolen(TRENDS_PFAD);
+      setTrends(t);
+      holBilder(t.map((x) => x.bild));
+    } catch (e) { /* tabelle gibt es noch nicht: bleibt leer, der selbsttest meldet es */ }
     setTrendsLaedt(false);
-  }, [alleHolen]);
+  }, [alleHolen, holBilder]);
 
   const laden = useCallback(async () => {
     try {
@@ -656,7 +661,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
         catch { throw new Error(`import/${name} ist keine datenbank-datei — ist der letzte push durch?`); }
       };
       const idx = await holen("index.json");
-      const gesamt = idx.trends + idx.raten;
+      const gesamt = idx.trends + idx.raten + (idx.sigillen || 0);
       let drin = 0;
       for (const t of idx.teile) {
         const zeilen = await holen(t.datei);
@@ -676,17 +681,56 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
           sag(`altbestand: ${drin} von ${gesamt} geschrieben …`, "laeuft");
         }
       }
+      // die bilder: erst in die ablage, dann den pfad an den eintrag schreiben
+      const bilder0 = idx.bilder || [];
+      let erledigt = {};
+      try { erledigt = JSON.parse(localStorage.getItem("mr:importbilder") || "{}") || {}; } catch {}
+      let nBild = 0;
+      for (const b of bilder0) {
+        nBild++;
+        if (erledigt[b.id]) continue;
+        sag(`altbestand: bild ${nBild} von ${bilder0.length} …`, "laeuft");
+        const si = await zugang();
+        if (!si) throw new Error("nicht angemeldet");
+        const pfad = `${si.user.id}/${b.art}/${b.id}.jpg`;
+        const rb = await fetch("/import/" + b.datei, { cache: "no-store" });
+        if (!rb.ok) throw new Error(`import/${b.datei} nicht gefunden (${rb.status})`);
+        const blob = await rb.blob();
+        const ru = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
+          method: "POST",
+          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
+                     "Content-Type": "image/jpeg", "x-upsert": "true" },
+          body: blob,
+        });
+        if (!ru.ok) throw new Error(`bild ${b.id}: hochladen abgelehnt (${ru.status}) ` + (await ru.text()).slice(0, 120));
+        const rp = await fetch(`${URL_DB}/rest/v1/${b.art}?id=eq.${b.id}`, {
+          method: "PATCH",
+          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
+                     "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify({ bild: pfad }),
+        });
+        if (!rp.ok) throw new Error(`bild ${b.id}: eintragen abgelehnt (${rp.status}) ` + (await rp.text()).slice(0, 120));
+        erledigt[b.id] = pfad;
+        try { localStorage.setItem("mr:importbilder", JSON.stringify(erledigt)); } catch {}
+      }
+
       sag("altbestand: zähle in der datenbank nach …", "laeuft");
       const tr = await alleHolen(TRENDS_PFAD);
       const ra = await alleHolen(RATEN_PFAD);
-      setTrends(tr); setRaten(ra);
-      const nt = tr.filter((x) => String(x.id).startsWith("imp-")).length;
-      const nr = ra.filter((x) => String(x.id).startsWith("imp-")).length;
-      if (nt === idx.trends && nr === idx.raten) {
+      const sg = await alleHolen("/rest/v1/sigillen?select=*&order=name.asc,id.asc");
+      setTrends(tr); setRaten(ra); setSigillen(sg);
+      const ist = (l) => l.filter((x) => String(x.id).startsWith("imp-"));
+      const nt = ist(tr).length, nr = ist(ra).length, ns = ist(sg).length;
+      const mitBildern = [...ist(tr), ...ist(sg)].filter((x) => x.bild);
+      const schief = await holBilder(mitBildern.map((x) => x.bild), false);
+      const alles = nt === idx.trends && nr === idx.raten && ns === (idx.sigillen || 0)
+                    && mitBildern.length === bilder0.length && schief.length === 0;
+      if (alles) {
         try { localStorage.setItem("mr:import", "fertig"); } catch {}
-        sag(`altbestand fertig: ${nt} trends und ${nr} raten stehen in der datenbank (nachgezählt).`);
+        sag(`altbestand fertig: ${nt} trends, ${nr} raten, ${ns} sigillen und ${mitBildern.length} bilder stehen in der datenbank (nachgezählt).`);
       } else {
-        sag(`altbestand unvollständig: trends ${nt} von ${idx.trends}, raten ${nr} von ${idx.raten}. nochmal tippen holt den rest.`, "schlimm");
+        sag(`altbestand unvollständig: trends ${nt}/${idx.trends}, raten ${nr}/${idx.raten}, sigillen ${ns}/${idx.sigillen || 0}, `
+          + `bilder ${mitBildern.length - schief.length}/${bilder0.length}. nochmal tippen holt den rest.`, "schlimm");
       }
     } catch (e) {
       sag("altbestand: " + String(e && e.message), "schlimm");
@@ -1474,12 +1518,13 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, trends, bil
         {(() => {
           const z = b.target_id && ziele.find((x) => x.id === b.target_id);
           const g = b.sigille_id && sigillen.find((x) => x.id === b.sigille_id);
-          const pfad = b.bild || (z && z.bild) || (g && g.bild);
+          const tr = b.trend_id && (trends || []).find((x) => x.id === b.trend_id);
+          const pfad = b.bild || (z && z.bild) || (g && g.bild) || (tr && tr.bild);
           if (!pfad || !bilder[pfad]) return null;
           return (
             <span className="mprobefeld">
               <img className="mprobe" src={bilder[pfad]} alt="" />
-              {!b.bild && <small>aus {z && z.bild ? "dem target" : "der sigille"}</small>}
+              {!b.bild && <small>aus {z && z.bild ? "dem target" : g && g.bild ? "der sigille" : "dem trend"}</small>}
             </span>
           );
         })()}
@@ -1989,7 +2034,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
               : art === "hintergruende" ? setPlaene : art === "targets" ? setZiele
               : art === "trends" ? setTrends : setQuellen;
   const tabelle = art;
-  const mitBild = art === "sigillen" || art === "hintergruende" || art === "targets";
+  const mitBild = art === "sigillen" || art === "hintergruende" || art === "targets" || art === "trends";
 
   // querverweise: wo ist das stueck schon im einsatz?
   useEffect(() => {
@@ -2103,7 +2148,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
     if (!datei) return;
     try {
       const pfad = await hochladen(datei,
-        art === "sigillen" ? "sigillen" : art === "targets" ? "targets" : "schaltungen");
+        art === "sigillen" ? "sigillen" : art === "targets" ? "targets" : art === "trends" ? "trends" : "schaltungen");
       setKaputt((k) => { const n = { ...k }; delete n[pfad]; return n; });
       aendern(id, { bild: pfad }, true);    // sofort schreiben, nicht erst in 700 ms
     } catch (e) { sag(String(e.message), "schlimm"); }
@@ -2162,7 +2207,7 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
         <input className="msuche" value={suche} placeholder="suchen … oder #tag"
           onChange={(e) => setSuche(e.target.value)} />
         <button className="mbtn" onClick={anlegen}>+ neu</button>
-        {(art === "trends" || art === "raten") && holeAltbestand && !altbestandFertig() && (
+        {(art === "trends" || art === "raten" || art === "sigillen") && holeAltbestand && !altbestandFertig() && (
           <button className="mbtn" onClick={holeAltbestand}>altbestand holen</button>
         )}
       </div>
@@ -2217,7 +2262,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                     ? "was ist das für eine schaltung, wofür taugt sie?"
                     : art === "targets"
                       ? "wer oder was ist das, was ist zu beachten?"
-                      : "wofür ist sie gut?"}
+                      : art === "trends"
+                        ? "was ist damit gemeint?"
+                        : "wofür ist sie gut?"}
                   onChange={(e) => aendern(x.id, { beschreibung: e.target.value })} />
               </>
             )}
@@ -2226,9 +2273,6 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
               <>
                 <input className="mherkunft" value={x.herkunft || ""} placeholder="woher? #datenbank #tag"
                   onChange={(e) => aendern(x.id, { herkunft: e.target.value })} />
-                <textarea className="mbeschreibung" value={x.beschreibung || ""} rows={3}
-                  placeholder="was ist damit gemeint?"
-                  onChange={(e) => aendern(x.id, { beschreibung: e.target.value })} />
               </>
             )}
 
