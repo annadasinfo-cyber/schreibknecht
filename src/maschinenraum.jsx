@@ -104,14 +104,6 @@ const tagsAus = (x) => {
 };
 const SCHRAENKE = ["sigillen", "raten", "quellen", "hintergruende", "targets", "trends"];
 
-const altbestandFertig = () => {
-  try { return localStorage.getItem("mr:import3") === "fertig"; } catch { return false; }
-};
-
-const zweiFertig = () => {
-  try { return localStorage.getItem("mr:import4") === "fertig"; } catch { return false; }
-};
-
 // wo man zuletzt war (operation, schrank, auslesen) — ueberlebt ein neuladen
 function mrOrtLesen() {
   try { return JSON.parse(localStorage.getItem("mr:ort") || "{}") || {}; } catch { return {}; }
@@ -239,8 +231,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [ziele, setZiele] = useState([]);         // targets: wer oder was, mit zeugen-bild
   const [trends, setTrends] = useState([]);       // trends: wohin es sich entwickeln soll (tausende)
   const [trendsLaedt, setTrendsLaedt] = useState(false);
-  const importLaeuft = useRef(false);
-  const [lesenStand, setLesenStand] = useState(0);   // zaehlt hoch, wenn neue auslesungen dazukamen
+  const [lesenStand] = useState(0);
   const [offen, setOffen] = useState(() => mrOrtLesen().offen || null);   // id der offenen operation
   const [liest, setLiest] = useState(() => !!mrOrtLesen().liest);          // die auslese-seite ist offen
   const blattMerk = useRef({});                   // welches kaestchen-blatt in welcher operation offen war
@@ -653,219 +644,6 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
     } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
-  // Die zweite lieferung aus dem alten programm (public/import/zwei): die
-  // ELiP-analysen als auslesungen — mit ziel-foto — und ein paar
-  // hintergruende. Feste ids: ein zweiter lauf legt nichts doppelt an.
-  const zweiHolen = async () => {
-    if (importLaeuft.current) return;
-    importLaeuft.current = true;
-    try {
-      sag("analysen: werden geholt …", "laeuft");
-      const holen = async (name) => {
-        const r = await fetch("/import/zwei/" + name, { cache: "no-store" });
-        if (!r.ok) throw new Error(`import/zwei/${name} nicht gefunden (${r.status}) — ist der letzte push durch?`);
-        try { return await r.json(); }
-        catch { throw new Error(`import/zwei/${name} ist keine datenbank-datei — ist der letzte push durch?`); }
-      };
-      const schreiben = async (tabelle, zeilen) => {
-        const si = await zugang();
-        if (!si) throw new Error("nicht angemeldet");
-        const r = await fetch(`${URL_DB}/rest/v1/${tabelle}?on_conflict=id`, {
-          method: "POST",
-          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
-                     "Content-Type": "application/json",
-                     Prefer: "resolution=ignore-duplicates,return=minimal" },
-          body: JSON.stringify(zeilen),
-        });
-        if (!r.ok) throw new Error(`${tabelle}: abgelehnt (${r.status}) ` + (await r.text()).slice(0, 160));
-      };
-      const idx = await holen("index.json");
-      await schreiben("hintergruende", await holen("hintergruende.json"));
-      let n = 0;
-      for (const t of idx.teile) {
-        n++;
-        sag(`analysen: ${n} von ${idx.teile.length} geschrieben …`, "laeuft");
-        await schreiben("auslesungen", [await holen(t.datei)]);
-      }
-
-      // die ziel-fotos: der pfad ergibt sich aus der id der auslesung
-      const si0 = await zugang();
-      if (!si0) throw new Error("nicht angemeldet");
-      const fotoPfad = (id) => `${si0.user.id}/auslesungen/${id}.jpg`;
-      let f = 0;
-      for (const id of idx.fotos || []) {
-        f++;
-        sag(`analysen: foto ${f} von ${idx.fotos.length} …`, "laeuft");
-        const si = await zugang();
-        if (!si) throw new Error("nicht angemeldet");
-        const rb = await fetch(`/import/zwei/${id}.jpg`, { cache: "no-store" });
-        if (!rb.ok) throw new Error(`import/zwei/${id}.jpg nicht gefunden (${rb.status})`);
-        const ru = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${fotoPfad(id)}`, {
-          method: "POST",
-          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
-                     "Content-Type": "image/jpeg", "x-upsert": "true" },
-          body: await rb.blob(),
-        });
-        if (!ru.ok) throw new Error(`foto ${id}: hochladen abgelehnt (${ru.status}) ` + (await ru.text()).slice(0, 120));
-      }
-
-      // nachsehen, was in der datenbank wirklich steht
-      sag("analysen: zähle in der datenbank nach …", "laeuft");
-      const da = await api("GET", "/rest/v1/auslesungen?id=like.imp-*&select=id&limit=1000");
-      const hg = await api("GET", "/rest/v1/hintergruende?select=*&order=name.asc");
-      setPlaene(hg || []);
-      const nHg = (hg || []).filter((x) => String(x.id).startsWith("imp-")).length;
-      const schief = await holBilder((idx.fotos || []).map(fotoPfad), false);
-      setLesenStand((x) => x + 1);
-      if ((da || []).length === idx.auslesungen && nHg === idx.hintergruende && schief.length === 0) {
-        try { localStorage.setItem("mr:import4", "fertig"); } catch {}
-        sag(`analysen fertig: ${(da || []).length} auslesungen, ${(idx.fotos || []).length} fotos und ${nHg} hintergründe stehen in der datenbank (nachgezählt).`);
-      } else {
-        sag(`analysen unvollständig: auslesungen ${(da || []).length}/${idx.auslesungen}, hintergründe ${nHg}/${idx.hintergruende}, `
-          + `fotos ${(idx.fotos || []).length - schief.length}/${(idx.fotos || []).length}`
-          + (schief.length ? " — " + String(schief[0]).slice(0, 120) : "") + ". Noch einmal drücken versucht den Rest.", "schlimm");
-      }
-    } catch (e) {
-      sag("analysen: " + String(e && e.message), "schlimm");
-    } finally { importLaeuft.current = false; }
-  };
-
-  // Der alte bestand aus dem windows-programm liegt als JSON in der app
-  // (public/import). Hier wird er in die datenbank geschrieben — in
-  // stuecken, mit festen ids: ein zweiter lauf legt nichts doppelt an.
-  const altbestandHolen = async () => {
-    if (importLaeuft.current) return;
-    importLaeuft.current = true;
-    try {
-      sag("altbestand: wird geholt …", "laeuft");
-      const holen = async (name) => {
-        const r = await fetch("/import/" + name, { cache: "no-store" });
-        if (!r.ok) throw new Error(`import/${name} nicht gefunden (${r.status}) — ist der letzte push durch?`);
-        try { return await r.json(); }
-        catch { throw new Error(`import/${name} ist keine datenbank-datei — ist der letzte push durch?`); }
-      };
-      const idx = await holen("index.json");
-      const gesamt = idx.trends + idx.raten + (idx.sigillen || 0);
-      let drin = 0;
-      for (const t of idx.teile) {
-        const zeilen = await holen(t.datei);
-        for (let i = 0; i < zeilen.length; i += 400) {
-          const stueck = zeilen.slice(i, i + 400);
-          const si = await zugang();
-          if (!si) throw new Error("nicht angemeldet");
-          const r = await fetch(`${URL_DB}/rest/v1/${t.art}?on_conflict=id`, {
-            method: "POST",
-            headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
-                       "Content-Type": "application/json",
-                       Prefer: "resolution=ignore-duplicates,return=minimal" },
-            body: JSON.stringify(stueck),
-          });
-          if (!r.ok) throw new Error(`${t.datei}: abgelehnt (${r.status}) ` + (await r.text()).slice(0, 160));
-          drin += stueck.length;
-          sag(`altbestand: ${drin} von ${gesamt} geschrieben …`, "laeuft");
-        }
-      }
-      // was der erste durchlauf zu viel angelegt hat (die kartenserien, die
-      // jetzt bei den sigillen liegen), wird wieder entfernt — nur eintraege
-      // mit "imp-" im namen, also nur, was dieser import selbst angelegt hat
-      const weg = ((idx.entfernen && idx.entfernen.trends) || []).filter((i) => String(i).startsWith("imp-"));
-      for (let i = 0; i < weg.length; i += 40) {
-        const si = await zugang();
-        if (!si) throw new Error("nicht angemeldet");
-        const liste = weg.slice(i, i + 40).join(",");
-        const r = await fetch(`${URL_DB}/rest/v1/trends?id=in.(${liste})`, {
-          method: "DELETE",
-          headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token, Prefer: "return=minimal" },
-        });
-        if (!r.ok) throw new Error(`aufräumen abgelehnt (${r.status}) ` + (await r.text()).slice(0, 120));
-      }
-
-      // die bilder: erst in die ablage, dann den pfad an den eintrag schreiben
-      const bilder0 = idx.bilder || [];
-      let erledigt = {};
-      try { erledigt = JSON.parse(localStorage.getItem("mr:importbilder") || "{}") || {}; } catch {}
-      const merke = () => { try { localStorage.setItem("mr:importbilder", JSON.stringify(erledigt)); } catch {} };
-
-      // jedes bild: in die ablage, dann den pfad an den eintrag schreiben.
-      // Schreibt der PATCH in keine zeile (den eintrag gibt es nicht), meldet
-      // die datenbank trotzdem "ok" — darum wird die antwort gelesen.
-      const bilderSchicken = async () => {
-        let n = 0;
-        for (const b of bilder0) {
-          n++;
-          if (erledigt[b.id]) continue;
-          sag(`altbestand: bild ${n} von ${bilder0.length} …`, "laeuft");
-          const si = await zugang();
-          if (!si) throw new Error("nicht angemeldet");
-          const pfad = `${si.user.id}/${b.art}/${b.id}.jpg`;
-          const rb = await fetch("/import/" + b.datei, { cache: "no-store" });
-          if (!rb.ok) throw new Error(`import/${b.datei} nicht gefunden (${rb.status})`);
-          const blob = await rb.blob();
-          const ru = await fetch(`${URL_DB}/storage/v1/object/${EIMER}/${pfad}`, {
-            method: "POST",
-            headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
-                       "Content-Type": "image/jpeg", "x-upsert": "true" },
-            body: blob,
-          });
-          if (!ru.ok) throw new Error(`bild ${b.id}: hochladen abgelehnt (${ru.status}) ` + (await ru.text()).slice(0, 120));
-          const rp = await fetch(`${URL_DB}/rest/v1/${b.art}?id=eq.${b.id}&select=id`, {
-            method: "PATCH",
-            headers: { apikey: KEY_DB, Authorization: "Bearer " + si.access_token,
-                       "Content-Type": "application/json", Prefer: "return=representation" },
-            body: JSON.stringify({ bild: pfad }),
-          });
-          if (!rp.ok) throw new Error(`bild ${b.id}: eintragen abgelehnt (${rp.status}) ` + (await rp.text()).slice(0, 120));
-          let zeilen = [];
-          try { zeilen = await rp.json(); } catch {}
-          if (!Array.isArray(zeilen) || zeilen.length === 0) continue;   // eintrag fehlt: nicht als erledigt merken
-          erledigt[b.id] = pfad;
-          merke();
-        }
-      };
-
-      // nachsehen, was in der datenbank wirklich steht
-      const pruefen = async () => {
-        const tr = await alleHolen(TRENDS_PFAD);
-        const ra = await alleHolen(RATEN_PFAD);
-        const sg = await alleHolen("/rest/v1/sigillen?select=*&order=name.asc,id.asc");
-        setTrends(tr); setRaten(ra); setSigillen(sg);
-        const ist = (l) => l.filter((x) => String(x.id).startsWith("imp-"));
-        const mitB = [...ist(tr), ...ist(sg)].filter((x) => x.bild);
-        const haben = new Set(mitB.map((x) => x.id));
-        const schief = await holBilder(mitB.map((x) => x.bild), false);
-        const schiefPfade = new Set(schief.map((z) => String(z).split(":")[0]));
-        const fehlt = bilder0.filter((b) => !haben.has(b.id)
-          || schiefPfade.has((mitB.find((x) => x.id === b.id) || {}).bild));
-        return { nt: ist(tr).length, nr: ist(ra).length, ns: ist(sg).length,
-                 fehlt, namen: new Map([...tr, ...sg].map((x) => [x.id, x.name])) };
-      };
-
-      await bilderSchicken();
-      sag("altbestand: zähle in der datenbank nach …", "laeuft");
-      let st = await pruefen();
-      if (st.fehlt.length) {
-        // was fehlt, noch einmal von vorn schicken
-        st.fehlt.forEach((b) => { delete erledigt[b.id]; });
-        merke();
-        await bilderSchicken();
-        st = await pruefen();
-      }
-      const alles = st.nt === idx.trends && st.nr === idx.raten && st.ns === (idx.sigillen || 0)
-                    && st.fehlt.length === 0;
-      if (alles) {
-        try { localStorage.setItem("mr:import3", "fertig"); } catch {}
-        sag(`altbestand fertig: ${st.nt} trends, ${st.nr} raten, ${st.ns} sigillen und ${bilder0.length} bilder stehen in der datenbank (nachgezählt).`);
-      } else {
-        const wer = st.fehlt.slice(0, 3).map((b) => st.namen.get(b.id) || b.id).join(", ");
-        sag(`altbestand unvollständig: trends ${st.nt}/${idx.trends}, raten ${st.nr}/${idx.raten}, sigillen ${st.ns}/${idx.sigillen || 0}, `
-          + `bilder ${bilder0.length - st.fehlt.length}/${bilder0.length}`
-          + (st.fehlt.length ? ` — es fehlt: ${wer}` : "") + ".", "schlimm");
-      }
-    } catch (e) {
-      sag("altbestand: " + String(e && e.message), "schlimm");
-    } finally { importLaeuft.current = false; }
-  };
-
   const dieOffene = (!schrank && !liest && operationen.find((o) => o.id === offen)) || null;
 
   // ---------- anzeige ----------
@@ -917,7 +695,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       {!laedt && liest && (
         <Auslesen api={api} sag={sag} zurOperation={operationAusLesung}
           zugang={zugang} bilder={bilder} holBilder={holBilder}
-          stand={lesenStand} holeZwei={zweiHolen}
+          stand={lesenStand}
           alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele, trends }} />
       )}
 
@@ -932,7 +710,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
           plaene={plaene} setPlaene={setPlaene}
           ziele={ziele} setZiele={setZiele}
           trends={trends} setTrends={setTrends} trendsLaedt={trendsLaedt}
-          holeAltbestand={altbestandHolen} holeZwei={zweiHolen}
+         
           operationen={operationen}
           bilder={bilder} hochladen={hochladen}
         />
@@ -1863,7 +1641,7 @@ const mische = (a, b, i) => {
 };
 const LESBAR = ["raten", "sigillen", "quellen", "hintergruende", "trends"];
 
-function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, stand, holeZwei }) {
+function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, stand }) {
   const [haken, setHaken] = useState({});         // welche treffer in die operation sollen
   const [baut, setBaut] = useState(false);
   const [target, setTarget] = useState("");
@@ -2068,14 +1846,6 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
         </label>
       </div>
 
-      {holeZwei && !zweiFertig() && (
-        <div className="mlesewahl">
-          <span className="mwandtitel">alte analysen aus dem windows-programm</span>
-          <span className="mfuell" />
-          <button className="mbtn" onClick={holeZwei}>analysen + hintergründe holen</button>
-        </div>
-      )}
-
       <div className="mlesewahl">
         <span className="mwandtitel">gelesen wird aus</span>
         {LESBAR.map((a) => (
@@ -2202,7 +1972,7 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
 // ============================================================
 function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                    quellen, setQuellen, plaene, setPlaene, ziele, setZiele,
-                   trends, setTrends, trendsLaedt, holeAltbestand, holeZwei,
+                   trends, setTrends, trendsLaedt,
                    operationen, bilder, hochladen, vorgabe, wechseln, alle }) {
   const [suche, setSuche] = useState(vorgabe || "");
   const [zeige, setZeige] = useState(60);         // so viele stuecke stehen auf dem schirm
@@ -2428,12 +2198,6 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
         <input className="msuche" value={suche} placeholder="suchen … oder #tag"
           onChange={(e) => setSuche(e.target.value)} />
         <button className="mbtn" onClick={anlegen}>+ neu</button>
-        {(art === "trends" || art === "raten" || art === "sigillen") && holeAltbestand && !altbestandFertig() && (
-          <button className="mbtn" onClick={holeAltbestand}>altbestand holen</button>
-        )}
-        {art === "hintergruende" && holeZwei && !zweiFertig() && (
-          <button className="mbtn" onClick={holeZwei}>analysen + hintergründe holen</button>
-        )}
       </div>
       {art === "trends" && trendsLaedt && <p className="mleer">trends werden geholt … ({liste.length})</p>}
 
