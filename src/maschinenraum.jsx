@@ -233,6 +233,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [trendsLaedt, setTrendsLaedt] = useState(false);
   const [lesenStand] = useState(0);
   const [anzAus, setAnzAus] = useState(null);       // wie viele auslesungen es gibt (fuer das zaehlwerk)
+  const [rueck, setRueck] = useState(null);         // id der auslesung, aus der man in einen schrank gesprungen ist
   const [offen, setOffen] = useState(() => mrOrtLesen().offen || null);   // id der offenen operation
   const [liest, setLiest] = useState(() => !!mrOrtLesen().liest);          // die auslese-seite ist offen
   const blattMerk = useRef({});                   // welches kaestchen-blatt in welcher operation offen war
@@ -659,11 +660,12 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
 
       <div className="mkopf">
         <button className="mbtn" onClick={() => {
-          if (liest) setLiest(false);
+          if (liest) { setLiest(false); setRueck(null); }
+          else if (schrank && rueck) { setSchrank(null); setLiest(true); }   // zurueck in die auslesung
           else if (schrank) setSchrank(null);     // zurueck in die offene operation
           else if (offen) setOffen(null);
           else zurueck();
-        }}>‹ {liest ? "maschinenraum" : schrank ? (offen ? "operation" : "maschinenraum")
+        }}>‹ {liest ? "maschinenraum" : schrank ? (rueck ? "auslesung" : offen ? "operation" : "maschinenraum")
               : offen ? "operationen" : "zurück"}</button>
 
         {dieOffene
@@ -701,7 +703,10 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       {!laedt && liest && (
         <Auslesen api={api} sag={sag} zurOperation={operationAusLesung}
           zugang={zugang} bilder={bilder} holBilder={holBilder}
-          stand={lesenStand}
+          stand={lesenStand} oeffneId={rueck}
+          zumEintrag={(art, name, lesungId) => {
+            setRueck(lesungId); setLiest(false); setTagMit(name); setSchrank(art);
+          }}
           alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele, trends }} />
       )}
 
@@ -1683,7 +1688,7 @@ const mische = (a, b, i) => {
 };
 const LESBAR = ["raten", "sigillen", "quellen", "hintergruende", "trends"];
 
-function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, stand }) {
+function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, stand, zumEintrag, oeffneId }) {
   const [haken, setHaken] = useState({});         // welche treffer in die operation sollen
   const [baut, setBaut] = useState(false);
   const [target, setTarget] = useState("");
@@ -1846,7 +1851,43 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
     const treffer = [...(v.treffer || [])].sort((x, y) => Math.abs(y.wert) - Math.abs(x.wert));
     setErgebnis({ ...v, treffer, gesamt: "?", schritte: "?" });
   };
-  const drucke = async (a) => { const v = await voll(a); if (v) drucken(v); };
+  // Die treffer einer gespeicherten auslesung merken sich nur eine kopie
+  // (name, rate, text). Angezeigt und gedruckt wird aber der AKTUELLE
+  // eintrag aus dem schrank: aendert man ihn dort, stimmt das protokoll mit.
+  // Gefunden wird er ueber die id; die alten analysen kennen nur den namen.
+  const nachId = useMemo(() => {
+    const m = {};
+    LESBAR.forEach((a) => { m[a] = new Map(((alle && alle[a]) || []).map((x) => [x.id, x])); });
+    return m;
+  }, [alle && alle.raten, alle && alle.sigillen, alle && alle.quellen, alle && alle.hintergruende, alle && alle.trends]);
+  const nachName = useMemo(() => {
+    const m = new Map();
+    ["trends", "raten", "sigillen", "quellen", "hintergruende"].forEach((a) => {
+      ((alle && alle[a]) || []).forEach((x) => {
+        const k = String(x.name || "").trim().toLowerCase();
+        if (k && !m.has(k)) m.set(k, { art: a, x });
+      });
+    });
+    return m;
+  }, [alle && alle.raten, alle && alle.sigillen, alle && alle.quellen, alle && alle.hintergruende, alle && alle.trends]);
+  const lebend = (e) => {
+    let art = e.art, x = null;
+    if (art !== "analyse") x = nachId[art] && nachId[art].get(e.id);
+    if (!x) {
+      const h = nachName.get(String(e.name || "").trim().toLowerCase());
+      if (h) { x = h.x; art = h.art; }
+    }
+    if (!x) return { ...e, verweis: null };
+    const eigen = x.beschreibung || x.notiz || "";
+    if (e.art === "analyse") return { ...e, besch: eigen || e.besch, verweis: art };   // der sendetext bleibt
+    return { ...e, name: x.name || e.name, ziffern: x.ziffern != null ? x.ziffern : e.ziffern,
+             text: eigen || e.text, verweis: art };
+  };
+  const lebendig = (a) => ({ ...a, treffer: (a.treffer || []).map(lebend) });
+  const drucke = async (a) => { const v = await voll(a); if (v) drucken(lebendig(v)); };
+
+  // kommt man aus dem schrank zurueck, ist dieselbe auslesung wieder offen
+  useEffect(() => { if (oeffneId) ansehen({ id: oeffneId }); }, [oeffneId]);
 
   // das ziel-foto einer alten analyse: der pfad ergibt sich aus der id
   const [foto, setFoto] = useState("");
@@ -1867,8 +1908,10 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
   const zeig = ergebnis;
   const hoechst = zeig ? Math.max(...zeig.treffer.map((e) => Math.abs(e.wert)), 0.01) : 1;
   const q = trefferSuche.trim().toLowerCase();
+  const zeigLive = useMemo(() => (zeig ? zeig.treffer.map(lebend) : []),
+    [zeig, nachId, nachName]);
   const gefiltert = zeig
-    ? zeig.treffer.map((e, i) => ({ e, i }))
+    ? zeigLive.map((e, i) => ({ e, i }))
         .filter(({ e }) => !q || [e.name, e.text, e.db].join(" ").toLowerCase().includes(q))
     : [];
   const frueherZeige = alleFrueher ? frueher : frueher.slice(0, 12);
@@ -1936,7 +1979,7 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
             <button className="mbtn lesen" disabled={baut} onClick={umwandeln}>
               {baut ? "wird gebaut …" : "angehakte in eine operation"}
             </button>
-            <button className="mbtn" onClick={() => drucken(zeig)}>protokoll drucken</button>
+            <button className="mbtn" onClick={() => drucken({ ...zeig, treffer: zeigLive })}>protokoll drucken</button>
           </div>
           <p className="mhinweis">
             {zeig.schritte === "?"
@@ -1962,7 +2005,10 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
               <span className="mnummer gross">{i + 1}</span>
               <div className="mtrefferleib">
                 <div className="mtrefferkopf">
-                  <b>{e.name}</b>
+                  {e.verweis && zumEintrag && zeig.id
+                    ? <button className="mtrefferlink" title={"im schrank " + schrankName(e.verweis) + " öffnen und ändern"}
+                        onClick={() => zumEintrag(e.verweis, e.name, zeig.id)}>{e.name}</button>
+                    : <b>{e.name}</b>}
                   {e.ziffern && <span className="mtrefferrate">{e.ziffern}</span>}
                   <i>{e.art === "analyse" ? (e.db || "") : schrankName(e.art)}</i>
                 </div>
@@ -2985,6 +3031,8 @@ function MaschinenStil() {
 .mbalken{height:3px; margin-top:7px; border-radius:2px; background:rgba(138,143,135,.12)}
 .mbalken span{display:block; height:100%; border-radius:2px; background:var(--glut)}
 .mtrefferwert{font-size:12px; color:var(--glut); flex:0 0 auto; padding-top:3px}
+.mtrefferlink{background:none; border:0; padding:0; margin:0; cursor:pointer; font-family:'IM Fell English SC', Georgia, serif; font-size:16px; color:var(--messing); text-align:left; border-bottom:1px dotted rgba(184,115,51,.45)}
+.mtrefferlink:hover{color:var(--glut)}
 .mbesch{opacity:.5; font-size:10.5px !important; font-style:italic}
 .meben{display:flex; gap:7px; margin-top:7px; align-items:flex-end}
 .meben span{display:flex; flex-direction:column; align-items:center; justify-content:flex-end; width:24px; height:38px}
