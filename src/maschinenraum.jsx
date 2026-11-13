@@ -623,7 +623,15 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
           const t = finde(trends, e);
           teile.push({ bezeichnung: e.name, art: "trend", trend_id: t ? t.id : null });
         } else if (e.art === "analyse") {
-          teile.push({ bezeichnung: e.name, art: "verstaerker" });
+          // ein treffer aus einer alten analyse hat keinen schrank-verweis:
+          // ueber den namen suchen, damit sein bild aus dem schrank kommt
+          const n = String(e.name || "").trim().toLowerCase();
+          const nm = (l) => (l || []).find((x) => String(x.name || "").trim().toLowerCase() === n);
+          const t = nm(trends), g = nm(sigillen), r = nm(raten);
+          teile.push(t ? { bezeichnung: e.name, art: "trend", trend_id: t.id }
+            : g ? { bezeichnung: e.name, art: "verstaerker", sigille_id: g.id }
+            : r ? { bezeichnung: e.name, art: "verstaerker", rate_id: r.id }
+            : { bezeichnung: e.name, art: "verstaerker" });
         }
       });
       for (let i = 0; i < teile.length; i++) {
@@ -1109,6 +1117,8 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     if (z && z.bild) return z.bild;
     const g = b.sigille_id && sigillen.find((x) => x.id === b.sigille_id);
     if (g && g.bild) return g.bild;
+    const t = b.trend_id && (trends || []).find((x) => x.id === b.trend_id);
+    if (t && t.bild) return t.bild;
     return null;
   };
 
