@@ -2911,6 +2911,8 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
           <span className="kachelname">maschinenraum</span>
           <span className="kachelzeile"><span>sigille · rate · puls</span></span>
         </button>
+        {/* das plus fuers neue projekt steht vorn, gleich neben den tueren */}
+        <button className="kachel neu" onClick={anlegen} title="neues projekt"><span className="plus">+</span></button>
         {projekte.length === 0 && gezogen.map((k) =>
           <img key={k.id} className="knechtkarte" src={k.bild} alt=""
             style={{ transform: `rotate(${k.kippt}deg)` }} />)}
@@ -2942,7 +2944,6 @@ function Deckblatt({ projekte, anlegen, oeffnen, weg, kopieren, sicherung, siche
           );
         })}
         {projekte.length > 0 && karteHier(projekte.length)}
-        <button className="kachel neu" onClick={anlegen}><span className="plus">+</span></button>
       </div>
       {!projekte.length && <p className="leerwort">noch nichts. leg ein projekt an.</p>}
 

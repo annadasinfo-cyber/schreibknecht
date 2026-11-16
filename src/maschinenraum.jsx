@@ -234,6 +234,27 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [lesenStand] = useState(0);
   const [anzAus, setAnzAus] = useState(null);       // wie viele auslesungen es gibt (fuer das zaehlwerk)
   const [rueck, setRueck] = useState(null);         // id der auslesung, aus der man in einen schrank gesprungen ist
+  const [ausOp, setAusOp] = useState(null);         // die operation, aus der man in ihre messung gesprungen ist
+
+  // Solange der maschinenraum offen ist, bleibt der bildschirm an: eine
+  // offene operation ist eine laufende quelle, da soll kein pausenbild kommen.
+  useEffect(() => {
+    let sperre = null, vorbei = false;
+    const halten = async () => {
+      try {
+        if (vorbei || !navigator.wakeLock || document.visibilityState !== "visible") return;
+        sperre = await navigator.wakeLock.request("screen");
+      } catch { /* geht nicht in jedem browser: dann bleibt es beim normalen verhalten */ }
+    };
+    const sicht = () => { if (document.visibilityState === "visible") halten(); };
+    halten();
+    document.addEventListener("visibilitychange", sicht);
+    return () => {
+      vorbei = true;
+      document.removeEventListener("visibilitychange", sicht);
+      try { sperre && sperre.release(); } catch {}
+    };
+  }, []);
   const [offen, setOffen] = useState(() => mrOrtLesen().offen || null);   // id der offenen operation
   const [liest, setLiest] = useState(() => !!mrOrtLesen().liest);          // die auslese-seite ist offen
   const blattMerk = useRef({});                   // welches kaestchen-blatt in welcher operation offen war
@@ -555,6 +576,8 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       () => api("GET", "/rest/v1/bauteile?select=target_id&limit=1"));
     await pruefe("spalte bauteile.trend_id",
       () => api("GET", "/rest/v1/bauteile?select=trend_id&limit=1"));
+    await pruefe("spalte operationen.auslesung_id",
+      () => api("GET", "/rest/v1/operationen?select=auslesung_id&limit=1"));
 
     // den eimer selbst fragen, nicht seinen inhalt: eine leere liste
     // kommt auch dann freundlich zurueck, wenn es ihn gar nicht gibt
@@ -608,7 +631,12 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       ...(plan ? { hintergrund: plan.bild } : {}),
     };
     try {
-      await api("POST", "/rest/v1/operationen", op);
+      // die operation merkt sich ihre messung. Gibt es die spalte noch nicht,
+      // geht es ohne — dann laesst sich die messung spaeter von hand verknuepfen.
+      if (a.id) {
+        try { await api("POST", "/rest/v1/operationen", { ...op, auslesung_id: a.id }); op.auslesung_id = a.id; }
+        catch { await api("POST", "/rest/v1/operationen", op); }
+      } else await api("POST", "/rest/v1/operationen", op);
 
       const ziel = ziele.find((x) => x.name.trim().toLowerCase() === (a.target || "").trim().toLowerCase());
       const teile = [{ bezeichnung: a.target || "ziel", art: "target", target_id: ziel ? ziel.id : null }];
@@ -653,13 +681,28 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       });
 
       setOperationen((l) => [op, ...l]);
-      setLiest(false);
+      setLiest(false); setAusOp(null);
       setOffen(opId);
       sag("operation angelegt — formuliere oben deine absicht, dann anschalten");
     } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
   const dieOffene = (!schrank && !liest && operationen.find((o) => o.id === offen)) || null;
+
+  // Eine nachmessung, die aus einer operation heraus gestartet wurde, schreibt
+  // ihren test ins logbuch dieser operation — als kleine grafik. Das test-datum
+  // ist damit erledigt, die kachel hoert auf zu leuchten.
+  const testEintrag = async (opId, neu) => {
+    const paare = (neu.treffer || []).filter((t) => t.vorher != null).slice(0, 40)
+      .map((t) => [t.name, t.vorher, t.wert]);
+    const o = operationen.find((x) => x.id === opId);
+    const text = "§nach " + JSON.stringify({ a: neu.id, n: (neu.treffer || []).length, p: paare, t: (o && o.test_am) || null });
+    try {
+      await api("POST", "/rest/v1/logbuch", { id: neueId(), operation_id: opId, art: "test", text, wann: new Date().toISOString() });
+      if (o && o.test_am) operationAendern(opId, { test_am: null });
+      sag("der test steht im logbuch der operation");
+    } catch (e) { sag("der test konnte nicht ins logbuch: " + String(e.message), "schlimm"); }
+  };
 
   // ---------- anzeige ----------
   return (
@@ -668,12 +711,12 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
 
       <div className="mkopf">
         <button className="mbtn" onClick={() => {
-          if (liest) { setLiest(false); setRueck(null); }
+          if (liest) { setLiest(false); setRueck(null); setAusOp(null); }
           else if (schrank && rueck) { setSchrank(null); setLiest(true); }   // zurueck in die auslesung
           else if (schrank) setSchrank(null);     // zurueck in die offene operation
           else if (offen) setOffen(null);
           else zurueck();
-        }}>‹ {liest ? "maschinenraum" : schrank ? (rueck ? "auslesung" : offen ? "operation" : "maschinenraum")
+        }}>‹ {liest ? (ausOp ? "operation" : "maschinenraum") : schrank ? (rueck ? "auslesung" : offen ? "operation" : "maschinenraum")
               : offen ? "operationen" : "zurück"}</button>
 
         {dieOffene
@@ -712,6 +755,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
         <Auslesen api={api} sag={sag} zurOperation={operationAusLesung}
           zugang={zugang} bilder={bilder} holBilder={holBilder}
           stand={lesenStand} oeffneId={rueck}
+          fuerOp={ausOp && ausOp === offen ? ausOp : null} nachFertig={testEintrag}
           zumEintrag={(art, name, lesungId) => {
             setRueck(lesungId); setLiest(false); setTagMit(name); setSchrank(art);
           }}
@@ -787,6 +831,7 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
           planDazu={(x) => setPlaene((l) => [...l, x].sort(
             (a, b) => a.name.localeCompare(b.name, "de")))}
           zumSchrank={(a, name) => { setTagMit(name); setSchrank(a); }}
+          zurMessung={(lesungId) => { setRueck(lesungId); setAusOp(dieOffene.id); setLiest(true); }}
           blattMerk={blattMerk}
         />
       )}
@@ -797,6 +842,9 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
 // ============================================================
 // DIE ÜBERSICHT — kacheln wie bei projekten und filmen
 // ============================================================
+// der test-tag ist da (oder schon vorbei), und der test steht noch aus
+const faellig = (o) => !!o.test_am && !o.beendet && o.test_am <= new Date().toLocaleDateString("sv");
+
 function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg, nachsehen,
                      zahlen, impulse, trendsLaedt, hin }) {
   // leicht schraege kacheln, aber immer gleich schief — aus der id gerechnet
@@ -819,7 +867,7 @@ function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg, nachsehe
         const gesund = lebt(o);
         return (
           <div className="mkachelhuelle" key={o.id}>
-            <button className={"mkachel" + (o.aktiv ? " an" : "")}
+            <button className={"mkachel" + (o.aktiv ? " an" : "") + (faellig(o) ? " faellig" : "")}
               style={{ transform: `rotate(${kippung(o.id)}deg)` }}
               onClick={() => oeffnen(o.id)}>
               <span className="mkachelkopf">
@@ -833,7 +881,9 @@ function Uebersicht({ operationen, bilder, tick, oeffnen, anlegen, weg, nachsehe
               <span className="mkachelzeile">
                 {o.aktiv && <span>{puls.toLocaleString("de")} impulse · seit {seitWann(o.gestartet)}</span>}
                 {!o.aktiv && <span>{taktText(o.takt || 60)}</span>}
-                {o.test_am && <span className="mtest">test {new Date(o.test_am).toLocaleDateString("de")}</span>}
+                {o.test_am && <span className={"mtest" + (faellig(o) ? " faellig" : "")}>
+                  {faellig(o) ? "test fällig · " : "test "}{new Date(o.test_am).toLocaleDateString("de")}
+                </span>}
               </span>
             </button>
             <button className="mweg" onClick={() => weg(o.id)} title="operation löschen">✕</button>
@@ -914,7 +964,15 @@ function Led({ an, takt, gestartet, gesund }) {
 // EINE OPERATION
 // ============================================================
 function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen, plaene, ziele, trends,
-                           bilder, hochladen, holBilder, rateDazu, planDazu, zumSchrank, blattMerk }) {
+                           bilder, hochladen, holBilder, rateDazu, planDazu, zumSchrank, zurMessung, blattMerk }) {
+  const [messungen, setMessungen] = useState(null);   // die letzten auslesungen, zum verknuepfen — erst bei bedarf
+  const messungenHolen = async () => {
+    if (messungen) return;
+    try {
+      setMessungen(await api("GET",
+        "/rest/v1/auslesungen?select=id,wann,target,frage&order=wann.desc&limit=60"));
+    } catch { setMessungen([]); }
+  };
   const [bauteile, setBauteile] = useState([]);
   const [eintraege, setEintraege] = useState([]);
   const [meine, setMeine] = useState([]);        // quellen-ids an dieser operation
@@ -1259,6 +1317,25 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
           </label>
 
           <label className="mfeldchen">
+            <span>messung</span>
+            <select value={op.auslesung_id || ""} onFocus={messungenHolen} onMouseDown={messungenHolen}
+              onChange={(e) => aendern({ auslesung_id: e.target.value || null })}>
+              <option value="">keine verknüpft</option>
+              {op.auslesung_id && !(messungen || []).some((m) => m.id === op.auslesung_id) &&
+                <option value={op.auslesung_id}>die verknüpfte messung</option>}
+              {(messungen || []).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {new Date(m.wann).toLocaleDateString("de")} · {m.target || "ohne ziel"}{m.frage ? " · " + m.frage : ""}
+                </option>
+              ))}
+            </select>
+            {op.auslesung_id && (
+              <button className="mbtn lesen" onClick={() => zurMessung(op.auslesung_id)}
+                title="zur messung — dort kannst du erneut messen">zur messung ›</button>
+            )}
+          </label>
+
+          <label className="mfeldchen">
             <span>schaltplan</span>
             <select value={plaene.some((x) => x.bild === op.hintergrund) ? op.hintergrund : ""}
               onChange={(e) => { setForm(null); aendern({ hintergrund: e.target.value || null }); }}>
@@ -1346,12 +1423,44 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
             <span className="martzeichen">
               {e.art === "test" ? "◉" : e.art === "ende" ? "■" : "·"}
             </span>
-            <span className="mtext">{e.text}</span>
+            {e.art === "test" && String(e.text).startsWith("§nach ")
+              ? <NachTest text={e.text} zurMessung={zurMessung} />
+              : <span className="mtext">{e.text}</span>}
             <button className="mklein" onClick={() => eintragWeg(e.id)} title="eintrag weg">✕</button>
           </div>
         ))}
         {eintraege.length === 0 && <small className="mhinweis">noch nichts eingetragen</small>}
       </div>
+    </div>
+  );
+}
+
+// Ein selbst geschriebener test-eintrag im logbuch: nach einer nachmessung
+// steht dort statt text eine kleine grafik — pro treffer vorher (kupfer) und
+// jetzt (gruen), darueber eine zeile mit dem mittel.
+function NachTest({ text, zurMessung }) {
+  let d = null;
+  try { d = JSON.parse(String(text).slice(6)); } catch {}
+  if (!d || !Array.isArray(d.p) || d.p.length === 0) return <span className="mtext">nachmessung</span>;
+  const p = d.p;
+  const mittel = (i) => p.reduce((s, x) => s + Math.abs(x[i]), 0) / p.length;
+  const schwach = p.filter((x) => Math.abs(x[2]) < Math.abs(x[1])).length;
+  const hoch = Math.max(...p.map((x) => Math.max(Math.abs(x[1]), Math.abs(x[2]))), 0.01);
+  const zeige = p.slice(0, 12);
+  return (
+    <div className="mnachtest">
+      <b>nachmessung · ausschlag im mittel {mittel(1).toFixed(2)} → {mittel(2).toFixed(2)} · {schwach} von {p.length} schwächer</b>
+      {zeige.map((x, i) => (
+        <div key={i} className="mnachzeile" title={x[0] + ": " + x[1] + " → " + x[2]}>
+          <em>{x[0]}</em>
+          <span className="mnachbalken">
+            <span style={{ width: (Math.abs(x[1]) / hoch * 100) + "%" }} />
+            <span className="jetzt" style={{ width: (Math.abs(x[2]) / hoch * 100) + "%" }} />
+          </span>
+        </div>
+      ))}
+      {p.length > zeige.length && <small>… und {p.length - zeige.length} weitere</small>}
+      {d.a && zurMessung && <button className="mbtn" onClick={() => zurMessung(d.a)}>zur nachmessung ›</button>}
     </div>
   );
 }
@@ -1698,7 +1807,8 @@ const mische = (a, b, i) => {
 };
 const LESBAR = ["raten", "sigillen", "quellen", "hintergruende", "trends"];
 
-function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, stand, zumEintrag, oeffneId }) {
+function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, stand, zumEintrag, oeffneId,
+                   fuerOp, nachFertig }) {
   const [haken, setHaken] = useState({});         // welche treffer in die operation sollen
   const [baut, setBaut] = useState(false);
   const [target, setTarget] = useState("");
@@ -1822,6 +1932,7 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
     try {
       await api("POST", "/rest/v1/auslesungen", neu);
       setFrueher((l) => [neu, ...l]);
+      if (z.nach && fuerOp && nachFertig) nachFertig(fuerOp, neu);
     } catch (e) { sag("die auslesung steht hier, ist aber nicht gespeichert: " + String(e.message), "schlimm"); }
   };
 
@@ -2729,6 +2840,21 @@ function MaschinenStil() {
   font-size:10px; letter-spacing:.06em; opacity:.7;
 }
 .mtest{color:var(--messing); opacity:1}
+.mtest.faellig{color:#7fb069; font-weight:600}
+.mkachel.faellig{border-color:rgba(127,176,105,.75); animation:mfaellig 2.4s ease-in-out infinite}
+@keyframes mfaellig{
+  0%,100%{box-shadow:0 0 0 1px rgba(127,176,105,.35), 0 0 8px rgba(127,176,105,.18)}
+  50%{box-shadow:0 0 0 1px rgba(127,176,105,.8), 0 0 24px rgba(127,176,105,.5)}
+}
+.mnachtest{display:flex; flex-direction:column; gap:3px; width:100%}
+.mnachtest b{font-weight:400; font-size:12px; color:#7fb069}
+.mnachzeile{display:flex; align-items:center; gap:8px; font-size:11px}
+.mnachzeile em{font-style:normal; flex:0 0 38%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.8}
+.mnachbalken{flex:1; display:flex; flex-direction:column; gap:2px}
+.mnachbalken span{display:block; height:3px; border-radius:2px; background:var(--glut)}
+.mnachbalken span.jetzt{background:#7fb069}
+.mnachtest small{opacity:.6}
+.mnachtest button{align-self:flex-start; margin-top:3px}
 .mkachel.neu{
   height:150px; width:170px; align-items:center; justify-content:center;
   border-style:dashed; border-color:rgba(74,124,111,.4);
