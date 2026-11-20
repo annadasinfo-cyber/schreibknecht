@@ -2905,7 +2905,7 @@ function MaschinenStil() {
 .mkachelhuelle:hover .mweg{opacity:1}
 
 /* ---- eine operation ---- */
-.mop{padding:20px clamp(12px,2vw,26px); max-width:1500px; margin:0 auto}
+.mop{padding:20px clamp(12px,2vw,26px); max-width:1500px; margin:0 auto; width:100%; box-sizing:border-box}
 
 .msatz{
   display:flex; flex-wrap:wrap; align-items:stretch; gap:10px 16px;
