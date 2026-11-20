@@ -713,41 +713,13 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
     <div className="mraum">
       <MaschinenStil />
 
-      {/* nur ein schild: in der desktop-app liegen oben links die knoepfe des
-          fensters, und die leiste darunter war nicht mehr anzuklicken */}
-      <div className="mzier">maschinenraum</div>
-
-      <div className="mkopf">
-        <button className="mbtn" onClick={() => {
-          if (liest) { setLiest(false); setRueck(null); setAusOp(null); }
-          else if (schrank && rueck) { setSchrank(null); setLiest(true); }   // zurueck in die auslesung
-          else if (schrank) setSchrank(null);     // zurueck in die offene operation
-          else if (offen) setOffen(null);
-          else zurueck();
-        }}>‹ {liest ? (ausOp ? "operation" : "maschinenraum") : schrank ? (rueck ? "auslesung" : offen ? "operation" : "maschinenraum")
-              : offen ? "operationen" : "zurück"}</button>
-
-        {dieOffene
-          ? <input className="mtitel mtitelfeld" value={dieOffene.titel || ""}
-              placeholder="operation" spellCheck={false}
-              onChange={(e) => operationAendern(dieOffene.id, { titel: e.target.value })} />
-          : <span className="mtitel">
-              {liest ? "auslesen" : schrank === "hintergruende" ? "hintergründe" : schrank || "maschinenraum"}
-            </span>}
-
-        <span className="mfuell" />
-
-        {!schrank && !liest && (
-          <>
-            {!offen && <button className="mbtn lesen" onClick={() => setLiest(true)}>auslesen</button>}
-            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("sigillen"); }}>sigillen</button>
-            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("raten"); }}>raten</button>
-            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("trends"); }}>trends</button>
-            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("quellen"); }}>quellen</button>
-            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("hintergruende"); }}>hintergründe</button>
-            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("targets"); }}>targets</button>
-          </>
-        )}
+      {/* oben nur ein schild, nichts zum anklicken: in der desktop-app liegen dort
+          die knoepfe des fensters. Die leiste mit den knoepfen steht unten, wie im studio. */}
+      <div className="mzier">
+        {dieOffene ? (dieOffene.titel || "operation")
+          : liest ? "auslesen"
+          : schrank === "hintergruende" ? "hintergründe"
+          : schrank || "maschinenraum"}
       </div>
 
       {meldung && (
@@ -843,6 +815,39 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
           blattMerk={blattMerk}
         />
       )}
+
+      <div className="mluft" />
+
+      <div className="mkopf">
+        <button className="mbtn" onClick={() => {
+          if (liest) { setLiest(false); setRueck(null); setAusOp(null); }
+          else if (schrank && rueck) { setSchrank(null); setLiest(true); }   // zurueck in die auslesung
+          else if (schrank) setSchrank(null);     // zurueck in die offene operation
+          else if (offen) setOffen(null);
+          else zurueck();
+        }}>‹ {liest ? (ausOp ? "operation" : "maschinenraum") : schrank ? (rueck ? "auslesung" : offen ? "operation" : "maschinenraum")
+              : offen ? "operationen" : "zurück"}</button>
+
+        {dieOffene
+          ? <input className="mtitel mtitelfeld" value={dieOffene.titel || ""}
+              placeholder="operation" spellCheck={false}
+              onChange={(e) => operationAendern(dieOffene.id, { titel: e.target.value })} />
+          : null}
+
+        <span className="mfuell" />
+
+        {!schrank && !liest && (
+          <>
+            {!offen && <button className="mbtn lesen" onClick={() => setLiest(true)}>auslesen</button>}
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("sigillen"); }}>sigillen</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("raten"); }}>raten</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("trends"); }}>trends</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("quellen"); }}>quellen</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("hintergruende"); }}>hintergründe</button>
+            <button className="mbtn" onClick={() => { setTagMit(""); setSchrank("targets"); }}>targets</button>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -2655,8 +2660,9 @@ function MaschinenStil() {
     linear-gradient(var(--grund2), var(--grund));
   color:var(--asche);
   font-family:'Courier Prime', ui-monospace, monospace;
-  padding:0 0 80px;
+  padding:0;
 }
+.mluft{height:48px}
 /* die platine im grund — feine leiterbahnen */
 .mraum::before{
   content:""; position:fixed; inset:0; pointer-events:none; opacity:.14;
@@ -2667,31 +2673,26 @@ function MaschinenStil() {
   mask-image:radial-gradient(70% 60% at 50% 40%, #000 20%, transparent 80%);
   -webkit-mask-image:radial-gradient(70% 60% at 50% 40%, #000 20%, transparent 80%);
 }
-.mraum > *{position:relative; z-index:1}
+.mraum{display:flex; flex-direction:column}
+.mraum > *{position:relative; z-index:1; flex:none}
 /* nicht auf die uebrige app verlassen: hier rechnet alles mit rahmen */
 .mraum, .mraum *, .mraum *::before, .mraum *::after{box-sizing:border-box}
 
-/* ---- schild ueber der kopfzeile: nur in der desktop-app (eigenes fenster) ---- */
-.mzier{display:none}
-@media (display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay){
-  .mzier{
-    display:flex; align-items:flex-end; justify-content:center; height:46px; padding-bottom:6px;
-    font-family:'IM Fell English SC', Georgia, serif; font-size:15px; letter-spacing:.3em;
-    color:var(--messing); opacity:.7; background:rgba(7,10,9,.97);
-    pointer-events:none; user-select:none;
-  }
+/* ---- schild oben: nur anzeige. Die leiste mit den knoepfen steht unten, wie im studio ---- */
+.mzier{
+  display:flex; align-items:flex-end; justify-content:center; height:58px; padding-bottom:8px;
+  font-family:'IM Fell English SC', Georgia, serif; font-size:20px; letter-spacing:.2em;
+  color:var(--messing); background:rgba(7,10,9,.97); border-bottom:1px solid rgba(184,115,51,.28);
+  pointer-events:none; user-select:none; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 
-/* ---- kopfzeile ---- */
+/* ---- leiste unten ---- */
 .mkopf{
-  position:sticky; top:0; z-index:5; display:flex; align-items:center;
-  gap:8px; flex-wrap:wrap;
-  padding:12px clamp(12px,2vw,26px);
-  background:linear-gradient(rgba(7,10,9,.97), rgba(7,10,9,.86));
-  border-bottom:1px solid rgba(184,115,51,.28);
-}
-@media (display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay){
-  .mkopf{top:46px}
+  position:sticky; bottom:0; z-index:5; display:flex; align-items:center;
+  gap:8px; flex-wrap:wrap; margin-top:auto;
+  padding:10px clamp(12px,2vw,26px) calc(10px + env(safe-area-inset-bottom, 0px));
+  background:linear-gradient(rgba(7,10,9,.86), rgba(7,10,9,.97));
+  border-top:1px solid rgba(184,115,51,.28);
 }
 .mtitel{
   font-family:'IM Fell English SC', Georgia, serif; font-size:17px;
@@ -2734,7 +2735,7 @@ function MaschinenStil() {
    oben hat sie die knoepfe unter dem finger verrutschen lassen */
 .mmeldung{
   position:fixed; z-index:60; left:clamp(12px,2vw,26px); right:clamp(12px,2vw,26px);
-  bottom:calc(14px + env(safe-area-inset-bottom, 0px));
+  bottom:calc(78px + env(safe-area-inset-bottom, 0px));
   margin:0; padding:10px 14px; border-radius:4px;
   font-size:12px; color:var(--messing);
   background:#14170f; border:1px solid rgba(196,167,71,.45);
