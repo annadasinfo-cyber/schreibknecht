@@ -235,6 +235,8 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   const [anzAus, setAnzAus] = useState(null);       // wie viele auslesungen es gibt (fuer das zaehlwerk)
   const [rueck, setRueck] = useState(null);         // id der auslesung, aus der man in einen schrank gesprungen ist
   const [ausOp, setAusOp] = useState(null);         // die operation, aus der man in ihre messung gesprungen ist
+  const [nimmt, setNimmt] = useState(null);         // {art, bauteil}: man sucht im schrank etwas fuer ein kaestchen
+  const [genommen, setGenommen] = useState(null);   // {nimmt, schrank, e}: das gewaehlte stueck, auf dem weg zurueck
 
   // Solange der maschinenraum offen ist, bleibt der bildschirm an: eine
   // offene operation ist eine laufende quelle, da soll kein pausenbild kommen.
@@ -745,6 +747,8 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       {!laedt && !liest && schrank && (
         <Schrank key={schrank + "|" + tagMit}
           art={schrank} api={api} sag={sag} vorgabe={tagMit}
+          nimmt={nimmt}
+          nehmenFertig={(sa, e) => { setGenommen({ nimmt, schrank: sa, e }); setNimmt(null); setSchrank(null); }}
           wechseln={(a, tag) => { setTagMit(tag); setSchrank(a); }}
           alle={{ sigillen, raten, quellen, hintergruende: plaene, targets: ziele, trends }}
           sigillen={sigillen} setSigillen={setSigillen}
@@ -811,6 +815,11 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
           planDazu={(x) => setPlaene((l) => [...l, x].sort(
             (a, b) => a.name.localeCompare(b.name, "de")))}
           zumSchrank={(a, name) => { setTagMit(name); setSchrank(a); }}
+          holen={(art, bauteil) => {
+            setNimmt({ art, bauteil }); setTagMit("");
+            setSchrank(art === "target" ? "targets" : art === "trend" ? "trends" : "sigillen");
+          }}
+          genommen={genommen} genommenFertig={() => setGenommen(null)}
           zurMessung={(lesungId) => { setRueck(lesungId); setAusOp(dieOffene.id); setLiest(true); }}
           blattMerk={blattMerk}
         />
@@ -821,11 +830,12 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
       <div className="mkopf">
         <button className="mbtn" onClick={() => {
           if (liest) { setLiest(false); setRueck(null); setAusOp(null); }
+          else if (schrank && nimmt) { setNimmt(null); setSchrank(null); }   // nichts genommen
           else if (schrank && rueck) { setSchrank(null); setLiest(true); }   // zurueck in die auslesung
           else if (schrank) setSchrank(null);     // zurueck in die offene operation
           else if (offen) setOffen(null);
           else zurueck();
-        }}>‹ {liest ? (ausOp ? "operation" : "maschinenraum") : schrank ? (rueck ? "auslesung" : offen ? "operation" : "maschinenraum")
+        }}>‹ {liest ? (ausOp ? "operation" : "maschinenraum") : schrank ? (nimmt ? "operation" : rueck ? "auslesung" : offen ? "operation" : "maschinenraum")
               : offen ? "operationen" : "zurück"}</button>
 
         {dieOffene
@@ -977,7 +987,8 @@ function Led({ an, takt, gestartet, gesund }) {
 // EINE OPERATION
 // ============================================================
 function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen, plaene, ziele, trends,
-                           bilder, hochladen, holBilder, rateDazu, planDazu, zumSchrank, zurMessung, blattMerk }) {
+                           bilder, hochladen, holBilder, rateDazu, planDazu, zumSchrank, zurMessung, blattMerk,
+                           holen, genommen, genommenFertig }) {
   const [messungen, setMessungen] = useState(null);   // die letzten auslesungen, zum verknuepfen — erst bei bedarf
   const messungenHolen = async () => {
     if (messungen) return;
@@ -987,6 +998,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     } catch { setMessungen([]); }
   };
   const [bauteile, setBauteile] = useState([]);
+  const [geladen, setGeladen] = useState(false);
   const [eintraege, setEintraege] = useState([]);
   const [meine, setMeine] = useState([]);        // quellen-ids an dieser operation
   // das offene blatt ueberlebt einen abstecher in den schrank
@@ -1011,6 +1023,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
         ]);
         if (fort) return;
         setBauteile(b || []);
+        setGeladen(true);
         setEintraege(l || []);
         setMeine((q || []).map((x) => x.quelle_id));
         holBilder([...(b || []).map((x) => x.bild), op.hintergrund]);
@@ -1021,12 +1034,12 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
   }, [op.id, api, sag, holBilder]);
 
   // ---------- bauteile ----------
-  const bauteilAnlegen = async (art) => {
+  const bauteilAnlegen = async (art, extra) => {
     const hoechste = bauteile.reduce((m, b) => Math.max(m, b.nummer || 0), 0);
     const neu = {
       id: neueId(), operation_id: op.id, bezeichnung: "",
       art: art || "verstaerker", x: 20 + Math.random() * 60, y: 20 + Math.random() * 55,
-      nummer: hoechste + 1,
+      nummer: hoechste + 1, ...(extra || {}),
     };
     setBauteile((l) => [...l, neu]);
     setGewaehlt(neu.id);
@@ -1046,6 +1059,31 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
     clearTimeout(uhren.current[id]);
     uhren.current[id] = setTimeout(schreiben, 800);
   };
+
+  // ein stueck aus dem schrank ist angekommen: neues kaestchen oder das alte umstellen
+  const angewendet = useRef(null);
+  useEffect(() => {
+    if (!genommen || !geladen || angewendet.current === genommen) return;
+    angewendet.current = genommen;
+    const { nimmt: n, schrank: sa, e } = genommen;
+    const feld = { sigillen: "sigille_id", raten: "rate_id", targets: "target_id", trends: "trend_id" }[sa];
+    if (feld) {
+      const links = { sigille_id: null, rate_id: null, target_id: null, trend_id: null, [feld]: e.id };
+      const alt = n && n.bauteil && bauteile.find((x) => x.id === n.bauteil);
+      if (alt) {
+        const namen = [
+          sigillen.find((x) => x.id === alt.sigille_id), raten.find((x) => x.id === alt.rate_id),
+          ziele.find((x) => x.id === alt.target_id), (trends || []).find((x) => x.id === alt.trend_id),
+        ].filter(Boolean).map((x) => x.name);
+        const bez = !alt.bezeichnung || namen.includes(alt.bezeichnung) ? e.name : alt.bezeichnung;
+        bauteilAendern(alt.id, { ...links, bezeichnung: bez }, true);
+        setGewaehlt(alt.id);
+      } else {
+        bauteilAnlegen((n && n.art) || "verstaerker", { ...links, bezeichnung: e.name });
+      }
+    }
+    genommenFertig();
+  });
 
   // position waehlen heisst tauschen — sonst gaebe es luecken oder doppelte
   const nummerSetzen = (id, zahl) => {
@@ -1387,7 +1425,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
       {/* ---------- bauteil hinzufügen ---------- */}
       <div className="mzeile">
         {ARTEN.map((a) => (
-          <button key={a.wert} className="mbtn" onClick={() => bauteilAnlegen(a.wert)}>
+          <button key={a.wert} className="mbtn" onClick={() => holen(a.wert, null)}>
             + {a.name}
           </button>
         ))}
@@ -1401,7 +1439,7 @@ function OperationsSeite({ op, api, sag, tick, aendern, sigillen, raten, quellen
           b={dasBauteil} aendern={bauteilAendern} weg={bauteilWeg}
           zu={() => setGewaehlt(null)} sigillen={sigillen} raten={raten}
           bilder={bilder} hochladen={hochladen} sag={sag} ziele={ziele} trends={trends} zumSchrank={zumSchrank}
-          anzahl={bauteile.length} nummerSetzen={nummerSetzen}
+          anzahl={bauteile.length} nummerSetzen={nummerSetzen} holen={holen}
         />
       )}
 
@@ -1522,12 +1560,12 @@ function TrendWahl({ trends, wert, waehlen }) {
 }
 
 function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, trends, bilder, hochladen, sag,
-                        anzahl, nummerSetzen, zumSchrank }) {
+                        anzahl, nummerSetzen, zumSchrank, holen }) {
   const bildWaehlen = async (datei) => {
     if (!datei) return;
     try {
       const pfad = await hochladen(datei, "bauteile");
-      aendern(b.id, { bild: pfad, sigille_id: null }, true);
+      aendern(b.id, { bild: pfad }, true);
     } catch (e) { sag(String(e.message), "schlimm"); }
   };
 
@@ -1542,13 +1580,6 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, trends, bil
 
       <div className="mblattreihe">
         <label className="mfeldchen">
-          <span>art</span>
-          <select value={b.art} onChange={(e) => aendern(b.id, { art: e.target.value }, true)}>
-            {ARTEN.map((a) => <option key={a.wert} value={a.wert}>{a.name}</option>)}
-          </select>
-        </label>
-
-        <label className="mfeldchen">
           <span>position</span>
           <select value={b.nummer}
             onChange={(e) => nummerSetzen(b.id, Number(e.target.value))}>
@@ -1557,44 +1588,10 @@ function BauteilBlatt({ b, aendern, weg, zu, sigillen, raten, ziele, trends, bil
           </select>
         </label>
 
-        <label className="mfeldchen">
-          <span>sigille</span>
-          <select value={b.sigille_id || ""}
-            onChange={(e) => aendern(b.id, { sigille_id: e.target.value || null }, true)}>
-            <option value="">—</option>
-            {sigillen.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </label>
-
-        <label className="mfeldchen">
-          <span>rate</span>
-          <select value={b.rate_id || ""}
-            onChange={(e) => aendern(b.id, { rate_id: e.target.value || null }, true)}>
-            <option value="">—</option>
-            {raten.map((r) => <option key={r.id} value={r.id}>{r.name} · {r.ziffern}</option>)}
-          </select>
-        </label>
-
-        <label className="mfeldchen">
-          <span>target</span>
-          <select value={b.target_id || ""}
-            onChange={(e) => {
-              const id = e.target.value || null;
-              const z = id && ziele.find((x) => x.id === id);
-              aendern(b.id, z && !b.bezeichnung
-                ? { target_id: id, bezeichnung: z.name } : { target_id: id }, true);
-            }}>
-            <option value="">—</option>
-            {ziele.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-          </select>
-        </label>
-
-        <div className="mfeldchen">
-          <span>trend</span>
-          <TrendWahl trends={trends || []} wert={b.trend_id}
-            waehlen={(t) => aendern(b.id, t && !b.bezeichnung
-              ? { trend_id: t.id, bezeichnung: t.name } : { trend_id: t ? t.id : null }, true)} />
-        </div>
+        <button className="mbtn" onClick={() => holen(b.art, b.id)}>
+          {(b.sigille_id || b.rate_id || b.target_id || b.trend_id) ? "anderes wählen" : "aus dem schrank wählen"}
+          {" "}({b.art === "target" ? "targets" : b.art === "trend" ? "trends" : "sigillen / raten"})
+        </button>
       </div>
 
       <div className="mblattreihe">
@@ -2263,7 +2260,9 @@ function Auslesen({ api, sag, alle, zurOperation, zugang, bilder, holBilder, sta
 function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
                    quellen, setQuellen, plaene, setPlaene, ziele, setZiele,
                    trends, setTrends, trendsLaedt,
-                   operationen, bilder, hochladen, vorgabe, wechseln, alle }) {
+                   operationen, bilder, hochladen, vorgabe, wechseln, alle, nimmt, nehmenFertig }) {
+  const erlaubt = nimmt ? (nimmt.art === "target" ? ["targets"] : nimmt.art === "trend" ? ["trends"] : ["sigillen", "raten"]) : [];
+  const kannNehmen = erlaubt.includes(art);
   const [suche, setSuche] = useState(vorgabe || "");
   const [zeige, setZeige] = useState(60);         // so viele stuecke stehen auf dem schirm
   useEffect(() => { setZeige(60); }, [suche, art]);
@@ -2484,6 +2483,16 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
 
   return (
     <div className="mschrank">
+      {nimmt && (
+        <div className="mnimmtband">
+          <span>wähle {nimmt.art === "verstaerker" ? "eine sigille oder rate" : "ein " + nimmt.art} — dann „nehmen“</span>
+          {erlaubt.length > 1 && erlaubt.map((a) => (
+            <button key={a} className={"mtag" + (a === art ? " an" : "")} onClick={() => wechseln(a, "")}>
+              {schrankName(a)}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="mzeile">
         <input className="msuche" value={suche} placeholder="suchen … oder #tag"
           onChange={(e) => setSuche(e.target.value)} />
@@ -2514,6 +2523,9 @@ function Schrank({ art, api, sag, sigillen, setSigillen, raten, setRaten,
         <div className={"mstueck" + (offenIds[x.id] ? " ungesichert" : "")} key={x.id}>
           {offenIds[x.id] && <div className="mungesichert">wird gespeichert …</div>}
           <div className="mstueckkopf">
+            {kannNehmen && (
+              <button className="mbtn nehmen" onClick={() => nehmenFertig(art, x)}>nehmen</button>
+            )}
             <input className="mbezfeld" value={x.name}
               onChange={(e) => aendern(x.id, { name: e.target.value })} />
             <button className="mklein" onClick={() => drucken(x)} title="drucken, zum auflegen">⎙</button>
@@ -3162,6 +3174,9 @@ function MaschinenStil() {
 .meintrag:hover .mklein{opacity:1}
 
 /* ---- die schränke ---- */
+.mnimmtband{display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:12px;
+  padding:8px 12px; border:1px solid var(--glut,#c9a24a); border-radius:6px; font-size:12px}
+.mbtn.nehmen{flex:none; font-weight:bold}
 .mschrank{padding:20px clamp(12px,2vw,26px); max-width:1100px; margin:0 auto}
 .msuche{flex:1 1 300px}
 .mstueck{
