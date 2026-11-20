@@ -238,7 +238,11 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
 
   // Solange der maschinenraum offen ist, bleibt der bildschirm an: eine
   // offene operation ist eine laufende quelle, da soll kein pausenbild kommen.
+  // Vorerst stillgelegt: bei dir hat der bildschirm trotzdem abgeschaltet (Safari
+  // und Windows). Auf true setzen, dann ist es wieder an.
+  const BILDSCHIRM_AN = false;
   useEffect(() => {
+    if (!BILDSCHIRM_AN) return undefined;
     let sperre = null, vorbei = false;
     const halten = async () => {
       try {
@@ -708,6 +712,10 @@ export default function Maschinenraum({ api: apiVomHaus, zugang, URL_DB, KEY_DB,
   return (
     <div className="mraum">
       <MaschinenStil />
+
+      {/* nur ein schild: in der desktop-app liegen oben links die knoepfe des
+          fensters, und die leiste darunter war nicht mehr anzuklicken */}
+      <div className="mzier">maschinenraum</div>
 
       <div className="mkopf">
         <button className="mbtn" onClick={() => {
@@ -2663,6 +2671,17 @@ function MaschinenStil() {
 /* nicht auf die uebrige app verlassen: hier rechnet alles mit rahmen */
 .mraum, .mraum *, .mraum *::before, .mraum *::after{box-sizing:border-box}
 
+/* ---- schild ueber der kopfzeile: nur in der desktop-app (eigenes fenster) ---- */
+.mzier{display:none}
+@media (display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay){
+  .mzier{
+    display:flex; align-items:flex-end; justify-content:center; height:46px; padding-bottom:6px;
+    font-family:'IM Fell English SC', Georgia, serif; font-size:15px; letter-spacing:.3em;
+    color:var(--messing); opacity:.7; background:rgba(7,10,9,.97);
+    pointer-events:none; user-select:none;
+  }
+}
+
 /* ---- kopfzeile ---- */
 .mkopf{
   position:sticky; top:0; z-index:5; display:flex; align-items:center;
@@ -2670,6 +2689,9 @@ function MaschinenStil() {
   padding:12px clamp(12px,2vw,26px);
   background:linear-gradient(rgba(7,10,9,.97), rgba(7,10,9,.86));
   border-bottom:1px solid rgba(184,115,51,.28);
+}
+@media (display-mode: standalone), (display-mode: minimal-ui), (display-mode: window-controls-overlay){
+  .mkopf{top:46px}
 }
 .mtitel{
   font-family:'IM Fell English SC', Georgia, serif; font-size:17px;
